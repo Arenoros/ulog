@@ -111,6 +111,17 @@ private:
     std::uint64_t dropped_count_{0};
 };
 
+}  // namespace impl
+
+/// Total number of log records suppressed by LOG_LIMITED_* across the whole
+/// process since start (or since ResetRateLimitStats). Read-only.
+std::uint64_t GetRateLimitDroppedTotal() noexcept;
+
+/// Resets the global drop counter. Intended for tests / diagnostics only.
+void ResetRateLimitStats() noexcept;
+
+namespace impl {
+
 /// Noop helper returned from compile-erased macros.
 struct Noop {
     template <typename T>

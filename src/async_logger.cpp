@@ -43,6 +43,7 @@ struct AsyncLogger::State {
     std::atomic<bool> stop{false};
     std::atomic<std::size_t> pending{0};
     std::atomic<std::uint64_t> dropped{0};
+    std::atomic<std::uint64_t> total_logged{0};
 
     std::thread worker;
 
@@ -92,6 +93,7 @@ struct AsyncLogger::State {
                     }
                 }
                 pending.fetch_sub(n, std::memory_order_relaxed);
+                total_logged.fetch_add(n, std::memory_order_relaxed);
                 WakeWorker();  // in case a blocked producer was waiting on capacity
             }
         };
@@ -188,6 +190,14 @@ void AsyncLogger::Flush() {
 
 std::uint64_t AsyncLogger::GetDroppedCount() const noexcept {
     return state_->dropped.load(std::memory_order_relaxed);
+}
+
+std::size_t AsyncLogger::GetQueueDepth() const noexcept {
+    return state_->pending.load(std::memory_order_relaxed);
+}
+
+std::uint64_t AsyncLogger::GetTotalLogged() const noexcept {
+    return state_->total_logged.load(std::memory_order_relaxed);
 }
 
 }  // namespace ulog

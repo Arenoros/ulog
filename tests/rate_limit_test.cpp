@@ -46,6 +46,19 @@ TEST(RateLimit, DroppedSuffixPresent) {
     ulog::SetDefaultLogger(nullptr);
 }
 
+TEST(RateLimit, GlobalDroppedCounterAggregates) {
+    auto mem = InstallMem();
+    ulog::ResetRateLimitStats();
+    for (int i = 0; i < 64; ++i) LOG_LIMITED_INFO() << "flood " << i;
+    const auto emitted = mem->GetRecords().size();
+    const auto dropped = ulog::GetRateLimitDroppedTotal();
+    EXPECT_EQ(emitted + dropped, 64u);
+    EXPECT_GT(dropped, 0u);
+    ulog::ResetRateLimitStats();
+    EXPECT_EQ(ulog::GetRateLimitDroppedTotal(), 0u);
+    ulog::SetDefaultLogger(nullptr);
+}
+
 TEST(RateLimit, ResetsAfterOneSecond) {
     auto mem = InstallMem();
     for (int i = 0; i < 16; ++i) LOG_LIMITED_INFO() << "first " << i;

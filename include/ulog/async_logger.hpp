@@ -52,6 +52,12 @@ public:
     /// Number of records dropped due to overflow (kDiscard mode only).
     std::uint64_t GetDroppedCount() const noexcept;
 
+    /// Records currently buffered in the queue (not yet written to sinks).
+    std::size_t GetQueueDepth() const noexcept;
+
+    /// Total records successfully handed to sinks since construction.
+    std::uint64_t GetTotalLogged() const noexcept;
+
     // LoggerBase
     void Log(Level level, impl::LoggerItemRef item) override;
     void Flush() override;

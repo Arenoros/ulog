@@ -53,6 +53,25 @@ TEST(AsyncLogger, DrainsAllRecordsBeforeShutdown) {
     EXPECT_EQ(sink->Size(), 500u);
 }
 
+TEST(AsyncLogger, QueueDepthAndTotalLoggedMetrics) {
+    auto sink = std::make_shared<CapturingSink>();
+    auto logger = std::make_shared<ulog::AsyncLogger>();
+    logger->SetLevel(ulog::Level::kTrace);
+    logger->AddSink(sink);
+
+    EXPECT_EQ(logger->GetTotalLogged(), 0u);
+    EXPECT_EQ(logger->GetQueueDepth(), 0u);
+
+    ulog::SetDefaultLogger(logger);
+    for (int i = 0; i < 500; ++i) LOG_INFO() << "m " << i;
+    ulog::LogFlush();
+
+    EXPECT_EQ(logger->GetTotalLogged(), 500u);
+    EXPECT_EQ(logger->GetQueueDepth(), 0u);
+
+    ulog::SetDefaultLogger(nullptr);
+}
+
 TEST(AsyncLogger, FlushIsSynchronous) {
     auto sink = std::make_shared<CapturingSink>();
     auto logger = std::make_shared<ulog::AsyncLogger>();

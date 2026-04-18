@@ -151,6 +151,11 @@ bool NextCountShouldLog(std::uint64_t count) noexcept {
 
 }  // namespace
 
+/// Process-wide running total, aggregated across every rate-limited
+/// site. Producers only increment on drops — zero overhead on the
+/// common (emit) path, one relaxed atomic add on the drop path.
+std::atomic<std::uint64_t> g_rate_limit_dropped_total{0};
+
 RateLimiter::RateLimiter(RateLimitData& data) noexcept {
     const auto now = std::chrono::steady_clock::now();
     if (now - data.last_reset_time >= std::chrono::seconds(1)) {
@@ -160,7 +165,10 @@ RateLimiter::RateLimiter(RateLimitData& data) noexcept {
     }
     ++data.count_since_reset;
     should_log_ = NextCountShouldLog(data.count_since_reset);
-    if (!should_log_) ++data.dropped_count;
+    if (!should_log_) {
+        ++data.dropped_count;
+        g_rate_limit_dropped_total.fetch_add(1, std::memory_order_relaxed);
+    }
     dropped_count_ = data.dropped_count;
 }
 
@@ -188,5 +196,13 @@ bool StaticLogEntry::ShouldNotLog(const LoggerPtr& logger, Level level) const no
 }
 
 }  // namespace impl
+
+std::uint64_t GetRateLimitDroppedTotal() noexcept {
+    return impl::g_rate_limit_dropped_total.load(std::memory_order_relaxed);
+}
+
+void ResetRateLimitStats() noexcept {
+    impl::g_rate_limit_dropped_total.store(0, std::memory_order_relaxed);
+}
 
 }  // namespace ulog
