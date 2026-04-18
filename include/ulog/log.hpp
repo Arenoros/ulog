@@ -111,12 +111,16 @@ struct Noop {
 /// Static per-source-line registration for dynamic debug controls.
 class StaticLogEntry final {
 public:
-    StaticLogEntry(const char* path, int line) noexcept;
+    StaticLogEntry(const char* path, int line) noexcept : path_(path), line_(line) {}
     StaticLogEntry(const StaticLogEntry&) = delete;
     StaticLogEntry& operator=(const StaticLogEntry&) = delete;
 
     bool ShouldNotLog(LoggerRef logger, Level level) const noexcept;
     bool ShouldNotLog(const LoggerPtr& logger, Level level) const noexcept;
+
+private:
+    const char* path_;
+    int line_;
 };
 
 template <class NameHolder, int Line>

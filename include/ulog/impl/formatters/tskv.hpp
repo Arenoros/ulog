@@ -1,0 +1,34 @@
+#pragma once
+
+/// @file ulog/impl/formatters/tskv.hpp
+/// @brief TSKV formatter. Writes `key=value\tkey=value\t...\n`.
+
+#include <chrono>
+#include <string_view>
+
+#include <ulog/impl/formatters/base.hpp>
+#include <ulog/impl/formatters/text_item.hpp>
+#include <ulog/level.hpp>
+
+namespace ulog::impl::formatters {
+
+class TskvFormatter final : public Base {
+public:
+    /// Emits the TSKV header (timestamp, level, optional module) eagerly.
+    TskvFormatter(Level level,
+                  std::string_view module_function,
+                  std::string_view module_file,
+                  int module_line,
+                  std::chrono::system_clock::time_point tp);
+
+    void AddTag(std::string_view key, std::string_view value) override;
+    void AddJsonTag(std::string_view key, const JsonString& value) override;
+    void SetText(std::string_view text) override;
+    LoggerItemRef ExtractLoggerItem() override;
+
+private:
+    TextLogItem item_;
+    bool finalized_{false};
+};
+
+}  // namespace ulog::impl::formatters

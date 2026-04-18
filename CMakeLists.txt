@@ -35,7 +35,7 @@ endif()
 # Dependencies (resolved via Conan toolchain or system find_package)
 # ---------------------------------------------------------------------------
 find_package(fmt CONFIG REQUIRED)
-find_package(Boost REQUIRED COMPONENTS container stacktrace)
+find_package(Boost REQUIRED)
 
 if(ULOG_WITH_NLOHMANN)
     find_package(nlohmann_json CONFIG REQUIRED)

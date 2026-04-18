@@ -4,6 +4,8 @@
 
 #include <boost/stacktrace.hpp>
 
+#include <ulog/stacktrace_cache.hpp>
+
 namespace ulog {
 
 const LogExtra kEmptyLogExtra{};
@@ -93,8 +95,15 @@ LogExtra LogExtra::StacktraceNocache() noexcept {
 }
 
 LogExtra LogExtra::Stacktrace() noexcept {
-    // Cache will be added later via stacktrace_cache module; mirror no-cache for now.
-    return StacktraceNocache();
+    try {
+        auto s = CurrentStacktrace();
+        if (s.empty()) return {};
+        LogExtra e;
+        e.Extend("stacktrace", std::move(s));
+        return e;
+    } catch (...) {
+        return {};
+    }
 }
 
 }  // namespace ulog

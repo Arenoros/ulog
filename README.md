@@ -2,34 +2,99 @@
 
 Standalone cross-platform C++17 logging library extracted from [userver](https://github.com/userver-framework/userver). No runtime dependency on userver.
 
-## Status
+## Features
 
-**Work in progress.** Phases 0-2 scaffolded (core types + macros + null/default logger infrastructure). Formatters, sinks, async logger, dynamic debug, and tracing hook — to follow.
+- **Macros preserved 1:1 from userver**: `LOG_INFO`, `LOG_ERROR`, `LOG_DEBUG`, `LOG_TRACE`, `LOG_WARNING`, `LOG_CRITICAL`, every `LOG_*_TO(logger, …)` variant, every `LOG_LIMITED_*` variant. Compile-erase via `-DULOG_ERASE_LOG_WITH_LEVEL=N`. Conflict-resolution alias `-DULOG_NO_SHORT_MACROS=ON` exposes only `ULOG_LOG_*`.
+- **Three-tier filtering**: logger level (atomic), dynamic-debug per (file, line), and a user-installable tracing hook.
+- **Formatters**: TSKV, LTSV, RAW, JSON (+ YaDeploy variant stub).
+- **Sinks**: file (buffered stdio, rotation via `Reopen`), fd (`stdout`/`stderr`/adopted), TCP, Unix-domain socket (POSIX + Windows 10 1803+), null.
+- **Async logger**: `std::thread` worker + lock-free `moodycamel::ConcurrentQueue`. `Discard` or `Block` overflow policies, synchronous `Flush` through `std::promise`.
+- **Config builder**: `ulog::LoggerConfig` + `MakeSyncLogger` / `MakeAsyncLogger` / `InitDefaultLogger`. Path specs: `@stdout`, `@stderr`, `@null`, `tcp:host:port`, `unix:/path`, or any local filesystem path.
+- **Tracing hook**: register a callback to inject trace/span IDs per record. No built-in tracing dependency.
+- **Rotation on POSIX**: `ulog/posix/sigusr1_handler.hpp` installs a `SIGUSR1` → `RequestReopen` bridge. Windows users call `AsyncLogger::RequestReopen()` directly.
+- **Rate limiting**, **stacktrace cache**, **LogExtra** structured tags.
+- **Cross-platform**: Linux, macOS, Windows (MSVC 2019+, gcc 9+, clang 11+).
 
-See [docs/extraction-plan.md](docs/extraction-plan.md) for the full roadmap and rationale.
+## Quickstart
 
-## Features (target)
+```cpp
+#include <ulog/config.hpp>
+#include <ulog/log.hpp>
 
-- `LOG_INFO` / `LOG_ERROR` / `LOG_DEBUG` / `LOG_TRACE` / `LOG_WARNING` / `LOG_CRITICAL` + `LOG_LIMITED_*` + `LOG_*_TO` macros (names preserved 1:1 from userver).
-- Levels, three-tier filtering, dynamic debug by file/line.
-- Formatters: TSKV, LTSV, RAW, JSON.
-- Sinks: file (buffered + unbuffered), stdout/stderr, TCP, Unix socket, null.
-- Asynchronous logger: `std::thread` worker + lock-free queue.
-- Rate limiting.
-- Stacktrace cache.
-- Log rotation (`Logger::Reopen()` + optional POSIX SIGUSR1 handler).
-- Cross-platform: Linux, macOS, Windows (MSVC 2019+, gcc 9+, clang 11+).
-- Optional integrations: nlohmann::json, yaml-cpp, OpenTelemetry (OTLP).
+int main() {
+    ulog::LoggerConfig cfg;
+    cfg.file_path = "@stderr";            // or "/var/log/app.log" / "tcp:host:514"
+    cfg.format    = ulog::Format::kTskv;  // or kJson, kLtsv, kRaw
+    cfg.level     = ulog::Level::kDebug;
+    auto logger   = ulog::InitDefaultLogger(cfg);
+
+    LOG_INFO() << "started pid=" << ::getpid();
+    LOG_ERROR() << "boom " << ulog::LogExtra{{"code", 42}, {"op", std::string("open")}};
+
+    ulog::LogFlush();
+}
+```
 
 ## Build
 
+Conan 2 + Ninja + MSVC on Windows:
+
 ```
-cmake -S ulog -B ulog/build
+conan install ulog --output-folder=ulog/build -s build_type=RelWithDebInfo -s compiler.cppstd=23 -c tools.cmake.cmaketoolchain:generator=Ninja
+cmake -S ulog -B ulog/build -G Ninja -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build ulog/build
 ctest --test-dir ulog/build
 ```
 
-Dependencies: `fmt`, `boost::stacktrace`. Optional: `nlohmann_json`, `yaml-cpp`, `GTest` (for tests).
+Dependencies: `fmt` + Boost `container` & `stacktrace` (via Conan or any package manager). Optional: `nlohmann_json`, `yaml-cpp`, `GTest` for tests.
+
+### CMake options
+
+| Option | Default | Description |
+|---|---|---|
+| `ULOG_BUILD_TESTS` | `ON` | Build gtest-based unit suite |
+| `ULOG_BUILD_EXAMPLES` | `ON` | Build the example binaries |
+| `ULOG_BUILD_BENCH` | `OFF` | Build benchmarks (reserved) |
+| `ULOG_WITH_NLOHMANN` | `OFF` | Validate `JsonString` payloads via nlohmann::json |
+| `ULOG_WITH_YAML` | `OFF` | Enable yaml-cpp-based config loader (reserved) |
+| `ULOG_NO_SHORT_MACROS` | `OFF` | Hide `LOG_*` short names; keep `ULOG_LOG_*` only |
+| `ULOG_ERASE_LOG_WITH_LEVEL` | `0` | Compile-erase levels below this (1..4) |
+| `ULOG_INSTALL` | `ON` | Generate install/export rules |
+
+## Layout
+
+```
+ulog/
+  include/ulog/
+    log.hpp                  # Macros + default logger
+    level.hpp                # enum Level
+    format.hpp               # enum Format
+    log_extra.hpp            # structured KV
+    log_helper.hpp           # stream-like builder
+    logger.hpp (fwd)
+    null_logger.hpp
+    mem_logger.hpp           # capture to memory (tests)
+    sync_logger.hpp          # caller-thread writes to sinks
+    async_logger.hpp         # worker-thread writes to sinks
+    config.hpp               # builder API
+    json_string.hpp
+    dynamic_debug.hpp
+    stacktrace_cache.hpp
+    tracing_hook.hpp
+    sinks/                   # base_sink, null, fd, file, tcp, unix
+    impl/
+      logger_base.hpp
+      formatters/            # base, tskv, ltsv, raw, json
+    detail/                  # small_string, tskv_escape, timestamp, ...
+    posix/                   # sigusr1_handler (POSIX only)
+  src/                       # mirrors include/
+  tests/                     # gtest unit suite
+  examples/
+    simple/                  # one-file quickstart
+  third_party/
+    concurrentqueue/         # moodycamel (vendored header-only)
+  docs/extraction-plan.md    # full porting plan
+```
 
 ## License
 

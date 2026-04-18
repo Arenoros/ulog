@@ -4,6 +4,7 @@
 #include <chrono>
 #include <mutex>
 
+#include <ulog/dynamic_debug.hpp>
 #include <ulog/impl/logger_base.hpp>
 #include <ulog/null_logger.hpp>
 
@@ -105,16 +106,25 @@ RateLimiter::RateLimiter(RateLimitData& data) noexcept {
 
 // ---------------- StaticLogEntry ----------------
 
-StaticLogEntry::StaticLogEntry(const char* /*path*/, int /*line*/) noexcept {
-    // Dynamic debug storage is wired in during Phase 4 (dynamic_debug).
+namespace {
+bool ShouldNotLogFor(const char* path, int line, bool logger_allows) noexcept {
+    const auto state = impl::LookupDynamicDebugLog(path, line);
+    switch (state) {
+        case DynamicDebugState::kForceEnabled:  return false;
+        case DynamicDebugState::kForceDisabled: return true;
+        case DynamicDebugState::kDefault:       return !logger_allows;
+    }
+    return !logger_allows;
 }
+}  // namespace
 
 bool StaticLogEntry::ShouldNotLog(LoggerRef logger, Level level) const noexcept {
-    return !logger.ShouldLog(level);
+    return ShouldNotLogFor(path_, line_, logger.ShouldLog(level));
 }
 
 bool StaticLogEntry::ShouldNotLog(const LoggerPtr& logger, Level level) const noexcept {
-    return !logger || !logger->ShouldLog(level);
+    const bool allows = logger && logger->ShouldLog(level);
+    return ShouldNotLogFor(path_, line_, allows);
 }
 
 }  // namespace impl

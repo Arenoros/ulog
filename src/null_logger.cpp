@@ -15,7 +15,9 @@ public:
     }
     void Log(Level, impl::LoggerItemRef) override {}
     void Flush() override {}
-    impl::formatters::BasePtr MakeFormatter(Level, std::string_view) override { return nullptr; }
+    impl::formatters::BasePtr MakeFormatter(Level, std::string_view, std::string_view, int) override {
+        return nullptr;
+    }
 };
 
 NullLogger& GetNullInstance() noexcept {
