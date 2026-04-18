@@ -1,0 +1,91 @@
+name: ulog-ci
+
+# Intended layout: this workflow lives at the repository root when ulog is
+# extracted into its own repo. While the sources still live nested inside
+# the userver tree, GitHub does not pick up `ulog/.github/workflows/*.yml`
+# — the file is dormant until the extraction lands.
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request: {}
+  workflow_dispatch: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-gcc
+            os: ubuntu-22.04
+            cc: gcc
+            cxx: g++
+          - name: linux-clang
+            os: ubuntu-22.04
+            cc: clang
+            cxx: clang++
+          - name: macos-clang
+            os: macos-13
+            cc: clang
+            cxx: clang++
+          - name: windows-msvc
+            os: windows-2022
+            cc: cl
+            cxx: cl
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Conan 2
+        uses: turtlebrowser/get-conan@main
+        with:
+          version: 2.8.0
+
+      - name: Configure Conan default profile
+        run: |
+          conan profile detect --force
+          conan profile show
+
+      - name: Install Ninja (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update && sudo apt-get install -y ninja-build; fi
+          if [ "$RUNNER_OS" = "macOS" ]; then brew install ninja; fi
+
+      - name: Visual Studio developer prompt (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Conan install
+        run: |
+          conan install . \
+            --output-folder=build \
+            -s build_type=Release \
+            -s compiler.cppstd=17 \
+            -c tools.cmake.cmaketoolchain:generator=Ninja \
+            --build=missing
+
+      - name: CMake configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        working-directory: build
+        run: ctest --output-on-failure -C Release

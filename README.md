@@ -96,6 +96,10 @@ ulog/
   docs/extraction-plan.md    # full porting plan
 ```
 
+## Continuous integration
+
+`.github/workflows/ci.yml` defines a cross-platform matrix (Ubuntu gcc/clang, macOS clang, Windows MSVC). Each job runs Conan install → CMake configure → build → ctest. The workflow activates once ulog is extracted to its own repository; while nested inside userver, GitHub does not pick up workflows outside the repo root and the file lies dormant.
+
 ## License
 
 Apache-2.0 (inherited from userver).
