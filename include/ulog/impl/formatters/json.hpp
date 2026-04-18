@@ -38,6 +38,7 @@ private:
     };
 
     void Finalize();
+    std::string_view TranslateKey(std::string_view key) const noexcept;
 
     std::vector<Field> fields_;
     std::string text_;

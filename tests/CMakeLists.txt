@@ -15,6 +15,10 @@ add_executable(ulog-tests
     rate_limit_test.cpp
     default_logger_test.cpp
     stacktrace_cache_test.cpp
+    tcp_sink_test.cpp
 )
+if(NOT WIN32)
+    target_sources(ulog-tests PRIVATE unix_sink_test.cpp)
+endif()
 target_link_libraries(ulog-tests PRIVATE ulog::ulog GTest::gtest GTest::gtest_main)
 add_test(NAME ulog-tests COMMAND ulog-tests)

@@ -82,6 +82,22 @@ TEST(FormatterJson, EmitsJsonObject) {
     ulog::SetDefaultLogger(nullptr);
 }
 
+TEST(FormatterJson, YaDeployVariantRenamesCoreFields) {
+    auto mem = InstallMem(ulog::Format::kJsonYaDeploy);
+    LOG_INFO() << "body" << ulog::LogExtra{{"user_id", 7}};
+    const auto r = mem->GetRecords().front();
+    EXPECT_NE(r.find("\"@timestamp\":"), std::string::npos);
+    EXPECT_NE(r.find("\"_level\":\"INFO\""), std::string::npos);
+    EXPECT_NE(r.find("\"_message\":\"body\""), std::string::npos);
+    // User-supplied tags stay untouched.
+    EXPECT_NE(r.find("\"user_id\":\"7\""), std::string::npos);
+    // Canonical names must be absent.
+    EXPECT_EQ(r.find("\"timestamp\":"), std::string::npos);
+    EXPECT_EQ(r.find("\"level\":\"INFO\""), std::string::npos);
+    EXPECT_EQ(r.find("\"text\":\"body\""), std::string::npos);
+    ulog::SetDefaultLogger(nullptr);
+}
+
 TEST(FormatterJson, EscapesQuotesInValue) {
     auto mem = InstallMem(ulog::Format::kJson);
     LOG_INFO() << "a\"b\n";

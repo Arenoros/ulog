@@ -62,6 +62,17 @@ void JsonFormatter::AddJsonTag(std::string_view key, const JsonString& value) {
 
 void JsonFormatter::SetText(std::string_view text) { text_.assign(text.data(), text.size()); }
 
+std::string_view JsonFormatter::TranslateKey(std::string_view key) const noexcept {
+    if (variant_ != Variant::kYaDeploy) return key;
+    // Yandex.Deploy expects Logstash-style reserved names. Map ulog's
+    // canonical fields onto `@timestamp`, `_level`, `_message`; leave
+    // user-supplied tags untouched.
+    if (key == "timestamp") return "@timestamp";
+    if (key == "level")     return "_level";
+    if (key == "text")      return "_message";
+    return key;
+}
+
 void JsonFormatter::Finalize() {
     auto& b = item_.payload;
     b += '{';
@@ -72,7 +83,7 @@ void JsonFormatter::Finalize() {
         first = false;
         b += '"';
         std::string escaped_key;
-        AppendJsonEscaped(escaped_key, k);
+        AppendJsonEscaped(escaped_key, TranslateKey(k));
         b += std::string_view(escaped_key);
         b += "\":";
         if (is_json) {
@@ -88,10 +99,6 @@ void JsonFormatter::Finalize() {
 
     for (const auto& f : fields_) emit(f.key, f.value, f.is_json);
     emit("text", text_, false);
-
-    // YaDeploy variant is a simple shape tweak — @timestamp / _level / _message.
-    // Standard: leave fields as-is.
-    (void)variant_;  // Placeholder for variant-specific behavior; extend when needed.
 
     b += "}\n";
 }
