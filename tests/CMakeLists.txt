@@ -20,5 +20,8 @@ add_executable(ulog-tests
 if(NOT WIN32)
     target_sources(ulog-tests PRIVATE unix_sink_test.cpp)
 endif()
+if(WIN32)
+    target_sources(ulog-tests PRIVATE named_event_reopen_test.cpp)
+endif()
 target_link_libraries(ulog-tests PRIVATE ulog::ulog GTest::gtest GTest::gtest_main)
 add_test(NAME ulog-tests COMMAND ulog-tests)

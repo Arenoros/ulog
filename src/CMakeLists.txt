@@ -35,3 +35,7 @@ if(NOT WIN32)
         posix/sigusr1_handler.cpp
     )
 endif()
+
+if(WIN32)
+    target_sources(ulog PRIVATE win/named_event_handler.cpp)
+endif()
