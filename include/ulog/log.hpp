@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include <ulog/detail/source_root.hpp>
 #include <ulog/fwd.hpp>
 #include <ulog/level.hpp>
 #include <ulog/log_helper.hpp>
@@ -158,7 +159,7 @@ struct EntryStorage final {
     }
 
 #define ULOG_IMPL_LOG_LOCATION() \
-    ::ulog::LogRecordLocation { __FILE__, __LINE__, static_cast<const char*>(__func__) }
+    ::ulog::LogRecordLocation { ULOG_IMPL_TRIM_FILE(__FILE__), __LINE__, static_cast<const char*>(__func__) }
 
 #define ULOG_IMPL_LOG_TO(logger, level, ...) \
     ::ulog::LogHelper((logger), (level), ULOG_IMPL_LOG_LOCATION())

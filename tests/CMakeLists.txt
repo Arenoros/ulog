@@ -12,6 +12,9 @@ add_executable(ulog-tests
     async_logger_test.cpp
     config_test.cpp
     tracing_hook_test.cpp
+    rate_limit_test.cpp
+    default_logger_test.cpp
+    stacktrace_cache_test.cpp
 )
 target_link_libraries(ulog-tests PRIVATE ulog::ulog GTest::gtest GTest::gtest_main)
 add_test(NAME ulog-tests COMMAND ulog-tests)

@@ -16,6 +16,7 @@ option(ULOG_WITH_YAML        "Enable yaml-cpp config loader"    OFF)
 option(ULOG_NO_SHORT_MACROS  "Disable short LOG_* macros (expose ULOG_LOG_* only)" OFF)
 option(ULOG_INSTALL          "Generate install rules"           ON)
 set(ULOG_ERASE_LOG_WITH_LEVEL "0" CACHE STRING "Compile-erase logs strictly below this level (0..5). 0 disables.")
+set(ULOG_SOURCE_ROOT "" CACHE STRING "Prefix stripped from __FILE__ in LOG_* records. Empty disables.")
 
 # ---------------------------------------------------------------------------
 # Compile settings
@@ -81,6 +82,11 @@ endif()
 if(NOT ULOG_ERASE_LOG_WITH_LEVEL STREQUAL "0")
     target_compile_definitions(ulog PUBLIC ULOG_ERASE_LOG_WITH_LEVEL=${ULOG_ERASE_LOG_WITH_LEVEL})
 endif()
+
+if(ULOG_SOURCE_ROOT STREQUAL "")
+    set(ULOG_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+target_compile_definitions(ulog PUBLIC ULOG_SOURCE_ROOT_LITERAL="${ULOG_SOURCE_ROOT}")
 
 if(WIN32)
     target_link_libraries(ulog PUBLIC ws2_32)
