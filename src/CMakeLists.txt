@@ -4,6 +4,7 @@ target_sources(ulog PRIVATE
     detail/timestamp.cpp
 
     impl/logger_base.cpp
+    impl/tag_writer.cpp
     impl/formatters/json.cpp
     impl/formatters/ltsv.cpp
     impl/formatters/raw.cpp

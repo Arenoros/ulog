@@ -24,7 +24,17 @@ namespace ulog {
 
 /// Returns the default logger previously set by SetDefaultLogger. If the logger
 /// was not set — returns a null logger that does no logging.
+///
+/// @warning The reference is only safe for the duration of a single logging
+/// operation that will not race with SetDefaultLogger. For long-lived access
+/// across threads use @ref GetDefaultLoggerPtr, which pins the logger with
+/// a shared_ptr snapshot.
 LoggerRef GetDefaultLogger() noexcept;
+
+/// Returns a reference-counted snapshot of the current default logger. The
+/// returned pointer keeps the logger alive for the caller's lifetime even
+/// when @ref SetDefaultLogger is invoked concurrently.
+LoggerPtr GetDefaultLoggerPtr() noexcept;
 
 /// Replaces the default logger. The provided LoggerPtr is kept alive.
 void SetDefaultLogger(LoggerPtr new_default_logger) noexcept;
@@ -154,14 +164,26 @@ struct EntryStorage final {
     ::ulog::LogHelper((logger), (level), ULOG_IMPL_LOG_LOCATION())
 
 // Dynamic-debug aware, ShouldLog-guarded record builder.
-// Expands to a `for` statement that runs exactly once iff logging is enabled.
-// Chaining `<< value` attaches to the LogHelper in the loop body.
-#define ULOG_LOG_TO(logger, lvl, ...)                                                        \
-    for (bool ulog_once__ = !ULOG_IMPL_DYNAMIC_DEBUG_ENTRY().ShouldNotLog((logger), (lvl));  \
-         ulog_once__; ulog_once__ = false)                                                   \
-        ULOG_IMPL_LOG_TO((logger), (lvl), __VA_ARGS__)
+//
+// Snapshots `logger` into a universal reference so the expression is
+// evaluated exactly once, regardless of whether the caller passed a
+// LoggerRef or a temporary LoggerPtr (e.g. from GetDefaultLoggerPtr()).
+// This keeps a shared_ptr alive for the full duration of the helper.
+// Expands to a for-statement that runs exactly once iff logging is enabled;
+// chaining `<< value` attaches to the LogHelper in the loop body.
+#define ULOG_LOG_TO(logger, lvl, ...)                                                         \
+    if (auto&& ulog_logger__ = (logger);                                                      \
+        ULOG_IMPL_DYNAMIC_DEBUG_ENTRY().ShouldNotLog(ulog_logger__, (lvl))) {}                \
+    else                                                                                      \
+        for (bool ulog_once__ = true; ulog_once__; ulog_once__ = false)                       \
+            ::ulog::LogHelper(                                                                \
+                std::forward<decltype(ulog_logger__)>(ulog_logger__),                         \
+                (lvl),                                                                        \
+                ULOG_IMPL_LOG_LOCATION())
 
-#define ULOG_LOG(lvl, ...) ULOG_LOG_TO(::ulog::GetDefaultLogger(), (lvl), __VA_ARGS__)
+// Default-logger macro snapshots the shared_ptr through the atomic slot, so
+// the record outlives any concurrent SetDefaultLogger() race.
+#define ULOG_LOG(lvl, ...) ULOG_LOG_TO(::ulog::GetDefaultLoggerPtr(), (lvl), __VA_ARGS__)
 
 // ---- Compile-time erase by level (ULOG_ERASE_LOG_WITH_LEVEL=N) ----
 #if defined(ULOG_ERASE_LOG_WITH_LEVEL)
@@ -205,11 +227,11 @@ struct EntryStorage final {
 #endif
 
 // -------- Long-named (always-available) macros --------
-#define ULOG_LOG_TRACE(...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
-#define ULOG_LOG_DEBUG(...)    ULOG_IMPL_LOGS_DEBUG_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
-#define ULOG_LOG_INFO(...)     ULOG_IMPL_LOGS_INFO_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
-#define ULOG_LOG_WARNING(...)  ULOG_IMPL_LOGS_WARNING_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
-#define ULOG_LOG_ERROR(...)    ULOG_IMPL_LOGS_ERROR_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
+#define ULOG_LOG_TRACE(...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LOG_DEBUG(...)    ULOG_IMPL_LOGS_DEBUG_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LOG_INFO(...)     ULOG_IMPL_LOGS_INFO_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LOG_WARNING(...)  ULOG_IMPL_LOGS_WARNING_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LOG_ERROR(...)    ULOG_IMPL_LOGS_ERROR_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
 #define ULOG_LOG_CRITICAL(...) ULOG_LOG(::ulog::Level::kCritical, __VA_ARGS__)
 
 #define ULOG_LOG_TRACE_TO(logger, ...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LOG_TO, logger, __VA_ARGS__)
@@ -230,13 +252,13 @@ struct EntryStorage final {
     } else                                                                                                   \
         ULOG_LOG_TO((logger), (lvl), __VA_ARGS__) << ulog_rl__
 
-#define ULOG_LOG_LIMITED(lvl, ...)          ULOG_LOG_LIMITED_TO(::ulog::GetDefaultLogger(), (lvl), __VA_ARGS__)
+#define ULOG_LOG_LIMITED(lvl, ...)          ULOG_LOG_LIMITED_TO(::ulog::GetDefaultLoggerPtr(), (lvl), __VA_ARGS__)
 
-#define ULOG_LOG_LIMITED_TRACE(...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
-#define ULOG_LOG_LIMITED_DEBUG(...)    ULOG_IMPL_LOGS_DEBUG_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
-#define ULOG_LOG_LIMITED_INFO(...)     ULOG_IMPL_LOGS_INFO_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
-#define ULOG_LOG_LIMITED_WARNING(...)  ULOG_IMPL_LOGS_WARNING_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
-#define ULOG_LOG_LIMITED_ERROR(...)    ULOG_IMPL_LOGS_ERROR_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
+#define ULOG_LOG_LIMITED_TRACE(...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LOG_LIMITED_DEBUG(...)    ULOG_IMPL_LOGS_DEBUG_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LOG_LIMITED_INFO(...)     ULOG_IMPL_LOGS_INFO_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LOG_LIMITED_WARNING(...)  ULOG_IMPL_LOGS_WARNING_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LOG_LIMITED_ERROR(...)    ULOG_IMPL_LOGS_ERROR_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
 #define ULOG_LOG_LIMITED_CRITICAL(...) ULOG_LOG_LIMITED(::ulog::Level::kCritical, __VA_ARGS__)
 
 #define ULOG_LOG_LIMITED_TRACE_TO(logger, ...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LOG_LIMITED_TO, logger, __VA_ARGS__)

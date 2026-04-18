@@ -1,6 +1,6 @@
 #include <ulog/log_helper.hpp>
 
-#include <chrono>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -9,86 +9,11 @@
 #include <ulog/detail/small_string.hpp>
 #include <ulog/impl/formatters/base.hpp>
 #include <ulog/impl/logger_base.hpp>
+#include <ulog/impl/tag_writer.hpp>
 #include <ulog/log.hpp>
 #include <ulog/tracing_hook.hpp>
 
 namespace ulog {
-
-namespace impl {
-
-/// Public helper used by LogHelper to funnel tags into the active formatter.
-class TagWriter {
-public:
-    explicit TagWriter(formatters::Base* formatter) noexcept : formatter_(formatter) {}
-
-    void PutTag(std::string_view key, std::string_view value) {
-        if (formatter_) formatter_->AddTag(key, value);
-    }
-    void PutJsonTag(std::string_view key, const JsonString& value) {
-        if (formatter_) formatter_->AddJsonTag(key, value);
-    }
-    void PutLogExtra(const LogExtra& extra);
-
-private:
-    formatters::Base* formatter_;
-};
-
-void TagWriter::PutLogExtra(const LogExtra& extra) {
-    if (!formatter_) return;
-    for (const auto& [k, v] : extra.extra_) {
-        std::visit(
-            [&](const auto& x) {
-                using T = std::decay_t<decltype(x)>;
-                if constexpr (std::is_same_v<T, std::string>) {
-                    formatter_->AddTag(k, x);
-                } else if constexpr (std::is_same_v<T, JsonString>) {
-                    formatter_->AddJsonTag(k, x);
-                } else if constexpr (std::is_same_v<T, bool>) {
-                    formatter_->AddTag(k, x ? "true" : "false");
-                } else {
-                    formatter_->AddTag(k, fmt::format("{}", x));
-                }
-            },
-            v.GetValue());
-    }
-}
-
-}  // namespace impl
-
-// ---------------- LogHelper::Impl ----------------
-
-struct LogHelper::Impl {
-    Impl(LoggerRef logger, Level level, LogRecordLocation location, bool active)
-        : logger(logger), level(level), location(location), active(active), writer(nullptr) {
-        if (active) {
-            formatter = logger.MakeFormatter(
-                level,
-                location.function ? std::string_view(location.function) : std::string_view{},
-                location.file ? std::string_view(location.file) : std::string_view{},
-                location.line);
-            writer = impl::TagWriter(formatter.get());
-        }
-    }
-
-    LoggerRef logger;
-    Level level;
-    LogRecordLocation location;
-    bool active;
-    impl::formatters::BasePtr formatter;
-    detail::SmallString<1024> text;
-    impl::TagWriter writer;
-};
-
-// ---------------- LogHelper ----------------
-
-LogHelper::LogHelper(LoggerRef logger, Level level, LogRecordLocation location) noexcept
-    : impl_(std::make_unique<Impl>(logger, level, location, /*active=*/true)) {
-    // The LOG_* macro has already filtered by logger level + dynamic-debug
-    // state before constructing this helper, so we're unconditionally active.
-}
-
-LogHelper::LogHelper(LoggerRef logger, Level level, LogRecordLocation location, NoLog) noexcept
-    : impl_(std::make_unique<Impl>(logger, level, location, /*active=*/false)) {}
 
 namespace {
 
@@ -107,6 +32,59 @@ private:
 
 }  // namespace
 
+// ---------------- LogHelper::Impl ----------------
+
+struct LogHelper::Impl {
+    Impl(impl::LoggerBase& logger_ref,
+         LoggerPtr logger_owner,
+         Level level,
+         LogRecordLocation location,
+         bool active)
+        : logger_ref(logger_ref),
+          logger_owner(std::move(logger_owner)),
+          level(level),
+          location(location),
+          active(active),
+          writer(nullptr) {
+        if (active) {
+            formatter = logger_ref.MakeFormatter(
+                level,
+                location.function ? std::string_view(location.function) : std::string_view{},
+                location.file ? std::string_view(location.file) : std::string_view{},
+                location.line);
+            writer.Reset(formatter.get());
+        }
+    }
+
+    impl::LoggerBase& logger_ref;
+    LoggerPtr logger_owner;                     ///< Keeps the logger alive; may be null for ref path.
+    Level level;
+    LogRecordLocation location;
+    bool active;
+    impl::formatters::BasePtr formatter;
+    detail::SmallString<1024> text;
+    impl::TagWriter writer;
+};
+
+// ---------------- LogHelper ----------------
+
+LogHelper::LogHelper(LoggerRef logger, Level level, LogRecordLocation location) noexcept
+    : impl_(std::make_unique<Impl>(logger, LoggerPtr{}, level, location, /*active=*/true)) {}
+
+LogHelper::LogHelper(LoggerRef logger, Level level, LogRecordLocation location, NoLog) noexcept
+    : impl_(std::make_unique<Impl>(logger, LoggerPtr{}, level, location, /*active=*/false)) {}
+
+LogHelper::LogHelper(LoggerPtr logger, Level level, LogRecordLocation location) noexcept
+    : impl_(nullptr) {
+    if (!logger) {
+        // Pathological case — caller passed null. Drop.
+        impl_ = nullptr;
+        return;
+    }
+    auto& ref = *logger;
+    impl_ = std::make_unique<Impl>(ref, std::move(logger), level, location, /*active=*/true);
+}
+
 LogHelper::~LogHelper() {
     if (!impl_ || !impl_->active) return;
     try {
@@ -114,8 +92,8 @@ LogHelper::~LogHelper() {
         impl::DispatchTracingHook(sink);
         impl_->formatter->SetText(impl_->text.view());
         auto& item = impl_->formatter->ExtractLoggerItem();
-        impl_->logger.Log(impl_->level, item);
-        if (impl_->level >= impl_->logger.GetFlushOn()) impl_->logger.Flush();
+        impl_->logger_ref.Log(impl_->level, item);
+        if (impl_->level >= impl_->logger_ref.GetFlushOn()) impl_->logger_ref.Flush();
     } catch (...) {
         // Never throw from a logger destructor.
     }

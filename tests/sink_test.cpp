@@ -55,8 +55,9 @@ TEST(FileSink, ReopenAfterRotate) {
     auto tmp = fs::temp_directory_path() / "ulog_file_sink_rotate.log";
     auto rotated = tmp;
     rotated += ".1";
-    fs::remove(tmp);
-    fs::remove(rotated);
+    std::error_code ec;
+    fs::remove(tmp, ec);
+    fs::remove(rotated, ec);
 
     {
         auto sink = std::make_shared<ulog::sinks::FileSink>(tmp.string(), /*truncate=*/true);
@@ -68,14 +69,11 @@ TEST(FileSink, ReopenAfterRotate) {
         LOG_INFO() << "before-rotate";
         ulog::LogFlush();
 
-        // Windows can't rename an open file; close via Reopen-to-self first.
-        // Classic rotation flow: rename -> tool moves old path -> SIGUSR1 -> Reopen
-        // creates a new file at the original path. On Windows we must release
-        // the handle before renaming.
-        sink->Reopen(ulog::sinks::ReopenMode::kAppend);  // still points at tmp
-        fs::copy_file(tmp, rotated, fs::copy_options::overwrite_existing);
-        fs::resize_file(tmp, 0);  // truncate in-place (keeps handle valid)
-        sink->Reopen(ulog::sinks::ReopenMode::kAppend);
+        // Real rotation flow: external tool renames the file, then signals
+        // the process to reopen. Our Windows FileHandle uses FILE_SHARE_DELETE
+        // so the rename succeeds while we still hold the handle.
+        fs::rename(tmp, rotated);
+        sink->Reopen(ulog::sinks::ReopenMode::kAppend);  // creates a fresh file at tmp
 
         LOG_INFO() << "after-rotate";
         ulog::LogFlush();
@@ -87,8 +85,8 @@ TEST(FileSink, ReopenAfterRotate) {
     EXPECT_NE(first.find("text=before-rotate"), std::string::npos);
     EXPECT_NE(second.find("text=after-rotate"), std::string::npos);
 
-    fs::remove(rotated);
-    fs::remove(tmp);
+    fs::remove(rotated, ec);
+    fs::remove(tmp, ec);
 }
 
 TEST(NullSink, AcceptsAnything) {

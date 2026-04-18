@@ -1,8 +1,11 @@
 #include <ulog/log.hpp>
 
-#include <atomic>
 #include <chrono>
-#include <mutex>
+#include <memory>
+#include <utility>
+
+#include <boost/smart_ptr/atomic_shared_ptr.hpp>
+#include <boost/smart_ptr/shared_ptr.hpp>
 
 #include <ulog/dynamic_debug.hpp>
 #include <ulog/impl/logger_base.hpp>
@@ -12,32 +15,65 @@ namespace ulog {
 
 namespace {
 
-std::atomic<impl::LoggerBase*> g_default{nullptr};
-// Holds ownership of the installed default logger so the raw pointer stays alive.
-std::mutex g_default_mu;
-LoggerPtr g_default_owner{};  // protected by g_default_mu
+/// Converts std::shared_ptr<T> into boost::shared_ptr<T> by stashing the std
+/// owner in the boost deleter — refcount semantics are preserved and the
+/// underlying object is released exactly once when both sides drop their
+/// last reference.
+template <typename T>
+boost::shared_ptr<T> StdToBoost(std::shared_ptr<T> p) {
+    if (!p) return {};
+    T* raw = p.get();
+    return boost::shared_ptr<T>(raw, [p = std::move(p)](T*) mutable {});
+}
 
-impl::LoggerBase& ResolveDefault() noexcept {
-    auto* ptr = g_default.load(std::memory_order_acquire);
-    if (ptr) return *ptr;
-    return static_cast<impl::LoggerBase&>(GetNullLogger());
+/// Inverse of StdToBoost: mirrors boost ownership into a std::shared_ptr.
+template <typename T>
+std::shared_ptr<T> BoostToStd(boost::shared_ptr<T> p) {
+    if (!p) return {};
+    T* raw = p.get();
+    return std::shared_ptr<T>(raw, [p = std::move(p)](T*) mutable {});
+}
+
+/// boost::atomic_shared_ptr gives us lock-free load/store with correct
+/// lifetime handling: readers always obtain a reference-counted snapshot,
+/// so SetDefaultLogger racing with logging no longer dangles.
+boost::atomic_shared_ptr<impl::LoggerBase>& DefaultSlot() noexcept {
+    static boost::atomic_shared_ptr<impl::LoggerBase> slot;
+    return slot;
+}
+
+boost::shared_ptr<impl::LoggerBase> ResolveDefaultBoost() noexcept {
+    auto p = DefaultSlot().load();
+    if (p) return p;
+    // Fallback: aliasing pointer to the process-wide null logger.
+    auto& null_ref = GetNullLogger();
+    return boost::shared_ptr<impl::LoggerBase>(
+        boost::shared_ptr<impl::LoggerBase>{}, &null_ref);
 }
 
 }  // namespace
 
-LoggerRef GetDefaultLogger() noexcept { return ResolveDefault(); }
-
-void SetDefaultLogger(LoggerPtr new_default_logger) noexcept {
-    std::lock_guard lock(g_default_mu);
-    g_default_owner = std::move(new_default_logger);
-    g_default.store(g_default_owner.get(), std::memory_order_release);
+LoggerRef GetDefaultLogger() noexcept {
+    auto p = DefaultSlot().load();
+    if (p) return *p;
+    return GetNullLogger();
 }
 
-void SetDefaultLoggerLevel(Level level) { ResolveDefault().SetLevel(level); }
+LoggerPtr GetDefaultLoggerPtr() noexcept {
+    auto b = DefaultSlot().load();
+    if (!b) return MakeNullLogger();
+    return BoostToStd(std::move(b));
+}
 
-Level GetDefaultLoggerLevel() noexcept { return ResolveDefault().GetLevel(); }
+void SetDefaultLogger(LoggerPtr new_default_logger) noexcept {
+    DefaultSlot().store(StdToBoost(std::move(new_default_logger)));
+}
 
-bool ShouldLog(Level level) noexcept { return ResolveDefault().ShouldLog(level); }
+void SetDefaultLoggerLevel(Level level) { GetDefaultLogger().SetLevel(level); }
+
+Level GetDefaultLoggerLevel() noexcept { return GetDefaultLogger().GetLevel(); }
+
+bool ShouldLog(Level level) noexcept { return GetDefaultLogger().ShouldLog(level); }
 
 void SetLoggerLevel(LoggerRef logger, Level level) { logger.SetLevel(level); }
 
@@ -49,31 +85,27 @@ bool LoggerShouldLog(const LoggerPtr& logger, Level level) noexcept {
 
 Level GetLoggerLevel(LoggerRef logger) noexcept { return logger.GetLevel(); }
 
-void LogFlush() { ResolveDefault().Flush(); }
+void LogFlush() { GetDefaultLogger().Flush(); }
 void LogFlush(LoggerRef logger) { logger.Flush(); }
 
 // ---------------- DefaultLoggerGuard ----------------
 
 DefaultLoggerGuard::DefaultLoggerGuard(LoggerPtr new_default_logger) noexcept
-    : prev_ptr_(), new_ptr_(std::move(new_default_logger)), prev_level_(Level::kInfo) {
-    std::lock_guard lock(g_default_mu);
-    prev_ptr_ = g_default_owner;
-    prev_level_ = ResolveDefault().GetLevel();
-    g_default_owner = new_ptr_;
-    g_default.store(g_default_owner.get(), std::memory_order_release);
+    : prev_ptr_(GetDefaultLoggerPtr()),
+      new_ptr_(std::move(new_default_logger)),
+      prev_level_(prev_ptr_ ? prev_ptr_->GetLevel() : Level::kInfo) {
+    SetDefaultLogger(new_ptr_);
 }
 
 DefaultLoggerGuard::~DefaultLoggerGuard() {
-    std::lock_guard lock(g_default_mu);
-    g_default_owner = prev_ptr_;
-    g_default.store(g_default_owner.get(), std::memory_order_release);
-    if (g_default_owner) g_default_owner->SetLevel(prev_level_);
+    SetDefaultLogger(prev_ptr_);
+    if (prev_ptr_) prev_ptr_->SetLevel(prev_level_);
 }
 
 // ---------------- DefaultLoggerLevelScope ----------------
 
 DefaultLoggerLevelScope::DefaultLoggerLevelScope(Level level)
-    : logger_(ResolveDefault()), initial_(logger_.GetLevel()) {
+    : logger_(GetDefaultLogger()), initial_(logger_.GetLevel()) {
     logger_.SetLevel(level);
 }
 DefaultLoggerLevelScope::~DefaultLoggerLevelScope() { logger_.SetLevel(initial_); }

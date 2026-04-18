@@ -18,8 +18,8 @@
 namespace ulog {
 
 namespace impl {
-class TagWriter;
 class RateLimiter;
+class TagWriter;
 namespace formatters {
 class Base;
 using BasePtr = std::unique_ptr<Base>;
@@ -56,6 +56,12 @@ public:
 
     LogHelper(LoggerRef logger, Level level, LogRecordLocation location) noexcept;
     LogHelper(LoggerRef logger, Level level, LogRecordLocation location, NoLog) noexcept;
+
+    /// Overload that keeps the logger alive for the helper's lifetime.
+    /// Used by the default-logger macro expansion so the record survives a
+    /// concurrent SetDefaultLogger() swap.
+    LogHelper(LoggerPtr logger, Level level, LogRecordLocation location) noexcept;
+
     ~LogHelper();
 
     LogHelper(const LogHelper&) = delete;
