@@ -40,6 +40,10 @@ public:
 
     ~UnixListener() {
         stop_.store(true, std::memory_order_relaxed);
+        {
+            std::lock_guard lock(client_mu_);
+            if (client_sock_ >= 0) ::shutdown(client_sock_, SHUT_RDWR);
+        }
         if (listen_sock_ >= 0) ::close(listen_sock_);
         if (accepter_.joinable()) accepter_.join();
         ::unlink(path_.c_str());
@@ -54,12 +58,20 @@ private:
     void AcceptAndRead() {
         const int c = ::accept(listen_sock_, nullptr, nullptr);
         if (c < 0) return;
+        {
+            std::lock_guard lock(client_mu_);
+            client_sock_ = c;
+        }
         char buf[4096];
         while (!stop_.load(std::memory_order_relaxed)) {
             const auto n = ::recv(c, buf, sizeof(buf), 0);
             if (n <= 0) break;
             std::lock_guard lock(mu_);
             buffer_.append(buf, static_cast<std::size_t>(n));
+        }
+        {
+            std::lock_guard lock(client_mu_);
+            client_sock_ = -1;
         }
         ::close(c);
     }
@@ -70,6 +82,8 @@ private:
     std::atomic<bool> stop_{false};
     mutable std::mutex mu_;
     std::string buffer_;
+    mutable std::mutex client_mu_;
+    int client_sock_{-1};
 };
 
 }  // namespace

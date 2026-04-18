@@ -1,6 +1,9 @@
 #include <ulog/log.hpp>
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <utility>
 
@@ -42,31 +45,56 @@ boost::atomic_shared_ptr<impl::LoggerBase>& DefaultSlot() noexcept {
     return slot;
 }
 
-boost::shared_ptr<impl::LoggerBase> ResolveDefaultBoost() noexcept {
-    auto p = DefaultSlot().load();
-    if (p) return p;
-    // Fallback: aliasing pointer to the process-wide null logger.
-    auto& null_ref = GetNullLogger();
-    return boost::shared_ptr<impl::LoggerBase>(
-        boost::shared_ptr<impl::LoggerBase>{}, &null_ref);
-}
+/// Monotonically bumped on every SetDefaultLogger call. Per-thread caches
+/// compare their cached value against this and refresh on mismatch — the
+/// std↔boost shared_ptr conversion then runs O(1 per SetDefault) instead of
+/// O(per LOG_*). Races are benign: stale TLS still returns a live,
+/// ref-counted pointer (the previous logger), because DefaultSlot's
+/// refcount keeps it alive for as long as anyone references it.
+std::atomic<std::uint64_t> g_default_gen{0};
 
-}  // namespace
+constexpr std::uint64_t kTlsStartGen = std::numeric_limits<std::uint64_t>::max();
 
-LoggerRef GetDefaultLogger() noexcept {
-    auto p = DefaultSlot().load();
-    if (p) return *p;
-    return GetNullLogger();
-}
-
-LoggerPtr GetDefaultLoggerPtr() noexcept {
+LoggerPtr BuildDefaultPtr() {
     auto b = DefaultSlot().load();
     if (!b) return MakeNullLogger();
     return BoostToStd(std::move(b));
 }
 
+LoggerPtr& TlsDefault() noexcept {
+    thread_local LoggerPtr cached;
+    return cached;
+}
+
+std::uint64_t& TlsGeneration() noexcept {
+    thread_local std::uint64_t gen = kTlsStartGen;
+    return gen;
+}
+
+LoggerPtr LoadDefaultCached() noexcept {
+    const auto gen = g_default_gen.load(std::memory_order_acquire);
+    auto& tls = TlsDefault();
+    auto& tls_gen = TlsGeneration();
+    if (tls_gen != gen || !tls) {
+        tls = BuildDefaultPtr();
+        tls_gen = gen;
+    }
+    return tls;  // refcount++ on copy — no fresh control-block allocation
+}
+
+}  // namespace
+
+LoggerRef GetDefaultLogger() noexcept {
+    auto ptr = LoadDefaultCached();
+    if (ptr) return *ptr;
+    return GetNullLogger();
+}
+
+LoggerPtr GetDefaultLoggerPtr() noexcept { return LoadDefaultCached(); }
+
 void SetDefaultLogger(LoggerPtr new_default_logger) noexcept {
     DefaultSlot().store(StdToBoost(std::move(new_default_logger)));
+    g_default_gen.fetch_add(1, std::memory_order_release);
 }
 
 void SetDefaultLoggerLevel(Level level) { GetDefaultLogger().SetLevel(level); }

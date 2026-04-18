@@ -65,6 +65,28 @@ TEST(DefaultLoggerGuard, NestedGuardsRestoreInOrder) {
     ulog::SetDefaultLogger(nullptr);
 }
 
+TEST(DefaultLogger, TlsCacheInvalidatesOnSet) {
+    auto a = MakeMem();
+    auto b = MakeMem();
+    ulog::SetDefaultLogger(a);
+    LOG_INFO() << "into-a";
+    ulog::SetDefaultLogger(b);
+    LOG_INFO() << "into-b";
+    EXPECT_EQ(a->GetRecords().size(), 1u);
+    EXPECT_EQ(b->GetRecords().size(), 1u);
+    EXPECT_NE(a->GetRecords().front().find("text=into-a"), std::string::npos);
+    EXPECT_NE(b->GetRecords().front().find("text=into-b"), std::string::npos);
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(DefaultLogger, TlsCacheHotPathRoutesAllRecords) {
+    auto a = MakeMem();
+    ulog::SetDefaultLogger(a);
+    for (int i = 0; i < 100; ++i) LOG_INFO() << "msg " << i;
+    EXPECT_EQ(a->GetRecords().size(), 100u);
+    ulog::SetDefaultLogger(nullptr);
+}
+
 TEST(DefaultLogger, ConcurrentSwapWhileLoggingDoesNotCrash) {
     // Verifies the boost::atomic_shared_ptr snapshot path: readers must not
     // dangle when SetDefaultLogger replaces the slot mid-log.
