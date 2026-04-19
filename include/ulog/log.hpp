@@ -176,19 +176,36 @@ struct Noop {
 };
 
 /// Static per-source-line registration for dynamic debug controls.
+///
+/// Each instance self-registers into a process-wide intrusive singly-linked
+/// list on construction (lock-free CAS into a global atomic head). The list
+/// is walked by `ulog::ForEachLogEntry` for runtime enumeration / dynamic
+/// management UIs. Because instances have static storage duration, they are
+/// never unlinked — the list grows monotonically during program lifetime.
 class StaticLogEntry final {
 public:
-    StaticLogEntry(const char* path, int line) noexcept : path_(path), line_(line) {}
+    StaticLogEntry(const char* path, int line) noexcept;
     StaticLogEntry(const StaticLogEntry&) = delete;
     StaticLogEntry& operator=(const StaticLogEntry&) = delete;
 
     bool ShouldNotLog(LoggerRef logger, Level level) const noexcept;
     bool ShouldNotLog(const LoggerPtr& logger, Level level) const noexcept;
 
+    const char* path() const noexcept { return path_; }
+    int line() const noexcept { return line_; }
+    const StaticLogEntry* next() const noexcept { return next_; }
+
 private:
     const char* path_;
     int line_;
+    StaticLogEntry* next_{nullptr};
 };
+
+/// Head of the global `StaticLogEntry` list. Returned pointer is the
+/// most-recently-registered entry; walk via `next()` until `nullptr`.
+/// Safe to call at any time; new registrations are published with release
+/// so readers observing a non-null head see a fully-constructed entry.
+const StaticLogEntry* GetStaticLogEntriesHead() noexcept;
 
 template <class NameHolder, int Line>
 struct EntryStorage final {

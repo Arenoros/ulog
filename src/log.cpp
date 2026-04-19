@@ -204,6 +204,14 @@ RateLimiter::RateLimiter(RateLimitData& data, const char* file, int line) noexce
 // ---------------- StaticLogEntry ----------------
 
 namespace {
+
+/// Head of the intrusive registry. Static storage, lock-free CAS push in
+/// ctor. Never popped — entries outlive the program.
+std::atomic<StaticLogEntry*>& EntriesHead() noexcept {
+    static std::atomic<StaticLogEntry*> head{nullptr};
+    return head;
+}
+
 bool ShouldNotLogFor(const char* path, int line, bool logger_allows) noexcept {
     const auto state = impl::LookupDynamicDebugLog(path, line);
     switch (state) {
@@ -215,6 +223,17 @@ bool ShouldNotLogFor(const char* path, int line, bool logger_allows) noexcept {
 }
 }  // namespace
 
+StaticLogEntry::StaticLogEntry(const char* path, int line) noexcept
+    : path_(path), line_(line) {
+    auto& head = EntriesHead();
+    StaticLogEntry* expected = head.load(std::memory_order_relaxed);
+    do {
+        next_ = expected;
+    } while (!head.compare_exchange_weak(expected, this,
+                                         std::memory_order_release,
+                                         std::memory_order_relaxed));
+}
+
 bool StaticLogEntry::ShouldNotLog(LoggerRef logger, Level level) const noexcept {
     return ShouldNotLogFor(path_, line_, logger.ShouldLog(level));
 }
@@ -224,7 +243,22 @@ bool StaticLogEntry::ShouldNotLog(const LoggerPtr& logger, Level level) const no
     return ShouldNotLogFor(path_, line_, allows);
 }
 
+const StaticLogEntry* GetStaticLogEntriesHead() noexcept {
+    return EntriesHead().load(std::memory_order_acquire);
+}
+
 }  // namespace impl
+
+void ForEachLogEntry(const std::function<void(const LogEntryInfo&)>& cb) {
+    if (!cb) return;
+    for (const auto* e = impl::GetStaticLogEntriesHead(); e != nullptr; e = e->next()) {
+        LogEntryInfo info;
+        info.file = e->path();
+        info.line = e->line();
+        info.state = impl::LookupDynamicDebugLog(e->path(), e->line());
+        cb(info);
+    }
+}
 
 std::uint64_t GetRateLimitDroppedTotal() noexcept {
     return impl::g_rate_limit_dropped_total.load(std::memory_order_relaxed);

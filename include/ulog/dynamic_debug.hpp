@@ -10,6 +10,7 @@
 /// the global log level.
 
 #include <cstdint>
+#include <functional>
 #include <string_view>
 
 namespace ulog {
@@ -37,6 +38,28 @@ inline void DisableDynamicDebugLog(std::string_view file, int line = 0) {
 
 /// Resets all dynamic-debug overrides.
 void ResetDynamicDebugLog();
+
+/// Snapshot view of a single statically-registered log site passed to
+/// `ForEachLogEntry`. `file` / `line` are the raw `__FILE__` / `__LINE__`
+/// captured at macro expansion; `state` is the current dynamic-debug
+/// override resolved via the same lookup the LOG_* path uses.
+struct LogEntryInfo {
+    const char* file{nullptr};
+    int line{0};
+    DynamicDebugState state{DynamicDebugState::kDefault};
+};
+
+/// Invokes `cb` once per registered log site. Order is reverse of
+/// registration (most recent first) and is not stable across runs.
+///
+/// The same (file, line) pair may appear more than once — a separate
+/// `StaticLogEntry` is instantiated per translation unit that expands a
+/// LOG_* macro at that location. Deduplicate on the consumer side if
+/// needed.
+///
+/// Safe to invoke `SetDynamicDebugLog` / `EnableDynamicDebugLog` /
+/// `DisableDynamicDebugLog` from inside the callback.
+void ForEachLogEntry(const std::function<void(const LogEntryInfo&)>& cb);
 
 namespace impl {
 

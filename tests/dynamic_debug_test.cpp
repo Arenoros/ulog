@@ -1,5 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <cstring>
+#include <string>
+#include <string_view>
+#include <unordered_set>
+
 #include <ulog/dynamic_debug.hpp>
 #include <ulog/log.hpp>
 #include <ulog/mem_logger.hpp>
@@ -46,6 +51,71 @@ TEST(DynamicDebug, ForceDisableSuppressesEvenAboveLevel) {
 
     ulog::ResetDynamicDebugLog();
     ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(DynamicDebug, ForEachLogEntryEnumeratesRegisteredSites) {
+    ulog::ResetDynamicDebugLog();
+    auto mem = InstallMem();
+
+    // Expand two LOG_* macros at distinct lines; the expansions register
+    // one StaticLogEntry per site.
+    const int marker_line_a = __LINE__ + 1;
+    LOG_INFO() << "enum-a";
+    const int marker_line_b = __LINE__ + 1;
+    LOG_DEBUG() << "enum-b";
+
+    bool saw_a = false;
+    bool saw_b = false;
+    ulog::ForEachLogEntry([&](const ulog::LogEntryInfo& info) {
+        ASSERT_NE(info.file, nullptr);
+        const std::string_view file(info.file);
+        if (file.find("dynamic_debug_test") == std::string_view::npos) return;
+        if (info.line == marker_line_a) saw_a = true;
+        if (info.line == marker_line_b) saw_b = true;
+    });
+
+    EXPECT_TRUE(saw_a);
+    EXPECT_TRUE(saw_b);
+
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(DynamicDebug, ForEachLogEntryReflectsOverrideState) {
+    ulog::ResetDynamicDebugLog();
+
+    const int target_line = __LINE__ + 1;
+    LOG_INFO() << "state-probe";
+
+    // Default state before any override.
+    ulog::DynamicDebugState observed = ulog::DynamicDebugState::kForceEnabled;
+    bool found = false;
+    ulog::ForEachLogEntry([&](const ulog::LogEntryInfo& info) {
+        if (info.line != target_line) return;
+        if (std::string_view(info.file).find("dynamic_debug_test") == std::string_view::npos) return;
+        observed = info.state;
+        found = true;
+    });
+    ASSERT_TRUE(found);
+    EXPECT_EQ(observed, ulog::DynamicDebugState::kDefault);
+
+    // Flip override and re-enumerate — state must track the registry.
+    ulog::DisableDynamicDebugLog("dynamic_debug_test.cpp", target_line);
+    found = false;
+    ulog::ForEachLogEntry([&](const ulog::LogEntryInfo& info) {
+        if (info.line != target_line) return;
+        if (std::string_view(info.file).find("dynamic_debug_test") == std::string_view::npos) return;
+        observed = info.state;
+        found = true;
+    });
+    ASSERT_TRUE(found);
+    EXPECT_EQ(observed, ulog::DynamicDebugState::kForceDisabled);
+
+    ulog::ResetDynamicDebugLog();
+}
+
+TEST(DynamicDebug, ForEachLogEntryNullCallbackIsNoop) {
+    // Must not crash. Nothing else to assert.
+    ulog::ForEachLogEntry({});
 }
 
 TEST(DynamicDebug, ResetRestoresDefault) {
