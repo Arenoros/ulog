@@ -82,6 +82,22 @@ TEST(FormatterJson, EmitsJsonObject) {
     ulog::SetDefaultLogger(nullptr);
 }
 
+TEST(FormatterJson, TypedTagsEmitAsNativeJsonTypes) {
+    auto mem = InstallMem(ulog::Format::kJson);
+    LOG_INFO() << "body" << ulog::LogExtra{
+        {"count", 42},
+        {"ratio", 3.14},
+        {"ok", true},
+        {"name", std::string("ada")},
+    };
+    const auto r = mem->GetRecords().front();
+    EXPECT_NE(r.find("\"count\":42"), std::string::npos) << r;
+    EXPECT_NE(r.find("\"ratio\":3.14"), std::string::npos) << r;
+    EXPECT_NE(r.find("\"ok\":true"), std::string::npos) << r;
+    EXPECT_NE(r.find("\"name\":\"ada\""), std::string::npos) << r;
+    ulog::SetDefaultLogger(nullptr);
+}
+
 TEST(FormatterJson, YaDeployVariantRenamesCoreFields) {
     auto mem = InstallMem(ulog::Format::kJsonYaDeploy);
     LOG_INFO() << "body" << ulog::LogExtra{{"user_id", 7}};
@@ -89,12 +105,49 @@ TEST(FormatterJson, YaDeployVariantRenamesCoreFields) {
     EXPECT_NE(r.find("\"@timestamp\":"), std::string::npos);
     EXPECT_NE(r.find("\"_level\":\"INFO\""), std::string::npos);
     EXPECT_NE(r.find("\"_message\":\"body\""), std::string::npos);
-    // User-supplied tags stay untouched.
-    EXPECT_NE(r.find("\"user_id\":\"7\""), std::string::npos);
+    // User-supplied tags flow through typed overloads: int → unquoted.
+    EXPECT_NE(r.find("\"user_id\":7"), std::string::npos) << r;
     // Canonical names must be absent.
     EXPECT_EQ(r.find("\"timestamp\":"), std::string::npos);
     EXPECT_EQ(r.find("\"level\":\"INFO\""), std::string::npos);
     EXPECT_EQ(r.find("\"text\":\"body\""), std::string::npos);
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(FormatterOtlpJson, EmitsSchemaShape) {
+    auto mem = InstallMem(ulog::Format::kOtlpJson);
+    LOG_INFO() << "user logged in" << ulog::LogExtra{
+        {"user_id", 42},
+        {"latency_ms", 13.5},
+        {"ok", true},
+        {"endpoint", std::string("/api")},
+    };
+    const auto r = mem->GetRecords().front();
+    // Envelope
+    EXPECT_EQ(r.front(), '{');
+    EXPECT_EQ(r[r.size() - 2], '}');
+    EXPECT_TRUE(Contains(r, "\"timeUnixNano\":\""));
+    EXPECT_TRUE(Contains(r, "\"severityNumber\":9"));       // INFO
+    EXPECT_TRUE(Contains(r, "\"severityText\":\"INFO\""));
+    // Body
+    EXPECT_TRUE(Contains(r, "\"body\":{\"stringValue\":\"user logged in\"}"));
+    // Attributes with typed OTLP values
+    EXPECT_TRUE(Contains(r, "\"key\":\"user_id\",\"value\":{\"intValue\":\"42\"}")) << r;
+    EXPECT_TRUE(Contains(r, "\"key\":\"latency_ms\",\"value\":{\"doubleValue\":13.5}")) << r;
+    EXPECT_TRUE(Contains(r, "\"key\":\"ok\",\"value\":{\"boolValue\":true}")) << r;
+    EXPECT_TRUE(Contains(r, "\"key\":\"endpoint\",\"value\":{\"stringValue\":\"/api\"}")) << r;
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(FormatterOtlpJson, NoAttributesElidesTheArray) {
+    auto mem = InstallMem(ulog::Format::kOtlpJson);
+    // Disable dynamic-debug so no stray entries; no LogExtra, no module
+    // suppression needed since the formatter always emits module as an
+    // attribute. Filter that in the assertion instead of avoiding it.
+    LOG_INFO() << "plain";
+    const auto r = mem->GetRecords().front();
+    EXPECT_TRUE(Contains(r, "\"body\":{\"stringValue\":\"plain\"}"));
+    EXPECT_TRUE(Contains(r, "\"severityText\":\"INFO\""));
     ulog::SetDefaultLogger(nullptr);
 }
 

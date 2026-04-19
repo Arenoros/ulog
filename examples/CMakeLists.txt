@@ -9,3 +9,6 @@ target_link_libraries(ulog-example-tracing PRIVATE ulog::ulog)
 
 add_executable(ulog-example-custom-sink custom_sink/main.cpp)
 target_link_libraries(ulog-example-custom-sink PRIVATE ulog::ulog)
+
+add_executable(ulog-example-otlp otlp_json/main.cpp)
+target_link_libraries(ulog-example-otlp PRIVATE ulog::ulog)

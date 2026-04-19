@@ -106,6 +106,26 @@ void JsonFormatter::AddJsonTag(std::string_view key, const JsonString& value) {
     EmitField(key, value.View(), /*is_json=*/true);
 }
 
+void JsonFormatter::AddTagInt64(std::string_view key, std::int64_t value) {
+    if (!item_) return;
+    EmitField(key, fmt::format("{}", value), /*is_json=*/true);
+}
+
+void JsonFormatter::AddTagUInt64(std::string_view key, std::uint64_t value) {
+    if (!item_) return;
+    EmitField(key, fmt::format("{}", value), /*is_json=*/true);
+}
+
+void JsonFormatter::AddTagDouble(std::string_view key, double value) {
+    if (!item_) return;
+    EmitField(key, fmt::format("{}", value), /*is_json=*/true);
+}
+
+void JsonFormatter::AddTagBool(std::string_view key, bool value) {
+    if (!item_) return;
+    EmitField(key, value ? "true" : "false", /*is_json=*/true);
+}
+
 void JsonFormatter::SetText(std::string_view text) { text_.assign(text.data(), text.size()); }
 
 std::unique_ptr<LoggerItemBase> JsonFormatter::ExtractLoggerItem() {

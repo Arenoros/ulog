@@ -32,6 +32,10 @@ public:
 
     void AddTag(std::string_view key, std::string_view value) override;
     void AddJsonTag(std::string_view key, const JsonString& value) override;
+    void AddTagInt64(std::string_view key, std::int64_t value) override;
+    void AddTagUInt64(std::string_view key, std::uint64_t value) override;
+    void AddTagDouble(std::string_view key, double value) override;
+    void AddTagBool(std::string_view key, bool value) override;
     void SetText(std::string_view text) override;
     std::unique_ptr<LoggerItemBase> ExtractLoggerItem() override;
 

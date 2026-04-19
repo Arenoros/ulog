@@ -3,8 +3,11 @@
 /// @file ulog/impl/formatters/base.hpp
 /// @brief Formatter interface and opaque log-record item base.
 
+#include <cstdint>
 #include <memory>
 #include <string_view>
+
+#include <fmt/format.h>
 
 #include <ulog/json_string.hpp>
 
@@ -36,6 +39,22 @@ public:
 
     /// Adds a key/value field whose value is pre-serialized JSON.
     virtual void AddJsonTag(std::string_view key, const JsonString& value) = 0;
+
+    /// Typed overloads. Text-based formatters inherit the stringifying
+    /// defaults; structured formatters (JSON / OTLP) override to preserve
+    /// the native type on the wire.
+    virtual void AddTagInt64(std::string_view key, std::int64_t value) {
+        AddTag(key, fmt::format("{}", value));
+    }
+    virtual void AddTagUInt64(std::string_view key, std::uint64_t value) {
+        AddTag(key, fmt::format("{}", value));
+    }
+    virtual void AddTagDouble(std::string_view key, double value) {
+        AddTag(key, fmt::format("{}", value));
+    }
+    virtual void AddTagBool(std::string_view key, bool value) {
+        AddTag(key, value ? "true" : "false");
+    }
 
     /// Sets the "text" field — the free-form message body.
     virtual void SetText(std::string_view text) = 0;

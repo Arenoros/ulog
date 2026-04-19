@@ -4,6 +4,7 @@
 
 #include <ulog/impl/formatters/json.hpp>
 #include <ulog/impl/formatters/ltsv.hpp>
+#include <ulog/impl/formatters/otlp_json.hpp>
 #include <ulog/impl/formatters/raw.hpp>
 #include <ulog/impl/formatters/tskv.hpp>
 
@@ -33,6 +34,9 @@ formatters::BasePtr TextLoggerBase::MakeFormatter(Level level,
             return std::make_unique<formatters::JsonFormatter>(
                 level, module_function, module_file, module_line, now,
                 formatters::JsonFormatter::Variant::kYaDeploy);
+        case Format::kOtlpJson:
+            return std::make_unique<formatters::OtlpJsonFormatter>(
+                level, module_function, module_file, module_line, now);
     }
     return nullptr;
 }

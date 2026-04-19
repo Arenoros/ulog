@@ -28,7 +28,13 @@ void TagWriter::PutLogExtra(const LogExtra& extra) {
                 } else if constexpr (std::is_same_v<T, JsonString>) {
                     formatter_->AddJsonTag(k, x);
                 } else if constexpr (std::is_same_v<T, bool>) {
-                    formatter_->AddTag(k, x ? "true" : "false");
+                    formatter_->AddTagBool(k, x);
+                } else if constexpr (std::is_floating_point_v<T>) {
+                    formatter_->AddTagDouble(k, static_cast<double>(x));
+                } else if constexpr (std::is_integral_v<T> && std::is_signed_v<T>) {
+                    formatter_->AddTagInt64(k, static_cast<std::int64_t>(x));
+                } else if constexpr (std::is_integral_v<T>) {
+                    formatter_->AddTagUInt64(k, static_cast<std::uint64_t>(x));
                 } else {
                     formatter_->AddTag(k, fmt::format("{}", x));
                 }

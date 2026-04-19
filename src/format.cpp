@@ -16,12 +16,13 @@ struct Entry {
     Format format;
 };
 
-constexpr std::array<Entry, 5> kTable = {{
+constexpr std::array<Entry, 6> kTable = {{
     {"tskv", Format::kTskv},
     {"ltsv", Format::kLtsv},
     {"raw", Format::kRaw},
     {"json", Format::kJson},
     {"json_yadeploy", Format::kJsonYaDeploy},
+    {"otlp_json", Format::kOtlpJson},
 }};
 
 }  // namespace

@@ -14,6 +14,7 @@ enum class Format {
     kRaw,           ///< TSKV without timestamp/default fields
     kJson,          ///< JSON object per line
     kJsonYaDeploy,  ///< JSON variant for deploy systems
+    kOtlpJson,      ///< OTLP LogRecord JSON schema (one record per line)
 };
 
 /// Parse Format from string. Throws std::runtime_error if unknown.

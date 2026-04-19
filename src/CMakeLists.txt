@@ -7,6 +7,7 @@ target_sources(ulog PRIVATE
     impl/tag_writer.cpp
     impl/formatters/json.cpp
     impl/formatters/ltsv.cpp
+    impl/formatters/otlp_json.cpp
     impl/formatters/raw.cpp
     impl/formatters/tskv.cpp
 
