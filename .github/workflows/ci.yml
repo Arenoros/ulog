@@ -100,6 +100,13 @@ jobs:
           # (e.g. fmt/12.1.0), ERROR'ing with
           # "Package 'fmt/12.1.0' not resolved: Unable to find ... in remotes".
           version: 2.14.0
+        env:
+          # macos-14 ships Homebrew Python, which rejects system-wide
+          # `pip install` under PEP 668 (externally-managed-environment).
+          # Conan's installer still invokes pip under the hood; the
+          # documented escape hatch is this env var. No-op on Linux/
+          # Windows runners where pip doesn't enforce the check.
+          PIP_BREAK_SYSTEM_PACKAGES: "1"
 
       - name: Configure Conan default profile
         run: |
