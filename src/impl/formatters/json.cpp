@@ -126,12 +126,12 @@ void JsonFormatter::AddTagBool(std::string_view key, bool value) {
     EmitField(key, value ? "true" : "false", /*is_json=*/true);
 }
 
-void JsonFormatter::SetText(std::string_view text) { text_.assign(text.data(), text.size()); }
+void JsonFormatter::SetText(std::string_view text) { text_.assign(text); }
 
 std::unique_ptr<LoggerItemBase> JsonFormatter::ExtractLoggerItem() {
     if (!item_) return nullptr;
     if (!finalized_) {
-        EmitField("text", text_, /*is_json=*/false);
+        EmitField("text", text_.view(), /*is_json=*/false);
         item_->payload += '}';
         item_->payload += '\n';
         finalized_ = true;

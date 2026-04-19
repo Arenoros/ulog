@@ -19,6 +19,14 @@ class SmallString {
 public:
     SmallString() = default;
 
+    /// Replace contents with `sv`. Reuses inline storage when possible;
+    /// drops the heap spill if the new value fits back into the SSO slab.
+    SmallString& assign(std::string_view sv) {
+        buf_.clear();
+        append(sv);
+        return *this;
+    }
+
     void append(std::string_view sv) {
         const auto old = buf_.size();
         buf_.resize(old + sv.size());

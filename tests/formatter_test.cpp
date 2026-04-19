@@ -1,8 +1,12 @@
+#include <chrono>
 #include <memory>
 #include <string>
 
 #include <gtest/gtest.h>
 
+#include <ulog/impl/formatters/json.hpp>
+#include <ulog/impl/formatters/otlp_json.hpp>
+#include <ulog/impl/formatters/text_item.hpp>
 #include <ulog/log.hpp>
 #include <ulog/mem_logger.hpp>
 #include <ulog/tracing_hook.hpp>
@@ -232,6 +236,46 @@ TEST(FormatterText, TraceContextFallsBackToPlainTags) {
     const auto r = mem->GetRecords().front();
     EXPECT_TRUE(Contains(r, "trace_id=0123456789abcdef0123456789abcdef")) << r;
     EXPECT_TRUE(Contains(r, "span_id=fedcba9876543210")) << r;
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(FormatterJson, RepeatedSetTextKeepsLastValue) {
+    // SmallString::assign clears-then-appends, so a second SetText must
+    // replace the first — not concatenate. Formatter is normally one-shot
+    // from LogHelper, but the contract on SetText is "set, not append".
+    using ulog::impl::formatters::JsonFormatter;
+    using ulog::impl::formatters::TextLogItem;
+    JsonFormatter f(ulog::Level::kInfo, {}, {}, 0,
+                    std::chrono::system_clock::time_point{});
+    f.SetText("first");
+    f.SetText("second");
+    auto item = f.ExtractLoggerItem();
+    const auto& payload = static_cast<TextLogItem&>(*item).payload;
+    const auto view = payload.view();
+    const std::string s(view.data(), view.size());
+    EXPECT_NE(s.find("\"text\":\"second\""), std::string::npos) << s;
+    EXPECT_EQ(s.find("first"), std::string::npos) << s;
+}
+
+TEST(FormatterJson, LongBodySpillsToHeapAndRoundTrips) {
+    // The SmallString<64>-backed body buffer keeps ≤64-byte messages on
+    // the stack; anything longer spills to heap via boost::small_vector.
+    // Both paths must round-trip byte-for-byte.
+    auto mem = InstallMem(ulog::Format::kJson);
+    const std::string big(200, 'x');  // exceeds 64-byte SSO slab
+    LOG_INFO() << big;
+    const auto r = mem->GetRecords().front();
+    EXPECT_NE(r.find("\"text\":\"" + big + "\""), std::string::npos) << r.size();
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(FormatterOtlpJson, LongBodySpillsToHeapAndRoundTrips) {
+    auto mem = InstallMem(ulog::Format::kOtlpJson);
+    const std::string big(200, 'y');
+    LOG_INFO() << big;
+    const auto r = mem->GetRecords().front();
+    EXPECT_NE(r.find("\"body\":{\"stringValue\":\"" + big + "\"}"), std::string::npos)
+        << r.size();
     ulog::SetDefaultLogger(nullptr);
 }
 

@@ -57,12 +57,6 @@
 **Effort:** большой (2 дня — queue redesign, per-sink lock contention).
 **Impact:** нишевой — мало кто упирается в 4M rec/s.
 
-### `SmallString<>`-backed `text_` в Json/OtlpJsonFormatter (из review 21)
-**Что:** заменить `std::string text_` на `SmallString<64>`.
-**Зачем:** короткие сообщения (<64 char) остаются inline — убираем один alloc.
-**Effort:** маленький (1 час).
-**Impact:** маленький.
-
 ### Short-circuit formatter alloc when logger rejects level (из review 20)
 **Что:** в LogHelper ctor проверять `logger.ShouldLog(level)` до `MakeFormatter`.
 **Зачем:** если logger отклонит уровень позже — сэкономить `make_unique<TextLogItem>` 540 байт.

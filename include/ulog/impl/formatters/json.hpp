@@ -5,9 +5,9 @@
 
 #include <chrono>
 #include <memory>
-#include <string>
 #include <string_view>
 
+#include <ulog/detail/small_string.hpp>
 #include <ulog/impl/formatters/base.hpp>
 #include <ulog/impl/formatters/text_item.hpp>
 #include <ulog/level.hpp>
@@ -44,7 +44,10 @@ private:
     std::string_view TranslateKey(std::string_view key) const noexcept;
 
     std::unique_ptr<TextLogItem> item_{std::make_unique<TextLogItem>()};
-    std::string text_;
+    /// Free-form message body. Short messages (≤64 bytes — the bulk of
+    /// production records) live entirely in this SSO slab; longer ones
+    /// spill to the heap transparently via `boost::small_vector`.
+    detail::SmallString<64> text_;
     Variant variant_;
     bool finalized_{false};
 };

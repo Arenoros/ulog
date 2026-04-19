@@ -39,6 +39,7 @@
 #include <string>
 #include <string_view>
 
+#include <ulog/detail/small_string.hpp>
 #include <ulog/impl/formatters/base.hpp>
 #include <ulog/impl/formatters/text_item.hpp>
 #include <ulog/level.hpp>
@@ -73,7 +74,9 @@ private:
     void EmitStringAttribute(std::string_view key, std::string_view value);
 
     std::unique_ptr<TextLogItem> item_{std::make_unique<TextLogItem>()};
-    std::string body_text_;
+    /// Free-form message body. Short messages stay on the stack via
+    /// SmallString's SSO slab; longer ones spill to heap.
+    detail::SmallString<64> body_text_;
     /// `trace_id` / `span_id` are first-class top-level fields in the OTLP
     /// LogRecord schema. Populated by `SetTraceContext` (invoked from the
     /// tracing hook) and emitted at `ExtractLoggerItem` time so that

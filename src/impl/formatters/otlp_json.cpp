@@ -157,7 +157,7 @@ void OtlpJsonFormatter::AddTagBool(std::string_view key, bool value) {
 }
 
 void OtlpJsonFormatter::SetText(std::string_view text) {
-    body_text_.assign(text.data(), text.size());
+    body_text_.assign(text);
 }
 
 std::unique_ptr<LoggerItemBase> OtlpJsonFormatter::ExtractLoggerItem() {
