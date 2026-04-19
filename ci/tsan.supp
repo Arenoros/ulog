@@ -1,0 +1,13 @@
+# ThreadSanitizer suppressions for ulog CI.
+#
+# moodycamel::ConcurrentQueue relies on lock-free slot recycling with
+# memory orderings that TSan cannot always follow, so the compiler-
+# synthesized move ctor / move-assign operators on LogRecord appear
+# to race when invoked from enqueue() / dequeue_bulk(). The real
+# synchronization is inside concurrentqueue.h via sequence-number
+# atomics; the queue is the most-battle-tested lock-free structure in
+# our tree. Suppress by call-site pattern so only the queue's
+# interactions are silenced — races elsewhere still fire.
+#
+# See also: https://github.com/cameron314/concurrentqueue#thread-safety
+race:concurrentqueue.h

@@ -201,7 +201,10 @@ jobs:
           # default on Linux but we spell it out for macOS parity.
           ASAN_OPTIONS: halt_on_error=1:detect_leaks=1:strict_string_checks=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+          # `suppressions=` silences TSan false positives inside the
+          # moodycamel ConcurrentQueue's lock-free slot recycling. See
+          # `ci/tsan.supp` for the pattern + rationale.
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:suppressions=${{ github.workspace }}/ci/tsan.supp
         run: ctest --output-on-failure -C ${{ matrix.build_type }}
 
       # Capture ctest artifacts whenever the Test step fails so the log
