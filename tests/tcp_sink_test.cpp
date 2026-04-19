@@ -63,17 +63,32 @@ public:
 
     ~LocalListener() {
         stop_.store(true, std::memory_order_relaxed);
-        // Close the accepted peer directly — on Windows `shutdown` alone
-        // reliably takes minutes to unblock `recv`, while closesocket drops
-        // the FD right away and recv returns WSAENOTSOCK / 0.
+        // Wake the accepter's blocked recv(). Platform split:
+        //   * POSIX: `shutdown` makes recv() return 0 cleanly; the fd
+        //     stays valid, so the accepter itself closes it at the
+        //     end of AcceptAndRead (no race, no TSan report).
+        //   * Windows: `shutdown` alone can take minutes to unblock
+        //     recv — `closesocket` drops the fd right away. We null
+        //     `client_sock_` under the lock so the accepter's own
+        //     close-on-exit branch skips the double-close.
         {
             std::lock_guard lock(client_mu_);
             if (client_sock_ != ULOG_INVALID_SOCK) {
+#if defined(_WIN32)
                 ULOG_CLOSE_SOCK(client_sock_);
                 client_sock_ = ULOG_INVALID_SOCK;
+#else
+                ::shutdown(client_sock_, SHUT_RDWR);
+#endif
             }
         }
-        if (listen_sock_ != ULOG_INVALID_SOCK) ULOG_CLOSE_SOCK(listen_sock_);
+        // Closing the listen socket on our side makes the blocked
+        // `accept()` return with an error — safe because the accepter
+        // only ever reads `listen_sock_`; it never closes it.
+        if (listen_sock_ != ULOG_INVALID_SOCK) {
+            ULOG_CLOSE_SOCK(listen_sock_);
+            listen_sock_ = ULOG_INVALID_SOCK;
+        }
         if (accepter_.joinable()) accepter_.join();
     }
 
@@ -103,11 +118,19 @@ private:
             std::lock_guard lock(mu_);
             buffer_.append(buf, static_cast<std::size_t>(n));
         }
+        // Exit path: the dtor may have already closed the fd on
+        // Windows (and nulled `client_sock_`). Only close if the dtor
+        // did not — check under the mutex so we and the dtor agree on
+        // which side owns the close.
+        bool should_close = false;
         {
             std::lock_guard lock(client_mu_);
-            client_sock_ = ULOG_INVALID_SOCK;
+            if (client_sock_ != ULOG_INVALID_SOCK) {
+                should_close = true;
+                client_sock_ = ULOG_INVALID_SOCK;
+            }
         }
-        ULOG_CLOSE_SOCK(c);
+        if (should_close) ULOG_CLOSE_SOCK(c);
     }
 
     sock_t listen_sock_{ULOG_INVALID_SOCK};
@@ -150,23 +173,28 @@ public:
 
     ~MultiAcceptListener() {
         stop_.store(true, std::memory_order_relaxed);
-        // Close the listen socket → blocked accept() returns.
         if (listen_sock_ != ULOG_INVALID_SOCK) {
             ULOG_CLOSE_SOCK(listen_sock_);
             listen_sock_ = ULOG_INVALID_SOCK;
         }
         if (accepter_.joinable()) accepter_.join();
 
-        // Also close every accepted peer socket. If the test left the
-        // sink alive (logger still holding the shared_ptr), reader
-        // threads would be stuck inside `recv()`; forcibly closing the
-        // fd here makes them drop out.
+        // Wake each reader's blocked recv. Split like LocalListener:
+        //   * POSIX: shutdown, reader closes the fd.
+        //   * Windows: closesocket + null-out the entry so the
+        //     reader's own close-on-exit branch skips double-close.
         {
             std::lock_guard lock(clients_mu_);
-            for (auto s : client_socks_) {
-                if (s != ULOG_INVALID_SOCK) ULOG_CLOSE_SOCK(s);
+            for (auto& s : client_socks_) {
+                if (s != ULOG_INVALID_SOCK) {
+#if defined(_WIN32)
+                    ULOG_CLOSE_SOCK(s);
+                    s = ULOG_INVALID_SOCK;
+#else
+                    ::shutdown(s, SHUT_RDWR);
+#endif
+                }
             }
-            client_socks_.clear();
         }
 
         std::vector<std::thread> readers;
@@ -216,15 +244,21 @@ private:
             std::lock_guard lock(buf_mu_);
             buffer_.append(buf, static_cast<std::size_t>(n));
         }
-        // Mark this socket as no longer held by the reader — the dtor
-        // must not double-close it.
+        // Close the fd iff the dtor hasn't already done so. On POSIX
+        // the dtor uses shutdown() and leaves the fd live; on Windows
+        // the dtor may have closed it and nulled the entry.
+        bool should_close = false;
         {
             std::lock_guard lock(clients_mu_);
             for (auto& s : client_socks_) {
-                if (s == c) { s = ULOG_INVALID_SOCK; break; }
+                if (s == c) {
+                    should_close = true;
+                    s = ULOG_INVALID_SOCK;
+                    break;
+                }
             }
         }
-        ULOG_CLOSE_SOCK(c);
+        if (should_close) ULOG_CLOSE_SOCK(c);
     }
 
     sock_t listen_sock_{ULOG_INVALID_SOCK};

@@ -71,16 +71,25 @@ public:
 
     ~UnixListener() {
         stop_.store(true, std::memory_order_relaxed);
-        // Force-close the accepted peer so its recv() unblocks. On
-        // Windows `shutdown` is reliable; on POSIX too.
+        // Wake the accepter's blocked recv(). Same split as the TCP
+        // listener: POSIX uses shutdown() (reader closes the fd);
+        // Windows uses closesocket (shutdown alone is unreliable) and
+        // nulls the entry so the reader skips double-close.
         {
             std::lock_guard lock(client_mu_);
             if (client_sock_ != ULOG_INVALID_SOCK) {
+#if defined(_WIN32)
                 ULOG_CLOSE_SOCK(client_sock_);
                 client_sock_ = ULOG_INVALID_SOCK;
+#else
+                ::shutdown(client_sock_, SHUT_RDWR);
+#endif
             }
         }
-        if (listen_sock_ != ULOG_INVALID_SOCK) ULOG_CLOSE_SOCK(listen_sock_);
+        if (listen_sock_ != ULOG_INVALID_SOCK) {
+            ULOG_CLOSE_SOCK(listen_sock_);
+            listen_sock_ = ULOG_INVALID_SOCK;
+        }
         if (accepter_.joinable()) accepter_.join();
         std::error_code ec;
         fs::remove(path_, ec);
@@ -110,11 +119,15 @@ private:
             std::lock_guard lock(mu_);
             buffer_.append(buf, static_cast<std::size_t>(n));
         }
+        bool should_close = false;
         {
             std::lock_guard lock(client_mu_);
-            client_sock_ = ULOG_INVALID_SOCK;
+            if (client_sock_ != ULOG_INVALID_SOCK) {
+                should_close = true;
+                client_sock_ = ULOG_INVALID_SOCK;
+            }
         }
-        ULOG_CLOSE_SOCK(c);
+        if (should_close) ULOG_CLOSE_SOCK(c);
     }
 
     std::string path_;
