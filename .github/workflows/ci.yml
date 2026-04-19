@@ -11,6 +11,13 @@ on:
   pull_request: {}
   workflow_dispatch: {}
 
+# Opt every job into the Node.js 24 runtime for its JavaScript actions
+# (actions/checkout, actions/cache/*, actions/upload-artifact, …). Node
+# 20 is deprecated and will be forced off by default on 2026-06-02.
+# See: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 defaults:
   run:
     shell: bash
