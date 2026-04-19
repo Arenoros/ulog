@@ -1,5 +1,6 @@
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -88,24 +89,54 @@ TEST(AsyncLogger, FlushIsSynchronous) {
 }
 
 TEST(AsyncLogger, DiscardOverflowCountsDrops) {
+    // Parks the worker inside its first Write() so the queue saturates
+    // deterministically. The previous version relied on "worker is
+    // slower than the producer" timing, which failed on the
+    // linux-clang-cpp20 runner where the worker kept up with 5000
+    // synchronous LOG_INFO calls and zero drops were observed.
+    struct BlockingSink final : ulog::sinks::BaseSink {
+        std::atomic<int> writes{0};
+        std::mutex mu;
+        std::condition_variable cv;
+        bool released = false;
+        void Write(std::string_view) override {
+            {
+                std::unique_lock lk(mu);
+                cv.wait(lk, [this] { return released; });
+            }
+            writes.fetch_add(1, std::memory_order_relaxed);
+        }
+        void Release() {
+            {
+                std::lock_guard lk(mu);
+                released = true;
+            }
+            cv.notify_all();
+        }
+    };
+
     ulog::AsyncLogger::Config cfg;
     cfg.queue_capacity = 32;
     cfg.overflow = ulog::OverflowBehavior::kDiscard;
 
-    auto sink = std::make_shared<CapturingSink>();
+    auto sink = std::make_shared<BlockingSink>();
     auto logger = std::make_shared<ulog::AsyncLogger>(cfg);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(sink);
 
     ulog::SetDefaultLogger(logger);
-    // Flood synchronously faster than worker can drain.
+    // Worker is parked in the first sink->Write(). Queue fills to 32,
+    // the remaining ~4968 calls hit overflow and are dropped.
     for (int i = 0; i < 5000; ++i) LOG_INFO() << "x " << i;
+    sink->Release();  // drain the queued records.
     ulog::LogFlush();
     ulog::SetDefaultLogger(nullptr);
 
-    const auto total = sink->Size() + logger->GetDroppedCount();
-    EXPECT_EQ(total, 5000u);
-    EXPECT_GT(logger->GetDroppedCount(), 0u);
+    const std::uint64_t delivered =
+        static_cast<std::uint64_t>(sink->writes.load(std::memory_order_relaxed));
+    const auto dropped = logger->GetDroppedCount();
+    EXPECT_EQ(delivered + dropped, 5000u);
+    EXPECT_GT(dropped, 0u);
 }
 
 TEST(AsyncLogger, SingleThreadPublishesToMultipleLoggers) {
