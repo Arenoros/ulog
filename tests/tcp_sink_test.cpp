@@ -26,6 +26,7 @@ using sock_t = SOCKET;
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 using sock_t = int;
@@ -69,6 +70,26 @@ inline RecvOutcome ClassifyRecv(int n) {
     return RecvOutcome::kDone;
 }
 
+/// Polls one socket for readability with a timeout. Used instead of
+/// mutating `listen_sock_` from the dtor to wake a blocked accept() —
+/// TSan flags that write/read pair on the fd variable. Here the
+/// accepter spins on poll(listen_sock_, 100ms) and checks `stop_`
+/// between timeouts, so the dtor only needs to flip the flag.
+/// Returns >0 on ready, 0 on timeout, <0 on error.
+inline int PollOneReadable(sock_t s, int timeout_ms) {
+#if defined(_WIN32)
+    WSAPOLLFD pfd{};
+    pfd.fd = s;
+    pfd.events = POLLRDNORM;
+    return ::WSAPoll(&pfd, 1, timeout_ms);
+#else
+    struct pollfd pfd{};
+    pfd.fd = s;
+    pfd.events = POLLIN;
+    return ::poll(&pfd, 1, timeout_ms);
+#endif
+}
+
 /// Minimal TCP listener — binds to 127.0.0.1:0 (ephemeral), reports
 /// the assigned port, accepts one connection, drains bytes into `buffer`.
 class LocalListener {
@@ -96,19 +117,17 @@ public:
     }
 
     ~LocalListener() {
-        // Clean teardown without any "wake blocked recv from another
-        // thread" dance: the reader polls `stop_` every 100 ms via
-        // SO_RCVTIMEO, so we just flip the flag, close the listen
-        // socket to wake any pending accept(), and join. The accepter
-        // thread is the same one that holds the peer fd, so it closes
-        // its own client socket at the end of AcceptAndRead — no
-        // cross-thread close + no TSan race.
+        // Accepter spins on poll(listen_sock_, 100ms) and the reader
+        // part uses SO_RCVTIMEO; both consult `stop_` between waits.
+        // The dtor only flips the flag + joins, then closes the
+        // listen socket AFTER the accepter is gone. No cross-thread
+        // fd mutation → no TSan race on listen_sock_.
         stop_.store(true, std::memory_order_relaxed);
+        if (accepter_.joinable()) accepter_.join();
         if (listen_sock_ != ULOG_INVALID_SOCK) {
             ULOG_CLOSE_SOCK(listen_sock_);
             listen_sock_ = ULOG_INVALID_SOCK;
         }
-        if (accepter_.joinable()) accepter_.join();
     }
 
     std::uint16_t port() const noexcept { return port_; }
@@ -120,7 +139,17 @@ public:
 
 private:
     void AcceptAndRead() {
-        sock_t c = ::accept(listen_sock_, nullptr, nullptr);
+        // Wait for a pending accept with a 100ms timeout so the thread
+        // can notice a `stop_` flip without help from the dtor.
+        sock_t c = ULOG_INVALID_SOCK;
+        while (!stop_.load(std::memory_order_relaxed)) {
+            const int r = PollOneReadable(listen_sock_, 100);
+            if (r < 0) return;
+            if (r == 0) continue;
+            c = ::accept(listen_sock_, nullptr, nullptr);
+            if (c == ULOG_INVALID_SOCK) return;
+            break;
+        }
         if (c == ULOG_INVALID_SOCK) return;
         SetRecvTimeoutMs(c, 100);
         char buf[4096];
@@ -176,15 +205,11 @@ public:
     }
 
     ~MultiAcceptListener() {
-        // Reader threads poll `stop_` every 100 ms via SO_RCVTIMEO,
-        // so no cross-thread shutdown / close dance on the peer fds is
-        // needed. Flip the flag, close the listen socket to wake the
-        // blocked accept(), join everything.
+        // Accepter spins on poll(listen_sock_, 100ms); readers use
+        // SO_RCVTIMEO. Both consult `stop_` between waits. Dtor only
+        // flips the flag, joins, and closes the listen socket AFTER
+        // all threads are gone — no cross-thread fd mutation.
         stop_.store(true, std::memory_order_relaxed);
-        if (listen_sock_ != ULOG_INVALID_SOCK) {
-            ULOG_CLOSE_SOCK(listen_sock_);
-            listen_sock_ = ULOG_INVALID_SOCK;
-        }
         if (accepter_.joinable()) accepter_.join();
 
         std::vector<std::thread> readers;
@@ -193,6 +218,11 @@ public:
             readers = std::move(readers_);
         }
         for (auto& t : readers) if (t.joinable()) t.join();
+
+        if (listen_sock_ != ULOG_INVALID_SOCK) {
+            ULOG_CLOSE_SOCK(listen_sock_);
+            listen_sock_ = ULOG_INVALID_SOCK;
+        }
     }
 
     std::uint16_t port() const noexcept { return port_; }
@@ -209,8 +239,11 @@ public:
 private:
     void AcceptLoop() {
         while (!stop_.load(std::memory_order_relaxed)) {
+            const int r = PollOneReadable(listen_sock_, 100);
+            if (r < 0) return;
+            if (r == 0) continue;
             sock_t c = ::accept(listen_sock_, nullptr, nullptr);
-            if (c == ULOG_INVALID_SOCK) return;  // listen socket closed.
+            if (c == ULOG_INVALID_SOCK) return;
             accepted_.fetch_add(1, std::memory_order_relaxed);
             std::thread reader([this, c] { ReadLoop(c); });
             std::lock_guard lock(readers_mu_);

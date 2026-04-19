@@ -19,6 +19,7 @@ using sock_t = SOCKET;
 #define ULOG_CLOSE_SOCK(s) ::closesocket(s)
 #define ULOG_INVALID_SOCK INVALID_SOCKET
 #else
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -70,14 +71,15 @@ public:
     }
 
     ~UnixListener() {
-        // Reader polls `stop_` every 100 ms via SO_RCVTIMEO, so the
-        // dtor doesn't need to cross-thread wake a blocked recv.
+        // Accepter polls for readable listen_sock with 100ms timeout;
+        // reader polls `stop_` via SO_RCVTIMEO. Dtor flips the flag,
+        // joins, then closes — no cross-thread fd mutation.
         stop_.store(true, std::memory_order_relaxed);
+        if (accepter_.joinable()) accepter_.join();
         if (listen_sock_ != ULOG_INVALID_SOCK) {
             ULOG_CLOSE_SOCK(listen_sock_);
             listen_sock_ = ULOG_INVALID_SOCK;
         }
-        if (accepter_.joinable()) accepter_.join();
         std::error_code ec;
         fs::remove(path_, ec);
     }
@@ -103,8 +105,30 @@ private:
 #endif
     }
 
+    static int PollOneReadable(sock_t s, int timeout_ms) {
+#if defined(_WIN32)
+        WSAPOLLFD pfd{};
+        pfd.fd = s;
+        pfd.events = POLLRDNORM;
+        return ::WSAPoll(&pfd, 1, timeout_ms);
+#else
+        struct pollfd pfd{};
+        pfd.fd = s;
+        pfd.events = POLLIN;
+        return ::poll(&pfd, 1, timeout_ms);
+#endif
+    }
+
     void AcceptAndRead() {
-        sock_t c = ::accept(listen_sock_, nullptr, nullptr);
+        sock_t c = ULOG_INVALID_SOCK;
+        while (!stop_.load(std::memory_order_relaxed)) {
+            const int r = PollOneReadable(listen_sock_, 100);
+            if (r < 0) return;
+            if (r == 0) continue;
+            c = ::accept(listen_sock_, nullptr, nullptr);
+            if (c == ULOG_INVALID_SOCK) return;
+            break;
+        }
         if (c == ULOG_INVALID_SOCK) return;
         SetRecvTimeoutMs(c, 100);
         char buf[4096];
