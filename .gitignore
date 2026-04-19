@@ -3,3 +3,6 @@ build-*/
 cmake-build-*/
 .cache/
 compile_commands.json
+
+# Conan-generated user preset (machine-specific)
+CMakeUserPresets.json
