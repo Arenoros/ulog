@@ -1,15 +1,5 @@
 # ulog — backlog
 
-## Observability / metrics
-
-### RateLimiter per-source callback (из BACKLOG rev.1)
-**Что:** `SetRateLimitDropHandler(fn)` — вызов per drop event.
-**Зачем:** push to monitoring system без pull'а глобального счётчика.
-**Effort:** маленький (2 часа).
-**Impact:** низкий (global counter уже есть).
-
----
-
 ## Transport / delivery
 
 ### `OtlpBatchSink` через HTTP/JSON POST (из review 12)

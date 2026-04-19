@@ -121,7 +121,7 @@ public:
 
 class RateLimiter {
 public:
-    explicit RateLimiter(RateLimitData& data) noexcept;
+    RateLimiter(RateLimitData& data, const char* file, int line) noexcept;
     bool ShouldLog() const noexcept { return should_log_; }
     std::uint64_t GetDroppedCount() const noexcept { return dropped_count_; }
 
@@ -131,6 +131,29 @@ private:
 };
 
 }  // namespace impl
+
+/// Payload for the `RateLimitDropHandler` — one event per `LOG_LIMITED_*`
+/// invocation that gets suppressed. Handler runs on the producing thread;
+/// keep it non-blocking (push to an in-process queue / counter at most).
+struct RateLimitDropEvent {
+    /// Source file of the `LOG_LIMITED_*` call site (trimmed via
+    /// `ULOG_SOURCE_ROOT_LITERAL` if configured, same shape as `module`).
+    const char* file{nullptr};
+    /// Source line of the call site.
+    int line{0};
+    /// Drops accumulated at this site during the current 1-second window.
+    std::uint64_t site_dropped{0};
+    /// Process-wide running total across every `LOG_LIMITED_*` site, in
+    /// sync with `GetRateLimitDroppedTotal()` post-increment.
+    std::uint64_t total_dropped{0};
+};
+
+/// Per-drop callback signature. `nullptr` deregisters.
+using RateLimitDropHandler = void (*)(const RateLimitDropEvent&) noexcept;
+
+/// Installs a callback fired on every `LOG_LIMITED_*` suppression. Thread
+/// safe. One handler per process; installing replaces the prior one.
+void SetRateLimitDropHandler(RateLimitDropHandler handler) noexcept;
 
 /// Total number of log records suppressed by LOG_LIMITED_* across the whole
 /// process since start (or since ResetRateLimitStats). Read-only.
@@ -278,7 +301,9 @@ struct EntryStorage final {
         []() -> ::ulog::impl::RateLimitData& {                                                               \
             thread_local ::ulog::impl::RateLimitData d;                                                      \
             return d;                                                                                        \
-        }()                                                                                                  \
+        }(),                                                                                                 \
+        ULOG_IMPL_TRIM_FILE(__FILE__),                                                                       \
+        __LINE__                                                                                             \
     }; !ulog_rl__.ShouldLog()) {                                                                             \
     } else                                                                                                   \
         ULOG_LOG_TO((logger), (lvl), __VA_ARGS__) << ulog_rl__

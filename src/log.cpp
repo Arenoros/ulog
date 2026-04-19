@@ -176,7 +176,12 @@ bool NextCountShouldLog(std::uint64_t count) noexcept {
 /// common (emit) path, one relaxed atomic add on the drop path.
 std::atomic<std::uint64_t> g_rate_limit_dropped_total{0};
 
-RateLimiter::RateLimiter(RateLimitData& data) noexcept {
+/// Optional per-drop callback — nullptr by default. Producers load with
+/// acquire so the handler, once observed non-null, sees any stores the
+/// installer made before `SetRateLimitDropHandler`.
+std::atomic<RateLimitDropHandler> g_rate_limit_drop_handler{nullptr};
+
+RateLimiter::RateLimiter(RateLimitData& data, const char* file, int line) noexcept {
     const auto now = std::chrono::steady_clock::now();
     if (now - data.last_reset_time >= std::chrono::seconds(1)) {
         data.last_reset_time = now;
@@ -187,7 +192,11 @@ RateLimiter::RateLimiter(RateLimitData& data) noexcept {
     should_log_ = NextCountShouldLog(data.count_since_reset);
     if (!should_log_) {
         ++data.dropped_count;
-        g_rate_limit_dropped_total.fetch_add(1, std::memory_order_relaxed);
+        const auto total = g_rate_limit_dropped_total.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (auto* h = g_rate_limit_drop_handler.load(std::memory_order_acquire)) {
+            const RateLimitDropEvent ev{file, line, data.dropped_count, total};
+            h(ev);
+        }
     }
     dropped_count_ = data.dropped_count;
 }
@@ -223,6 +232,10 @@ std::uint64_t GetRateLimitDroppedTotal() noexcept {
 
 void ResetRateLimitStats() noexcept {
     impl::g_rate_limit_dropped_total.store(0, std::memory_order_relaxed);
+}
+
+void SetRateLimitDropHandler(RateLimitDropHandler handler) noexcept {
+    impl::g_rate_limit_drop_handler.store(handler, std::memory_order_release);
 }
 
 }  // namespace ulog
