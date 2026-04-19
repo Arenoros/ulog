@@ -35,7 +35,41 @@ using sock_t = int;
 
 namespace {
 
-/// Minimal blocking TCP listener — binds to 127.0.0.1:0 (ephemeral), reports
+/// Makes the reader thread's `recv()` return with EAGAIN every `ms`
+/// so it can notice a `stop_` flip. Avoids having to wake a blocked
+/// recv() from another thread (close()/shutdown() both have subtle
+/// race + wake-up issues across Linux and Windows).
+inline void SetRecvTimeoutMs(sock_t s, int ms) {
+#if defined(_WIN32)
+    DWORD t = static_cast<DWORD>(ms);
+    ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char*>(&t), sizeof(t));
+#else
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
+}
+
+/// Classifies a recv() return value + errno/WSAGetLastError into
+/// {data, timeout, done}. The SO_RCVTIMEO variant uses EAGAIN on POSIX
+/// and WSAETIMEDOUT on Windows; anything else ends the loop.
+enum class RecvOutcome { kData, kTimeout, kDone };
+inline RecvOutcome ClassifyRecv(int n) {
+    if (n > 0) return RecvOutcome::kData;
+    if (n == 0) return RecvOutcome::kDone;
+#if defined(_WIN32)
+    const int err = ::WSAGetLastError();
+    if (err == WSAETIMEDOUT || err == WSAEINTR) return RecvOutcome::kTimeout;
+#else
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+        return RecvOutcome::kTimeout;
+#endif
+    return RecvOutcome::kDone;
+}
+
+/// Minimal TCP listener — binds to 127.0.0.1:0 (ephemeral), reports
 /// the assigned port, accepts one connection, drains bytes into `buffer`.
 class LocalListener {
 public:
@@ -62,29 +96,14 @@ public:
     }
 
     ~LocalListener() {
+        // Clean teardown without any "wake blocked recv from another
+        // thread" dance: the reader polls `stop_` every 100 ms via
+        // SO_RCVTIMEO, so we just flip the flag, close the listen
+        // socket to wake any pending accept(), and join. The accepter
+        // thread is the same one that holds the peer fd, so it closes
+        // its own client socket at the end of AcceptAndRead — no
+        // cross-thread close + no TSan race.
         stop_.store(true, std::memory_order_relaxed);
-        // Wake the accepter's blocked recv(). Platform split:
-        //   * POSIX: `shutdown` makes recv() return 0 cleanly; the fd
-        //     stays valid, so the accepter itself closes it at the
-        //     end of AcceptAndRead (no race, no TSan report).
-        //   * Windows: `shutdown` alone can take minutes to unblock
-        //     recv — `closesocket` drops the fd right away. We null
-        //     `client_sock_` under the lock so the accepter's own
-        //     close-on-exit branch skips the double-close.
-        {
-            std::lock_guard lock(client_mu_);
-            if (client_sock_ != ULOG_INVALID_SOCK) {
-#if defined(_WIN32)
-                ULOG_CLOSE_SOCK(client_sock_);
-                client_sock_ = ULOG_INVALID_SOCK;
-#else
-                ::shutdown(client_sock_, SHUT_RDWR);
-#endif
-            }
-        }
-        // Closing the listen socket on our side makes the blocked
-        // `accept()` return with an error — safe because the accepter
-        // only ever reads `listen_sock_`; it never closes it.
         if (listen_sock_ != ULOG_INVALID_SOCK) {
             ULOG_CLOSE_SOCK(listen_sock_);
             listen_sock_ = ULOG_INVALID_SOCK;
@@ -103,34 +122,21 @@ private:
     void AcceptAndRead() {
         sock_t c = ::accept(listen_sock_, nullptr, nullptr);
         if (c == ULOG_INVALID_SOCK) return;
-        {
-            std::lock_guard lock(client_mu_);
-            client_sock_ = c;
-        }
+        SetRecvTimeoutMs(c, 100);
         char buf[4096];
         while (!stop_.load(std::memory_order_relaxed)) {
 #if defined(_WIN32)
             const int n = ::recv(c, buf, sizeof(buf), 0);
 #else
-            const auto n = ::recv(c, buf, sizeof(buf), 0);
+            const int n = static_cast<int>(::recv(c, buf, sizeof(buf), 0));
 #endif
-            if (n <= 0) break;
+            const auto outcome = ClassifyRecv(n);
+            if (outcome == RecvOutcome::kDone) break;
+            if (outcome == RecvOutcome::kTimeout) continue;
             std::lock_guard lock(mu_);
             buffer_.append(buf, static_cast<std::size_t>(n));
         }
-        // Exit path: the dtor may have already closed the fd on
-        // Windows (and nulled `client_sock_`). Only close if the dtor
-        // did not — check under the mutex so we and the dtor agree on
-        // which side owns the close.
-        bool should_close = false;
-        {
-            std::lock_guard lock(client_mu_);
-            if (client_sock_ != ULOG_INVALID_SOCK) {
-                should_close = true;
-                client_sock_ = ULOG_INVALID_SOCK;
-            }
-        }
-        if (should_close) ULOG_CLOSE_SOCK(c);
+        ULOG_CLOSE_SOCK(c);
     }
 
     sock_t listen_sock_{ULOG_INVALID_SOCK};
@@ -139,8 +145,6 @@ private:
     std::atomic<bool> stop_{false};
     mutable std::mutex mu_;
     std::string buffer_;
-    mutable std::mutex client_mu_;
-    sock_t client_sock_{ULOG_INVALID_SOCK};
 };
 
 /// Multi-accept variant: loops on `accept()`, spawning one reader per
@@ -172,30 +176,16 @@ public:
     }
 
     ~MultiAcceptListener() {
+        // Reader threads poll `stop_` every 100 ms via SO_RCVTIMEO,
+        // so no cross-thread shutdown / close dance on the peer fds is
+        // needed. Flip the flag, close the listen socket to wake the
+        // blocked accept(), join everything.
         stop_.store(true, std::memory_order_relaxed);
         if (listen_sock_ != ULOG_INVALID_SOCK) {
             ULOG_CLOSE_SOCK(listen_sock_);
             listen_sock_ = ULOG_INVALID_SOCK;
         }
         if (accepter_.joinable()) accepter_.join();
-
-        // Wake each reader's blocked recv. Split like LocalListener:
-        //   * POSIX: shutdown, reader closes the fd.
-        //   * Windows: closesocket + null-out the entry so the
-        //     reader's own close-on-exit branch skips double-close.
-        {
-            std::lock_guard lock(clients_mu_);
-            for (auto& s : client_socks_) {
-                if (s != ULOG_INVALID_SOCK) {
-#if defined(_WIN32)
-                    ULOG_CLOSE_SOCK(s);
-                    s = ULOG_INVALID_SOCK;
-#else
-                    ::shutdown(s, SHUT_RDWR);
-#endif
-                }
-            }
-        }
 
         std::vector<std::thread> readers;
         {
@@ -222,10 +212,6 @@ private:
             sock_t c = ::accept(listen_sock_, nullptr, nullptr);
             if (c == ULOG_INVALID_SOCK) return;  // listen socket closed.
             accepted_.fetch_add(1, std::memory_order_relaxed);
-            {
-                std::lock_guard lock(clients_mu_);
-                client_socks_.push_back(c);
-            }
             std::thread reader([this, c] { ReadLoop(c); });
             std::lock_guard lock(readers_mu_);
             readers_.push_back(std::move(reader));
@@ -233,32 +219,21 @@ private:
     }
 
     void ReadLoop(sock_t c) {
+        SetRecvTimeoutMs(c, 100);
         char buf[4096];
         while (!stop_.load(std::memory_order_relaxed)) {
 #if defined(_WIN32)
             const int n = ::recv(c, buf, sizeof(buf), 0);
 #else
-            const auto n = ::recv(c, buf, sizeof(buf), 0);
+            const int n = static_cast<int>(::recv(c, buf, sizeof(buf), 0));
 #endif
-            if (n <= 0) break;
+            const auto outcome = ClassifyRecv(n);
+            if (outcome == RecvOutcome::kDone) break;
+            if (outcome == RecvOutcome::kTimeout) continue;
             std::lock_guard lock(buf_mu_);
             buffer_.append(buf, static_cast<std::size_t>(n));
         }
-        // Close the fd iff the dtor hasn't already done so. On POSIX
-        // the dtor uses shutdown() and leaves the fd live; on Windows
-        // the dtor may have closed it and nulled the entry.
-        bool should_close = false;
-        {
-            std::lock_guard lock(clients_mu_);
-            for (auto& s : client_socks_) {
-                if (s == c) {
-                    should_close = true;
-                    s = ULOG_INVALID_SOCK;
-                    break;
-                }
-            }
-        }
-        if (should_close) ULOG_CLOSE_SOCK(c);
+        ULOG_CLOSE_SOCK(c);
     }
 
     sock_t listen_sock_{ULOG_INVALID_SOCK};
@@ -270,8 +245,6 @@ private:
     std::string buffer_;
     std::mutex readers_mu_;
     std::vector<std::thread> readers_;
-    std::mutex clients_mu_;
-    std::vector<sock_t> client_socks_;
 };
 
 }  // namespace

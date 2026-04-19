@@ -70,22 +70,9 @@ public:
     }
 
     ~UnixListener() {
+        // Reader polls `stop_` every 100 ms via SO_RCVTIMEO, so the
+        // dtor doesn't need to cross-thread wake a blocked recv.
         stop_.store(true, std::memory_order_relaxed);
-        // Wake the accepter's blocked recv(). Same split as the TCP
-        // listener: POSIX uses shutdown() (reader closes the fd);
-        // Windows uses closesocket (shutdown alone is unreliable) and
-        // nulls the entry so the reader skips double-close.
-        {
-            std::lock_guard lock(client_mu_);
-            if (client_sock_ != ULOG_INVALID_SOCK) {
-#if defined(_WIN32)
-                ULOG_CLOSE_SOCK(client_sock_);
-                client_sock_ = ULOG_INVALID_SOCK;
-#else
-                ::shutdown(client_sock_, SHUT_RDWR);
-#endif
-            }
-        }
         if (listen_sock_ != ULOG_INVALID_SOCK) {
             ULOG_CLOSE_SOCK(listen_sock_);
             listen_sock_ = ULOG_INVALID_SOCK;
@@ -101,33 +88,48 @@ public:
     }
 
 private:
+    // Mirrors the helper in tcp_sink_test.cpp. Kept local because the
+    // tests live in separate anonymous-namespaced TUs.
+    static void SetRecvTimeoutMs(sock_t s, int ms) {
+#if defined(_WIN32)
+        DWORD t = static_cast<DWORD>(ms);
+        ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO,
+                     reinterpret_cast<const char*>(&t), sizeof(t));
+#else
+        struct timeval tv;
+        tv.tv_sec = ms / 1000;
+        tv.tv_usec = (ms % 1000) * 1000;
+        ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
+    }
+
     void AcceptAndRead() {
         sock_t c = ::accept(listen_sock_, nullptr, nullptr);
         if (c == ULOG_INVALID_SOCK) return;
-        {
-            std::lock_guard lock(client_mu_);
-            client_sock_ = c;
-        }
+        SetRecvTimeoutMs(c, 100);
         char buf[4096];
         while (!stop_.load(std::memory_order_relaxed)) {
 #if defined(_WIN32)
             const int n = ::recv(c, buf, sizeof(buf), 0);
+            if (n == 0) break;
+            if (n < 0) {
+                const int err = ::WSAGetLastError();
+                if (err == WSAETIMEDOUT || err == WSAEINTR) continue;
+                break;
+            }
 #else
-            const auto n = ::recv(c, buf, sizeof(buf), 0);
+            const int n = static_cast<int>(::recv(c, buf, sizeof(buf), 0));
+            if (n == 0) break;
+            if (n < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+                    continue;
+                break;
+            }
 #endif
-            if (n <= 0) break;
             std::lock_guard lock(mu_);
             buffer_.append(buf, static_cast<std::size_t>(n));
         }
-        bool should_close = false;
-        {
-            std::lock_guard lock(client_mu_);
-            if (client_sock_ != ULOG_INVALID_SOCK) {
-                should_close = true;
-                client_sock_ = ULOG_INVALID_SOCK;
-            }
-        }
-        if (should_close) ULOG_CLOSE_SOCK(c);
+        ULOG_CLOSE_SOCK(c);
     }
 
     std::string path_;
@@ -136,8 +138,6 @@ private:
     std::atomic<bool> stop_{false};
     mutable std::mutex mu_;
     std::string buffer_;
-    mutable std::mutex client_mu_;
-    sock_t client_sock_{ULOG_INVALID_SOCK};
 };
 
 }  // namespace
