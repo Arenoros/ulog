@@ -108,19 +108,19 @@ jobs:
           # Windows runners where pip doesn't enforce the check.
           PIP_BREAK_SYSTEM_PACKAGES: "1"
 
-      # Cache Conan's home directory. Restore runs BEFORE
-      # `conan profile detect --force`, so the freshly detected profile
-      # overwrites whatever cached `profiles/default` the archive
-      # carried — the cache serves only the heavy bits (packages under
-      # `p/` and the `cache.sqlite3` index beside them), while each run
-      # regenerates its own profile/remote configuration.
+      # Split restore/save form of the Conan home cache. The combined
+      # `actions/cache@v4` ties its post-step save to job success; we
+      # want the save to fire even when the row fails (TSan report,
+      # flaky test) so a broken row doesn't keep rebuilding boost on
+      # every push. The paired `actions/cache/save@v4` at the end of
+      # the job does that via `if: always()`.
       #
-      # `save-always: true` keeps the cache fresh even when the matrix
-      # row fails later (e.g. a TSan report or a flaky test). Without
-      # it a failing row is cold forever and keeps rebuilding boost +
-      # deps on every push.
-      - name: Cache Conan home
-        uses: actions/cache@v4
+      # Restore runs BEFORE `conan profile detect --force`, so the
+      # freshly detected profile overwrites whatever cached
+      # `profiles/default` the archive carried.
+      - name: Restore Conan home cache
+        id: conan-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.conan2
@@ -128,7 +128,6 @@ jobs:
           restore-keys: |
             conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-${{ matrix.sanitizer || 'none' }}-
             conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-
-          save-always: true
 
       - name: Configure Conan default profile
         run: |
@@ -236,6 +235,20 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # Save the Conan home cache regardless of whether the row
+      # succeeded — a failed row still produces a valid conan cache (the
+      # failure is in ulog code, not in deps) and we don't want to
+      # rebuild boost on the next push. Skip on exact key hit: the
+      # content on disk already matches what's on the server, re-saving
+      # would only emit "another job may be creating this cache" noise.
+      - name: Save Conan home cache
+        if: always() && steps.conan-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.conan2
+          key: ${{ steps.conan-cache.outputs.cache-primary-key }}
+
   # -----------------------------------------------------------------
   # Benchmark job — runs ulog-bench on a pinned Linux runner and
   # uploads the JSON result as an artifact. Numbers are indicative
@@ -254,20 +267,19 @@ jobs:
           version: 2.14.0
 
       # Share the build job's Conan home cache — same key format, so the
-      # bench job warm-starts from whatever matrix row matches. Restore
-      # runs before `conan profile detect --force` so the detect step
-      # overwrites any cached default profile with one that matches the
-      # current runner. `save-always` keeps the cache warm even when a
-      # bench run fails (bench failures shouldn't reset dep builds).
-      - name: Cache Conan home
-        uses: actions/cache@v4
+      # bench job warm-starts from whatever matrix row matches. Split
+      # restore/save: the paired `actions/cache/save@v4` step at the
+      # end saves with `if: always()` so a failed bench run still warms
+      # the cache for the next push.
+      - name: Restore Conan home cache
+        id: conan-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.conan2
           key: conan-ubuntu-22.04-gcc-cpp17-Release-none-${{ hashFiles('conanfile.txt') }}
           restore-keys: |
             conan-ubuntu-22.04-gcc-cpp17-Release-none-
-          save-always: true
 
       - name: Configure Conan default profile
         run: |
@@ -319,3 +331,13 @@ jobs:
           name: ulog-bench-${{ github.sha }}
           path: bench.json
           retention-days: 90
+
+      # Save under the primary key regardless of Run / Upload success.
+      # Skip on exact key hit (nothing changed on disk).
+      - name: Save Conan home cache
+        if: always() && steps.conan-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.conan2
+          key: ${{ steps.conan-cache.outputs.cache-primary-key }}
