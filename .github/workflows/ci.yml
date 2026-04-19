@@ -108,6 +108,22 @@ jobs:
           # Windows runners where pip doesn't enforce the check.
           PIP_BREAK_SYSTEM_PACKAGES: "1"
 
+      # Cache Conan's home directory. Restore runs BEFORE
+      # `conan profile detect --force`, so the freshly detected profile
+      # overwrites whatever cached `profiles/default` the archive
+      # carried — the cache serves only the heavy bits (packages under
+      # `p/` and the `cache.sqlite3` index beside them), while each run
+      # regenerates its own profile/remote configuration.
+      - name: Cache Conan home
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.conan2
+          key: conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-${{ matrix.sanitizer || 'none' }}-${{ hashFiles('conanfile.txt') }}
+          restore-keys: |
+            conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-${{ matrix.sanitizer || 'none' }}-
+            conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-
+
       - name: Configure Conan default profile
         run: |
           # Force the remote URL to the v2 Conan Center endpoint so the
@@ -117,20 +133,6 @@ jobs:
           conan remote add conancenter https://center2.conan.io --force
           conan profile detect --force
           conan profile show
-
-      # Cache Conan's package store so repeat runs skip the fmt/boost/gtest
-      # build from source. Key fingerprint includes matrix identity +
-      # conanfile contents so sanitizer rows keep their own cache slice
-      # (they rebuild deps with instrumented flags in future phases).
-      - name: Cache Conan packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.conan2/p
-          key: conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-${{ matrix.sanitizer || 'none' }}-${{ hashFiles('conanfile.txt') }}
-          restore-keys: |
-            conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-${{ matrix.sanitizer || 'none' }}-
-            conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-
 
       - name: Install Ninja (Linux / macOS)
         if: runner.os != 'Windows'
@@ -234,19 +236,24 @@ jobs:
         with:
           version: 2.14.0
 
+      # Share the build job's Conan home cache — same key format, so the
+      # bench job warm-starts from whatever matrix row matches. Restore
+      # runs before `conan profile detect --force` so the detect step
+      # overwrites any cached default profile with one that matches the
+      # current runner.
+      - name: Cache Conan home
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.conan2
+          key: conan-ubuntu-22.04-gcc-cpp17-Release-none-${{ hashFiles('conanfile.txt') }}
+          restore-keys: |
+            conan-ubuntu-22.04-gcc-cpp17-Release-none-
+
       - name: Configure Conan default profile
         run: |
           conan remote add conancenter https://center2.conan.io --force
           conan profile detect --force
-
-      - name: Cache Conan packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.conan2/p
-          key: conan-ubuntu-22.04-gcc-cpp17-Release-none-${{ hashFiles('conanfile.txt') }}
-          restore-keys: |
-            conan-ubuntu-22.04-gcc-cpp17-Release-none-
 
       - name: Install Ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
