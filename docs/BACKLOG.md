@@ -65,27 +65,11 @@
 
 ## Coverage / testing gaps
 
-### TCP reopen с multi-accept listener (из review 14)
-**Что:** listener, принимающий >1 conn'a; тест `Reopen` + reconnect.
-**Зачем:** current test покрывает только disconnect contract, не reconnect.
-**Effort:** маленький (1 час — переделать LocalListener в event-loop).
-**Impact:** средний coverage.
-
 ### Compile-erase binary assertion (из BACKLOG rev.1)
 **Что:** build с `ULOG_ERASE_LOG_WITH_LEVEL=3` → dumpbin/objdump on Windows/Linux → assert strings "LOG_TRACE text" нет в binary.
 **Зачем:** верифицировать что `ULOG_ERASE_*` действительно удаляет код.
 **Effort:** средний (CMake fixture + platform-specific tool invocation).
 **Impact:** низкий.
-
-### AddJsonTag + YaDeploy combo test (из review 21)
-**Что:** добавить тест `YaDeploy + AddJsonTag` — покрывается только строковая версия.
-**Effort:** маленький (10 мин).
-**Impact:** маленький coverage.
-
-### LogHelper::WithException test (из BACKLOG rev.1)
-**Что:** verify `WithException(ex)` кладёт `exception_type` + `exception_msg` в record.
-**Effort:** маленький.
-**Impact:** coverage.
 
 ### Stacktrace с реальной символизацией (из BACKLOG)
 **Что:** fully check `LogExtra::Stacktrace()` output содержит function names, file paths.
@@ -143,8 +127,7 @@
 
 ### Средний impact
 2. **Compile-erase assertion test**.
-3. **TCP multi-accept reopen тест**.
-4. **YAML config loader**.
+3. **YAML config loader**.
 
 ### Низкий приоритет
 5. **OtlpGrpcSink**.

@@ -1,5 +1,6 @@
 #include <chrono>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -100,6 +101,45 @@ TEST(FormatterJson, TypedTagsEmitAsNativeJsonTypes) {
     EXPECT_NE(r.find("\"ratio\":3.14"), std::string::npos) << r;
     EXPECT_NE(r.find("\"ok\":true"), std::string::npos) << r;
     EXPECT_NE(r.find("\"name\":\"ada\""), std::string::npos) << r;
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(LogHelperExceptions, WithExceptionCapturesTypeAndMessage) {
+    // LogHelper::WithException attaches exception_type + exception_msg
+    // as tags on the active record. Verify both land in the TSKV output
+    // with the expected `what()` message and a type string that contains
+    // the exception class name (mangling form is implementation-defined,
+    // so substring match — not byte-equal).
+    auto mem = InstallMem(ulog::Format::kTskv);
+    try {
+        throw std::runtime_error("boom-42");
+    } catch (const std::exception& ex) {
+        LOG_ERROR().WithException(ex) << "op-failed";
+    }
+    const auto r = mem->GetRecords().front();
+    EXPECT_NE(r.find("exception_msg=boom-42"), std::string::npos) << r;
+    EXPECT_NE(r.find("exception_type="), std::string::npos) << r;
+    EXPECT_NE(r.find("runtime_error"), std::string::npos) << r;
+    EXPECT_NE(r.find("text=op-failed"), std::string::npos) << r;
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(FormatterJson, YaDeployPassesThroughAddJsonTag) {
+    // Prior coverage only exercised the stringifying AddTag path against
+    // the YaDeploy variant. This pins the raw-JSON path: a JsonString
+    // tag passed via AddJsonTag must land unquoted (as-is) in the
+    // YaDeploy record, and the canonical core-field renames still apply.
+    auto mem = InstallMem(ulog::Format::kJsonYaDeploy);
+    LOG_INFO() << "body" << ulog::LogExtra{
+        {"meta", ulog::JsonString(std::string("{\"x\":1,\"y\":\"q\"}"))},
+    };
+    const auto r = mem->GetRecords().front();
+    // Raw-JSON tag emitted as a native JSON subtree, no outer quoting.
+    EXPECT_NE(r.find("\"meta\":{\"x\":1,\"y\":\"q\"}"), std::string::npos) << r;
+    // YaDeploy renames still intact.
+    EXPECT_NE(r.find("\"@timestamp\":"), std::string::npos) << r;
+    EXPECT_NE(r.find("\"_level\":\"INFO\""), std::string::npos) << r;
+    EXPECT_NE(r.find("\"_message\":\"body\""), std::string::npos) << r;
     ulog::SetDefaultLogger(nullptr);
 }
 
