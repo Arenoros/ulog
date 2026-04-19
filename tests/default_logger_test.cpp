@@ -120,3 +120,27 @@ TEST(DefaultLogger, ConcurrentSwapWhileLoggingDoesNotCrash) {
 
     ulog::SetDefaultLogger(nullptr);
 }
+
+TEST(DefaultLogger, PurgeTlsDefaultLoggerCacheReleasesPriorLogger) {
+    // The TLS slot holds a LoggerPtr across logging ops; after a
+    // SetDefaultLogger(nullptr) a thread that never calls LOG_* again
+    // would keep the prior logger alive indefinitely. Purge must drop
+    // that reference on demand.
+    auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
+    std::weak_ptr<ulog::MemLogger> weak = logger;
+
+    ulog::SetDefaultLogger(logger);
+    // Warm the TLS cache on this thread.
+    LOG_INFO() << "warm";
+
+    // Drop the global slot + the local strong ref. The TLS cache on
+    // this thread is the only remaining strong ref.
+    ulog::SetDefaultLogger(nullptr);
+    logger.reset();
+    EXPECT_FALSE(weak.expired())
+        << "TLS cache on this thread still holds the prior logger";
+
+    ulog::PurgeTlsDefaultLoggerCache();
+    EXPECT_TRUE(weak.expired())
+        << "Purge did not release the TLS-cached logger pointer";
+}

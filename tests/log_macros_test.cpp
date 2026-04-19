@@ -15,7 +15,8 @@ TEST(LogMacros, CompileCoverage) {
     LOG_ERROR() << "error " << ulog::HexShort{0xabc};
     LOG_CRITICAL() << "critical " << ulog::Quoted{"quoted"};
 
-    auto& log = ulog::GetDefaultLogger();
+    auto log_ptr = ulog::GetDefaultLoggerPtr();
+    auto& log = *log_ptr;  // pin with the shared_ptr snapshot.
     LOG_INFO_TO(log) << "to-default";
     LOG_ERROR_TO(log) << "to-default err";
 

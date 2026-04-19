@@ -88,26 +88,6 @@
 
 ---
 
-## API / polish
-
-### `ULOG_PURGE_TLS_DEFAULT_CACHE()` escape hatch (из review 14)
-**Что:** public API чтобы thread сбрасывал TLS cache после `SetDefaultLogger(nullptr)`.
-**Зачем:** long-lived threads держат ref на старый logger до следующего LOG_*.
-**Effort:** маленький.
-**Impact:** нишевой.
-
-### `[[deprecated]]` на `GetDefaultLogger() -> LoggerRef` (из review 01)
-**Что:** annotate для предупреждения о короткоживущем контракте.
-**Effort:** маленький.
-**Impact:** маленький — API signals.
-
-### Source-root trim: документировать PUBLIC consumer override (из review 02)
-**Что:** README + config.cmake — как downstream консумер переопределяет `ULOG_SOURCE_ROOT`.
-**Effort:** маленький.
-**Impact:** маленький.
-
----
-
 ## Удобство разработчика
 
 ### `ULOG_EXAMPLES_DIR` пример с structured JSON consumer

@@ -82,12 +82,32 @@ LoggerPtr LoadDefaultCached() noexcept {
     return tls;  // refcount++ on copy — no fresh control-block allocation
 }
 
-}  // namespace
-
-LoggerRef GetDefaultLogger() noexcept {
+/// Internal variant of the public `GetDefaultLogger()`. The public one is
+/// marked `[[deprecated]]` to steer callers toward the ref-counted
+/// snapshot; in-TU helpers below need the same short-lived reference
+/// without triggering the deprecation warning on every use.
+LoggerRef GetDefaultLoggerInternal() noexcept {
     auto ptr = LoadDefaultCached();
     if (ptr) return *ptr;
     return GetNullLogger();
+}
+
+}  // namespace
+
+void PurgeTlsDefaultLoggerCache() noexcept {
+    // Reset the per-thread cache so the stale LoggerPtr the thread has
+    // been hanging onto is released right now, instead of at the next
+    // LOG_* (when the generation check would normally refresh it).
+    // Intended use: a long-lived worker thread that just received a
+    // SetDefaultLogger(nullptr) or a hot swap, and won't log again for
+    // a while — without this call, its TLS slot keeps the previous
+    // logger and its sinks alive.
+    TlsDefault().reset();
+    TlsGeneration() = kTlsStartGen;
+}
+
+LoggerRef GetDefaultLogger() noexcept {
+    return GetDefaultLoggerInternal();
 }
 
 LoggerPtr GetDefaultLoggerPtr() noexcept { return LoadDefaultCached(); }
@@ -97,11 +117,11 @@ void SetDefaultLogger(LoggerPtr new_default_logger) noexcept {
     g_default_gen.fetch_add(1, std::memory_order_release);
 }
 
-void SetDefaultLoggerLevel(Level level) { GetDefaultLogger().SetLevel(level); }
+void SetDefaultLoggerLevel(Level level) { GetDefaultLoggerInternal().SetLevel(level); }
 
-Level GetDefaultLoggerLevel() noexcept { return GetDefaultLogger().GetLevel(); }
+Level GetDefaultLoggerLevel() noexcept { return GetDefaultLoggerInternal().GetLevel(); }
 
-bool ShouldLog(Level level) noexcept { return GetDefaultLogger().ShouldLog(level); }
+bool ShouldLog(Level level) noexcept { return GetDefaultLoggerInternal().ShouldLog(level); }
 
 void SetLoggerLevel(LoggerRef logger, Level level) { logger.SetLevel(level); }
 
@@ -113,7 +133,7 @@ bool LoggerShouldLog(const LoggerPtr& logger, Level level) noexcept {
 
 Level GetLoggerLevel(LoggerRef logger) noexcept { return logger.GetLevel(); }
 
-void LogFlush() { GetDefaultLogger().Flush(); }
+void LogFlush() { GetDefaultLoggerInternal().Flush(); }
 void LogFlush(LoggerRef logger) { logger.Flush(); }
 
 // ---------------- DefaultLoggerGuard ----------------
@@ -133,7 +153,7 @@ DefaultLoggerGuard::~DefaultLoggerGuard() {
 // ---------------- DefaultLoggerLevelScope ----------------
 
 DefaultLoggerLevelScope::DefaultLoggerLevelScope(Level level)
-    : logger_(GetDefaultLogger()), initial_(logger_.GetLevel()) {
+    : logger_(GetDefaultLoggerInternal()), initial_(logger_.GetLevel()) {
     logger_.SetLevel(level);
 }
 DefaultLoggerLevelScope::~DefaultLoggerLevelScope() { logger_.SetLevel(initial_); }

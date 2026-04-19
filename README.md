@@ -59,7 +59,42 @@ Dependencies: `fmt` + Boost `container` & `stacktrace` (via Conan or any package
 | `ULOG_WITH_YAML` | `OFF` | Enable yaml-cpp-based config loader (reserved) |
 | `ULOG_NO_SHORT_MACROS` | `OFF` | Hide `LOG_*` short names; keep `ULOG_LOG_*` only |
 | `ULOG_ERASE_LOG_WITH_LEVEL` | `0` | Compile-erase levels below this (1..4) |
+| `ULOG_SOURCE_ROOT` | `<source dir>` | Prefix stripped from `__FILE__` in records |
 | `ULOG_INSTALL` | `ON` | Generate install/export rules |
+
+### Trimming `__FILE__` in consumer builds
+
+`ULOG_SOURCE_ROOT` is the prefix that `LOG_*` strips from `__FILE__` so
+records carry `foo/bar.cpp` rather than
+`/home/runner/work/project/ulog/foo/bar.cpp`. The root is baked into
+ulog at configure time as the public macro `ULOG_SOURCE_ROOT_LITERAL`.
+
+**`add_subdirectory` consumers** — set the option before pulling ulog
+in, and every consumer target that links ulog inherits the consumer's
+source root:
+
+```cmake
+set(ULOG_SOURCE_ROOT "${CMAKE_SOURCE_DIR}" CACHE STRING "")
+add_subdirectory(third_party/ulog)
+```
+
+**`find_package(ulog)` / pre-built Conan consumers** — the root was
+fixed when ulog was built, so prefer this path when you control the
+ulog build. If the binary ships with ulog's own root baked in and you
+cannot rebuild, override on your target and expect a
+"macro redefinition" warning for the translation units you care about:
+
+```cmake
+find_package(ulog REQUIRED)
+add_executable(myapp ...)
+target_link_libraries(myapp PRIVATE ulog::ulog)
+target_compile_definitions(myapp PRIVATE
+    ULOG_SOURCE_ROOT_LITERAL="${CMAKE_SOURCE_DIR}")
+```
+
+The cleaner long-term story is to configure `ULOG_SOURCE_ROOT` at
+package-build time (e.g. via Conan `options`) so downstream targets
+don't have to redefine anything.
 
 ## Layout
 

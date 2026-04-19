@@ -30,6 +30,15 @@ namespace ulog {
 /// operation that will not race with SetDefaultLogger. For long-lived access
 /// across threads use @ref GetDefaultLoggerPtr, which pins the logger with
 /// a shared_ptr snapshot.
+///
+/// Marked `[[deprecated]]` because the short-lived-reference contract is
+/// subtle and easy to miss. Call sites that just want to emit one record
+/// should use the LOG_* macros (which internally snapshot a `LoggerPtr`);
+/// call sites that need explicit access to the logger should use
+/// `GetDefaultLoggerPtr()` so the refcount keeps the logger alive across
+/// a concurrent `SetDefaultLogger` swap.
+[[deprecated("Prefer GetDefaultLoggerPtr() — returned reference is only valid "
+             "until the next SetDefaultLogger() on any thread")]]
 LoggerRef GetDefaultLogger() noexcept;
 
 /// Returns a reference-counted snapshot of the current default logger. The
@@ -39,6 +48,16 @@ LoggerPtr GetDefaultLoggerPtr() noexcept;
 
 /// Replaces the default logger. The provided LoggerPtr is kept alive.
 void SetDefaultLogger(LoggerPtr new_default_logger) noexcept;
+
+/// Releases the calling thread's cached pointer to the default logger.
+/// The next LOG_* on this thread reloads from the global slot.
+///
+/// Call this on long-lived threads after `SetDefaultLogger(nullptr)` or
+/// a hot swap if you want the old logger's ref count to drop *now*
+/// instead of "at the next LOG_* on this thread" — otherwise a worker
+/// that is idle for a long time keeps the superseded logger (and its
+/// sinks) alive in its TLS slot.
+void PurgeTlsDefaultLoggerCache() noexcept;
 
 /// Sets the level of the default logger.
 void SetDefaultLoggerLevel(Level level);
