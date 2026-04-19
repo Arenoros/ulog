@@ -58,6 +58,18 @@ class UlogConan(ConanFile):
         "erase_log_with_level": 0,
         "build_tests": False,
         "build_bench": False,
+        # Transitive-dep option defaults. Pattern keys apply to
+        # matching deps without FORCING them — a consumer that
+        # explicitly pins `boost/*:shared=True` wins. The ones kept
+        # here are the options ulog's own code actually requires
+        # (the boost modules we link against + the workaround for
+        # boost/1.86-1.90's cobalt recipe bug under C++20). Options
+        # ulog doesn't care about (boost/fmt shared) are NOT listed,
+        # so consumers are free to choose.
+        "boost/*:header_only": False,
+        "boost/*:without_container": False,
+        "boost/*:without_stacktrace": False,
+        "boost/*:without_cobalt": True,
     }
 
     exports_sources = (
@@ -80,17 +92,12 @@ class UlogConan(ConanFile):
     def configure(self):
         if self.options.shared:
             self.options.rm_safe("fPIC")
-        # Pin boost options so `boost::container` and
-        # `boost::stacktrace` are actually built. Matches the settings
-        # ulog has always used in its conanfile.txt.
-        self.options["boost"].shared = False
-        self.options["boost"].header_only = False
-        self.options["boost"].without_container = False
-        self.options["boost"].without_stacktrace = False
-        # Workaround for a boost/1.90.0 recipe bug under C++20 — see
-        # commit 88caeaa.
-        self.options["boost"].without_cobalt = True
-        self.options["fmt"].shared = False
+        # Transitive boost/fmt option defaults are declared in
+        # `default_options` with `<dep>/*:<opt>` pattern keys — that
+        # form applies our preferences without FORCING them, so a
+        # consumer that has its own `boost/*:shared=True` policy is
+        # free to keep it. Using `self.options["boost"].xxx = value`
+        # here would raise on conflict.
 
     def requirements(self):
         self.requires("fmt/12.1.0", transitive_headers=True)

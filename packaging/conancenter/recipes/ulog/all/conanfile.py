@@ -58,6 +58,14 @@ class UlogConan(ConanFile):
         "with_afunix": False,
         "no_short_macros": False,
         "erase_log_with_level": 0,
+        # Transitive-dep option defaults. Pattern keys apply without
+        # FORCING, so consumers can override each one if they want to.
+        # Only the options ulog's own code actually needs are listed
+        # here (the specific boost modules we link against).
+        "boost/*:header_only": False,
+        "boost/*:without_container": False,
+        "boost/*:without_stacktrace": False,
+        "boost/*:without_cobalt": True,
     }
 
     @property
@@ -85,12 +93,10 @@ class UlogConan(ConanFile):
     def configure(self):
         if self.options.shared:
             self.options.rm_safe("fPIC")
-        self.options["boost"].shared = False
-        self.options["boost"].header_only = False
-        self.options["boost"].without_container = False
-        self.options["boost"].without_stacktrace = False
-        self.options["boost"].without_cobalt = True
-        self.options["fmt"].shared = False
+        # Transitive boost option defaults live in `default_options`
+        # as `boost/*:<opt>` pattern keys — see the note there.
+        # `self.options["boost"].xxx = value` would hard-force and
+        # conflict with consumers that have their own boost policy.
 
     def requirements(self):
         self.requires("fmt/11.0.2", transitive_headers=True)
