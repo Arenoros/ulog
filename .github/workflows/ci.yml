@@ -114,6 +114,11 @@ jobs:
       # carried — the cache serves only the heavy bits (packages under
       # `p/` and the `cache.sqlite3` index beside them), while each run
       # regenerates its own profile/remote configuration.
+      #
+      # `save-always: true` keeps the cache fresh even when the matrix
+      # row fails later (e.g. a TSan report or a flaky test). Without
+      # it a failing row is cold forever and keeps rebuilding boost +
+      # deps on every push.
       - name: Cache Conan home
         uses: actions/cache@v4
         with:
@@ -123,6 +128,7 @@ jobs:
           restore-keys: |
             conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-${{ matrix.sanitizer || 'none' }}-
             conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-
+          save-always: true
 
       - name: Configure Conan default profile
         run: |
@@ -251,7 +257,8 @@ jobs:
       # bench job warm-starts from whatever matrix row matches. Restore
       # runs before `conan profile detect --force` so the detect step
       # overwrites any cached default profile with one that matches the
-      # current runner.
+      # current runner. `save-always` keeps the cache warm even when a
+      # bench run fails (bench failures shouldn't reset dep builds).
       - name: Cache Conan home
         uses: actions/cache@v4
         with:
@@ -260,6 +267,7 @@ jobs:
           key: conan-ubuntu-22.04-gcc-cpp17-Release-none-${{ hashFiles('conanfile.txt') }}
           restore-keys: |
             conan-ubuntu-22.04-gcc-cpp17-Release-none-
+          save-always: true
 
       - name: Configure Conan default profile
         run: |
