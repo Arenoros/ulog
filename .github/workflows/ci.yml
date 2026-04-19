@@ -235,6 +235,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # Trim Conan's build / source / download directories before the
+      # cache is saved. Only `p/<hash>/p/` (the installed package) +
+      # `cache.sqlite3` are needed to skip a rebuild on the next run —
+      # everything else is scratch space. Without this step boost
+      # alone drags ~2 GB of build-dir artifacts into the cache tarball,
+      # 10-15x more than the installed binaries need.
+      - name: Trim Conan cache before save
+        if: always()
+        run: conan cache clean "*" --build --source --download || true
+
       # Save the Conan home cache regardless of whether the row
       # succeeded — a failed row still produces a valid conan cache (the
       # failure is in ulog code, not in deps) and we don't want to
@@ -331,6 +341,12 @@ jobs:
           name: ulog-bench-${{ github.sha }}
           path: bench.json
           retention-days: 90
+
+      # Drop build/source/download scratch before saving — same
+      # rationale as the matrix job.
+      - name: Trim Conan cache before save
+        if: always()
+        run: conan cache clean "*" --build --source --download || true
 
       # Save under the primary key regardless of Run / Upload success.
       # Skip on exact key hit (nothing changed on disk).
