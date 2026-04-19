@@ -1,66 +1,234 @@
 # ulog — backlog
 
-Follow-ups identified during review, tracked separately to keep incoming PRs scoped.
+## Observability / metrics
 
-## Observability
+### Per-sink метрики (из BACKLOG rev.1)
+**Что:** write latency histogram + error counter для каждого sink.
+**Зачем:** видеть какой sink тормозит (disk fsync, TCP backpressure), какой возвращает ошибки.
+**Как:** `BaseSink::stats()` → `{writes, errors, total_write_ns, p99_ns}`. Обёртка-декоратор `InstrumentedSink` + Writer-interface для per-sink вывода.
+**Effort:** средний (1-2 дня).
+**Impact:** высокий для operations.
 
-### RateLimiter: no aggregated drop metric
+### `trace_id` / `span_id` → top-level в OTLP LogRecord (из review 12)
+**Что:** интерсептить attribute keys `trace_id`/`span_id`, выносить на top уровня LogRecord (hex string) вместо attribute.
+**Зачем:** correlation logs↔traces в Tempo/Jaeger не работает если trace_id в attributes — только если в top-level поле.
+**Как:** в `OtlpJsonFormatter::AddTag`: если `key == "trace_id"|"span_id"` → сохранить в отдельный slot, эмитить перед `attributes` на финализации.
+**Effort:** маленький (2-3 часа).
+**Impact:** высокий для tracing ecosystem.
 
-`logging::impl::RateLimiter` keeps `dropped_count` in a `thread_local RateLimitData` per `LOG_LIMITED_*` call site. The counter is resurfaced into the *next* emitted record as a `[dropped=N]` suffix, then cleared every second.
+### RateLimiter per-source callback (из BACKLOG rev.1)
+**Что:** `SetRateLimitDropHandler(fn)` — вызов per drop event.
+**Зачем:** push to monitoring system без pull'а глобального счётчика.
+**Effort:** маленький (2 часа).
+**Impact:** низкий (global counter уже есть).
 
-There is no process-wide aggregation:
-- No `GetTotalDroppedByRateLimit()` / stats handler.
-- No callback invoked on drop.
-- Monitoring systems cannot observe rate-limit pressure until an eligible record finally escapes the throttle.
+---
 
-**Options to evaluate**
+## Transport / delivery
 
-1. **Atomic global counter**: bump a `std::atomic<uint64_t>` alongside the thread-local; expose via public getter. Simple, adds one atomic op per dropped record.
-2. **Per-source-line registry**: intrusive list of `RateLimitData` instances, enumerable by callers that want a breakdown. Matches userver's statistics::Writer style. Heavier — each LOG_LIMITED site registers once on first hit.
-3. **Drop callback**: `SetRateLimitDropHandler(void(*)(const char* file, int line, uint64_t count))`. Lets apps push to their preferred observability system without a pull-based API. No built-in storage.
+### `OtlpBatchSink` через HTTP/JSON POST (из review 12)
+**Что:** sink, собирающий N записей → оборачивает в `ExportLogsServiceRequest` → POST `http://collector:4318/v1/logs`.
+**Зачем:** без otel-collector-sidecar, прямой push в backend (Grafana Cloud, Honeycomb).
+**Как:** добавить HTTP client. Варианты:
+- `cpp-httplib` (single-header, MIT, 150KB) — easy add.
+- `libcurl` — fattt dep, but battle-tested.
+- Свой winhttp + POSIX — портируемо но много кода.
+**Effort:** средний (1 день с cpp-httplib).
+**Impact:** средний — многие деплои уже используют collector-sidecar.
 
-Preferred: **(1) atomic counter + (3) optional callback**. (2) is a bigger change and duplicates what dynamic_debug already manages.
+### `OtlpGrpcSink` через opentelemetry-cpp (BACKLOG)
+**Что:** полноценный OTLP/gRPC.
+**Зачем:** canonical OTLP transport, стриминг, mTLS, compression.
+**Как:** зависимость `opentelemetry-cpp` (требует grpc + protobuf — много).
+**Effort:** большой (2-3 дня + boxing grpc через Conan).
+**Impact:** низкий для большинства — HTTP/JSON покрывает 90%.
 
-### Other observability gaps
+### Windows AF_UNIX тест (BACKLOG)
+**Что:** активировать `UnixSocketSink` на Win10 1803+ через `#define ULOG_HAVE_AFUNIX`, test.
+**Effort:** маленький (30 мин).
+**Impact:** нишевой (редкий deploy scenario).
 
-- No `AsyncLogger::GetQueueDepth()` / pending-records metric (only `GetDroppedCount`).
-- No formatter-level record-length histogram (for tuning `SmallString<N>`).
-- No per-sink write-latency / error counter.
-
-## Correctness / safety
-
-- **`GetDefaultLogger()` returning `LoggerRef`** is documented as short-lived. Consider deprecating in favor of `GetDefaultLoggerPtr()` in a future major, or at least annotating with `[[deprecated]]` when called in a long-lived context can be detected.
-- **`LogHelper(LoggerRef, …)` direct construction bypasses dynamic-debug + ShouldLog**. Consider making that ctor private + friending the macros, so users who want a manual helper go through `LogHelper(LoggerPtr, …)` which keeps ownership and still bypasses the macro filter (user responsibility).
-- **Tracing hook is a single callback slot**. Multi-hook (chain) support would let multiple tracing systems coexist without the app writing a fan-out manually.
+---
 
 ## Performance
 
-- **Per-log heap alloc on the default-logger path**: `GetDefaultLoggerPtr()` cross-converts `boost::shared_ptr` ↔ `std::shared_ptr` via a lambda-captured deleter. One control-block allocation per LOG call. Options: TLS cache with generation counter, or switch LoggerPtr to boost throughout.
-- **AsyncLogger payload copy**: every record is copied from `SmallString<4096>` into a heap `std::string`. Consider a `SmallString`-backed `LogRecord` or an arena.
-- **`dynamic_debug::LookupDynamicDebugLog` takes a `shared_lock` even when the registry is empty**. Add an `std::atomic<bool> has_entries` fast path to avoid the lock on the hot read side.
-- **TSKV `module=` field emits backslash-escaped Windows paths** (`H:\\Workspace\\...`). Add `ULOG_SOURCE_ROOT` / `USERVER_FILEPATH`-style source-relative trimming.
+### Sanitizer CI (ASan / TSan / UBSan) (из review 15)
+**Что:** GH Actions matrix добавить 3 job'а с sanitizer'ами.
+**Зачем:** ловить UB, data race, heap errors. `ConcurrentSwapWhileLoggingDoesNotCrash` — реально проверяется только с TSan.
+**Как:** отдельные matrix entries `linux-asan`, `linux-tsan`, `linux-ubsan` с `-fsanitize=...` + опцией `ULOG_BUILD_BENCH=OFF`.
+**Effort:** маленький (2 часа).
+**Impact:** высокий — может найти скрытые race'ы.
 
-## Coverage
+### Moodycamel per-producer token caching (из review 20)
+**Что:** thread_local `ProducerToken` для moodycamel queue.
+**Зачем:** multi-producer 8T regression — bench показал drop с 4.35M → 1.66M rec/s.
+**Как:** `moodycamel::ProducerToken tls_token(queue)`; `enqueue(tls_token, ...)`.
+**Effort:** маленький (1 час).
+**Impact:** средний — actual perf выигрыш на 8+ threads.
 
-- Tests for `LOG_LIMITED_*` drop count behavior (flood > 1 second, assert `[dropped=N]` suffix and reset).
-- Tests for `DefaultLoggerGuard`.
-- Tests for concurrent `SetDefaultLogger` + logging (stress; confirm atomic_shared_ptr path never dangles).
-- TCP/Unix socket sink smoke tests against a local listener thread.
-- `LogExtra::Stacktrace()` / `Stacktrace` cache behavior.
-- `ULOG_ERASE_LOG_WITH_LEVEL=N` compile-erase tests (build + nm/dumpbin assertion that the removed LOG_* expansions produce no symbols).
+### Arena allocator formatter+item в одном malloc (из review 19)
+**Что:** формттер + TextLogItem в одном buffer через placement new.
+**Зачем:** 2 heap alloc'а per log → 1. ~50 ns save.
+**Effort:** средний (1 день с осторожным lifetime).
+**Impact:** средний — sub-микросекундный выигрыш.
 
-## Build / CI
+### Multi-worker async logger (из review 20)
+**Что:** пул worker threads на один queue (backed by moodycamel SPMC).
+**Зачем:** больше чем 4M rec/s single-consumer — если sink параллелится.
+**Effort:** большой (2 дня — queue redesign, per-sink lock contention).
+**Impact:** нишевой — мало кто упирается в 4M rec/s.
 
-- **No CI yet**. Add GitHub Actions matrix: Ubuntu (gcc, clang), macOS (clang), Windows (msvc, clang-cl). Each runs conan install + cmake + ctest.
-- **No benchmarks**. Add Google Benchmark suite:
-  - Throughput (records/sec, single-producer, multi-producer).
-  - Latency distribution (p50/p99 from emit to sink write).
-  - Sync vs async vs null logger baseline.
-  - Compare with spdlog + glog.
+### `SmallString<>`-backed `text_` в Json/OtlpJsonFormatter (из review 21)
+**Что:** заменить `std::string text_` на `SmallString<64>`.
+**Зачем:** короткие сообщения (<64 char) остаются inline — убираем один alloc.
+**Effort:** маленький (1 час).
+**Impact:** маленький.
 
-## Features
+### Short-circuit formatter alloc when logger rejects level (из review 20)
+**Что:** в LogHelper ctor проверять `logger.ShouldLog(level)` до `MakeFormatter`.
+**Зачем:** если logger отклонит уровень позже — сэкономить `make_unique<TextLogItem>` 540 байт.
+**Проблема:** макрос уже делает `ShouldNotLog` check — LogHelper конструируется только если логирование прошло фильтр. Этот пункт возможно уже закрыт и остался в review по ошибке.
+**Effort:** пересмотреть — скорее всего redundant.
 
-- **`JsonFormatter::Variant::kYaDeploy`** is currently a no-op stub. Either implement (`@timestamp`/`_level`/`_message` rename) or remove the enum until there's a concrete spec.
-- **`ulog::yaml` module** (optional yaml-cpp loader for `LoggerConfig`) — placeholder in CMake, not wired.
-- **OTLP sink** — tracked in extraction plan, not started.
-- **POSIX Windows-named-event reopen handler** — analog to SIGUSR1 for Windows services. Low priority (apps usually call `RequestReopen` from a control RPC instead).
+---
+
+## Config / integrations
+
+### yaml-cpp config loader (из BACKLOG rev.1)
+**Что:** `ulog::LoggerConfig ParseYamlConfig(const YAML::Node&)`.
+**Зачем:** YAML конфиг для services (userver-style).
+**Блок:** `yaml-cpp` нет в conan cache — собрать потребует fresh build (легче boost'а).
+**Effort:** маленький (1-2 часа).
+**Impact:** низкий — C++ builder API уже есть.
+
+### Logger configuration reload (new)
+**Что:** watcher на config файл → hot reload уровня + sinks без перезапуска.
+**Зачем:** change verbosity в production без restart.
+**Effort:** средний.
+**Impact:** средний.
+
+---
+
+## Coverage / testing gaps
+
+### TCP reopen с multi-accept listener (из review 14)
+**Что:** listener, принимающий >1 conn'a; тест `Reopen` + reconnect.
+**Зачем:** current test покрывает только disconnect contract, не reconnect.
+**Effort:** маленький (1 час — переделать LocalListener в event-loop).
+**Impact:** средний coverage.
+
+### Compile-erase binary assertion (из BACKLOG rev.1)
+**Что:** build с `ULOG_ERASE_LOG_WITH_LEVEL=3` → dumpbin/objdump on Windows/Linux → assert strings "LOG_TRACE text" нет в binary.
+**Зачем:** верифицировать что `ULOG_ERASE_*` действительно удаляет код.
+**Effort:** средний (CMake fixture + platform-specific tool invocation).
+**Impact:** низкий.
+
+### AddJsonTag + YaDeploy combo test (из review 21)
+**Что:** добавить тест `YaDeploy + AddJsonTag` — покрывается только строковая версия.
+**Effort:** маленький (10 мин).
+**Impact:** маленький coverage.
+
+### LogHelper::WithException test (из BACKLOG rev.1)
+**Что:** verify `WithException(ex)` кладёт `exception_type` + `exception_msg` в record.
+**Effort:** маленький.
+**Impact:** coverage.
+
+### Stacktrace с реальной символизацией (из BACKLOG)
+**Что:** fully check `LogExtra::Stacktrace()` output содержит function names, file paths.
+**Проблема:** зависит от PDB availability (MSVC) / debug symbols (gcc).
+**Effort:** средний.
+**Impact:** низкий.
+
+---
+
+## Build / infrastructure
+
+### CI cache for Conan downloads (из review 15)
+**Что:** `actions/cache` для `~/.conan2/p` между runs.
+**Зачем:** первый run GH Actions будет собирать fmt/gtest/boost с нуля — долго.
+**Effort:** маленький (5 строк YAML).
+**Impact:** средний — ускорит CI.
+
+### CI C++20/23 matrix row (из review 15)
+**Что:** дополнительный job с `compiler.cppstd=20`.
+**Зачем:** ловит accidental C++17-only idioms.
+**Effort:** маленький.
+**Impact:** средний.
+
+### CI artifact upload on test failure (из review 15)
+**Что:** `actions/upload-artifact` при ctest fail — upload `build/Testing/Temporary/LastTest.log`.
+**Effort:** маленький.
+**Impact:** ops comfort.
+
+### Google Benchmark в CI (из BACKLOG)
+**Что:** отдельный job запускает `ulog-bench`, сохраняет JSON result как artifact. Опционально compare with baseline.
+**Effort:** средний.
+**Impact:** средний — tracking perf regressions.
+
+---
+
+## API / polish
+
+### `ULOG_PURGE_TLS_DEFAULT_CACHE()` escape hatch (из review 14)
+**Что:** public API чтобы thread сбрасывал TLS cache после `SetDefaultLogger(nullptr)`.
+**Зачем:** long-lived threads держат ref на старый logger до следующего LOG_*.
+**Effort:** маленький.
+**Impact:** нишевой.
+
+### `[[deprecated]]` на `GetDefaultLogger() -> LoggerRef` (из review 01)
+**Что:** annotate для предупреждения о короткоживущем контракте.
+**Effort:** маленький.
+**Impact:** маленький — API signals.
+
+### Source-root trim: документировать PUBLIC consumer override (из review 02)
+**Что:** README + config.cmake — как downstream консумер переопределяет `ULOG_SOURCE_ROOT`.
+**Effort:** маленький.
+**Impact:** маленький.
+
+---
+
+## Удобство разработчика
+
+### `ULOG_EXAMPLES_DIR` пример с structured JSON consumer
+**Что:** пример "tail -f ulog.jsonl | jq" — показать user'у что он получает.
+**Effort:** маленький.
+
+### Doxygen config
+**Что:** `docs/Doxyfile`, генерация HTML reference.
+**Effort:** маленький.
+
+---
+
+## Priority matrix
+
+### Высокий impact, низкий effort (делать в первую очередь)
+1. **Sanitizer CI** — может поймать скрытые race'ы.
+2. **`trace_id`/`span_id` top-level в OTLP** — critical для tracing-correlation.
+3. **Moodycamel producer token caching** — фикс перф-регрессии на 8T.
+4. **CI cache + C++20 row** — улучшить CI pipeline.
+
+### Высокий impact, средний effort
+5. **Per-sink метрики** — essential для production.
+6. **OtlpBatchSink HTTP** — real OTLP transport без sidecar.
+
+### Средний impact
+7. **Compile-erase assertion test**.
+8. **TCP multi-accept reopen тест**.
+9. **Arena allocator**.
+10. **YAML config loader**.
+
+### Низкий приоритет
+11. **OtlpGrpcSink**.
+12. **Multi-worker async**.
+13. **Hot config reload**.
+14. **Doxygen**.
+
+---
+
+## Рекомендация
+
+Следующая фаза — **Phase 23: sanitizer CI + trace correlation**:
+- Добавить CI matrix rows для ASan/TSan/UBSan.
+- Top-level `trace_id`/`span_id` в OtlpJsonFormatter.
+
+Обе — маленькие, высокий impact, отлично дополняют OTLP фазу (чтобы tracing correlation реально работал) и закрывают безопасность (sanitizers).
