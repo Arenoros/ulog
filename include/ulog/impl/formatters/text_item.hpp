@@ -9,8 +9,14 @@
 namespace ulog::impl::formatters {
 
 /// Textual record: a finalized single-line string (including trailing '\n').
+///
+/// Inline capacity 512 B fits the vast majority of records (timestamp +
+/// level + module + text + a handful of tags). Larger records spill to a
+/// heap std::string inside SmallString. With a 512 B inline buffer the
+/// whole TextLogItem object fits in ~540 B — one small heap allocation
+/// per record on the async producer path, rather than a full 4 KB.
 struct TextLogItem final : LoggerItemBase {
-    detail::SmallString<4096> payload;
+    detail::SmallString<512> payload;
 };
 
 }  // namespace ulog::impl::formatters

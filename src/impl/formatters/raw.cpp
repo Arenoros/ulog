@@ -1,11 +1,14 @@
 #include <ulog/impl/formatters/raw.hpp>
 
+#include <utility>
+
 #include <ulog/detail/tskv_escape.hpp>
 
 namespace ulog::impl::formatters {
 
 void RawFormatter::AddTag(std::string_view key, std::string_view value) {
-    auto& b = item_.payload;
+    if (!item_) return;
+    auto& b = item_->payload;
     if (has_fields_) b += detail::kTskvPairsSeparator;
     detail::EncodeTskv(b, key, detail::TskvMode::kKeyReplacePeriod);
     b += detail::kTskvKeyValueSeparator;
@@ -18,7 +21,8 @@ void RawFormatter::AddJsonTag(std::string_view key, const JsonString& value) {
 }
 
 void RawFormatter::SetText(std::string_view text) {
-    auto& b = item_.payload;
+    if (!item_) return;
+    auto& b = item_->payload;
     if (has_fields_) b += detail::kTskvPairsSeparator;
     detail::EncodeTskv(b, "text", detail::TskvMode::kKey);
     b += detail::kTskvKeyValueSeparator;
@@ -26,12 +30,13 @@ void RawFormatter::SetText(std::string_view text) {
     has_fields_ = true;
 }
 
-LoggerItemRef RawFormatter::ExtractLoggerItem() {
+std::unique_ptr<LoggerItemBase> RawFormatter::ExtractLoggerItem() {
+    if (!item_) return nullptr;
     if (!finalized_) {
-        item_.payload += '\n';
+        item_->payload += '\n';
         finalized_ = true;
     }
-    return item_;
+    return std::move(item_);
 }
 
 }  // namespace ulog::impl::formatters

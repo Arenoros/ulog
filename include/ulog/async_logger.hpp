@@ -59,7 +59,7 @@ public:
     std::uint64_t GetTotalLogged() const noexcept;
 
     // LoggerBase
-    void Log(Level level, impl::LoggerItemRef item) override;
+    void Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) override;
     void Flush() override;
 
 private:

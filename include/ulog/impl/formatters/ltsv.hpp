@@ -23,10 +23,10 @@ public:
     void AddTag(std::string_view key, std::string_view value) override;
     void AddJsonTag(std::string_view key, const JsonString& value) override;
     void SetText(std::string_view text) override;
-    LoggerItemRef ExtractLoggerItem() override;
+    std::unique_ptr<LoggerItemBase> ExtractLoggerItem() override;
 
 private:
-    TextLogItem item_;
+    std::unique_ptr<TextLogItem> item_{std::make_unique<TextLogItem>()};
     bool finalized_{false};
 };
 

@@ -22,8 +22,10 @@ class LoggerBase {
 public:
     virtual ~LoggerBase();
 
-    /// Writes a formatted log item.
-    virtual void Log(Level level, LoggerItemRef item) = 0;
+    /// Writes a formatted log item. Takes ownership — synchronous loggers
+    /// consume immediately, asynchronous loggers move the pointer into
+    /// their queue.
+    virtual void Log(Level level, std::unique_ptr<LoggerItemBase> item) = 0;
 
     /// Flushes pending output (if any).
     virtual void Flush() = 0;

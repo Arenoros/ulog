@@ -13,7 +13,7 @@ public:
         SetLevel(Level::kNone);
         SetFlushOn(Level::kNone);
     }
-    void Log(Level, impl::LoggerItemRef) override {}
+    void Log(Level, std::unique_ptr<impl::LoggerItemBase>) override {}
     void Flush() override {}
     impl::formatters::BasePtr MakeFormatter(Level, std::string_view, std::string_view, int) override {
         return nullptr;

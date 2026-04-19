@@ -22,7 +22,7 @@ public:
 
     void AddSink(sinks::SinkPtr sink);
 
-    void Log(Level level, impl::LoggerItemRef item) override;
+    void Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) override;
     void Flush() override;
 
 private:

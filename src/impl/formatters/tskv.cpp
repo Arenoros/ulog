@@ -1,5 +1,7 @@
 #include <ulog/impl/formatters/tskv.hpp>
 
+#include <utility>
+
 #include <fmt/format.h>
 
 #include <ulog/detail/timestamp.hpp>
@@ -12,7 +14,7 @@ TskvFormatter::TskvFormatter(Level level,
                              std::string_view module_file,
                              int module_line,
                              std::chrono::system_clock::time_point tp) {
-    auto& b = item_.payload;
+    auto& b = item_->payload;
 
     detail::EncodeTskv(b, "timestamp", detail::TskvMode::kKey);
     b += detail::kTskvKeyValueSeparator;
@@ -34,7 +36,8 @@ TskvFormatter::TskvFormatter(Level level,
 }
 
 void TskvFormatter::AddTag(std::string_view key, std::string_view value) {
-    auto& b = item_.payload;
+    if (!item_) return;
+    auto& b = item_->payload;
     b += detail::kTskvPairsSeparator;
     detail::EncodeTskv(b, key, detail::TskvMode::kKeyReplacePeriod);
     b += detail::kTskvKeyValueSeparator;
@@ -42,24 +45,25 @@ void TskvFormatter::AddTag(std::string_view key, std::string_view value) {
 }
 
 void TskvFormatter::AddJsonTag(std::string_view key, const JsonString& value) {
-    // TSKV has no native JSON concept — emit the JSON text verbatim, escaped.
     AddTag(key, value.View());
 }
 
 void TskvFormatter::SetText(std::string_view text) {
-    auto& b = item_.payload;
+    if (!item_) return;
+    auto& b = item_->payload;
     b += detail::kTskvPairsSeparator;
     detail::EncodeTskv(b, "text", detail::TskvMode::kKey);
     b += detail::kTskvKeyValueSeparator;
     detail::EncodeTskv(b, text, detail::TskvMode::kValue);
 }
 
-LoggerItemRef TskvFormatter::ExtractLoggerItem() {
+std::unique_ptr<LoggerItemBase> TskvFormatter::ExtractLoggerItem() {
+    if (!item_) return nullptr;
     if (!finalized_) {
-        item_.payload += '\n';
+        item_->payload += '\n';
         finalized_ = true;
     }
-    return item_;
+    return std::move(item_);
 }
 
 }  // namespace ulog::impl::formatters

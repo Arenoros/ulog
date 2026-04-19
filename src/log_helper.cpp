@@ -91,9 +91,10 @@ LogHelper::~LogHelper() {
         FormatterTagSink sink(impl_->formatter.get());
         impl::DispatchTracingHook(sink);
         impl_->formatter->SetText(impl_->text.view());
-        auto& item = impl_->formatter->ExtractLoggerItem();
-        impl_->logger_ref.Log(impl_->level, item);
-        if (impl_->level >= impl_->logger_ref.GetFlushOn()) impl_->logger_ref.Flush();
+        auto item = impl_->formatter->ExtractLoggerItem();
+        const bool want_flush = impl_->level >= impl_->logger_ref.GetFlushOn();
+        impl_->logger_ref.Log(impl_->level, std::move(item));
+        if (want_flush) impl_->logger_ref.Flush();
     } catch (...) {
         // Never throw from a logger destructor.
     }

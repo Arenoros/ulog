@@ -12,8 +12,9 @@ void SyncLogger::AddSink(sinks::SinkPtr sink) {
     sinks_.push_back(std::move(sink));
 }
 
-void SyncLogger::Log(Level level, impl::LoggerItemRef item) {
-    auto& text_item = static_cast<impl::formatters::TextLogItem&>(item);
+void SyncLogger::Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) {
+    if (!item) return;
+    auto& text_item = static_cast<impl::formatters::TextLogItem&>(*item);
     const auto view = text_item.payload.view();
 
     std::vector<sinks::SinkPtr> snapshot;

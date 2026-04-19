@@ -4,10 +4,14 @@
 #include <chrono>
 #include <condition_variable>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <utility>
+#include <vector>
 
 #include <concurrentqueue.h>
+
+#include <ulog/impl/formatters/text_item.hpp>
 
 namespace ulog {
 
@@ -15,7 +19,9 @@ namespace {
 
 struct LogRecord {
     Level level{Level::kInfo};
-    std::string payload;
+    /// Produced by the formatter on the producer thread; the worker only
+    /// reads (never mutates). Owning pointer — consumed exactly once.
+    std::unique_ptr<impl::LoggerItemBase> item;
 };
 
 struct ReopenRequest {
@@ -50,15 +56,22 @@ struct AsyncLogger::State {
     explicit State(const Config& cfg)
         : config(cfg), records(cfg.queue_capacity > 0 ? cfg.queue_capacity : 32) {}
 
-    void WakeWorker() { cv.notify_all(); }
+    /// Wakes the worker only when it might actually be asleep. When pending
+    /// was already non-zero before this producer's fetch_add, the worker is
+    /// either draining already or about to wake on its next CV wait_for.
+    void WakeIfIdle(std::size_t prev_pending) {
+        if (prev_pending == 0) cv.notify_one();
+    }
+
+    void WakeForControl() { cv.notify_all(); }
 
     bool TryEnqueueRecord(LogRecord&& rec) {
-        if (config.queue_capacity > 0 && pending.load(std::memory_order_relaxed) >= config.queue_capacity) {
+        if (config.queue_capacity > 0 &&
+            pending.load(std::memory_order_relaxed) >= config.queue_capacity) {
             if (config.overflow == OverflowBehavior::kDiscard) {
                 dropped.fetch_add(1, std::memory_order_relaxed);
                 return false;
             }
-            // Block until space frees up.
             std::unique_lock lock(wait_mu);
             cv.wait(lock, [&] {
                 return stop.load(std::memory_order_relaxed) ||
@@ -67,8 +80,8 @@ struct AsyncLogger::State {
             if (stop.load(std::memory_order_relaxed)) return false;
         }
         records.enqueue(std::move(rec));
-        pending.fetch_add(1, std::memory_order_relaxed);
-        WakeWorker();
+        const auto prev = pending.fetch_add(1, std::memory_order_release);
+        WakeIfIdle(prev);
         return true;
     }
 
@@ -86,15 +99,20 @@ struct AsyncLogger::State {
                     snapshot = sinks;
                 }
                 for (std::size_t i = 0; i < n; ++i) {
+                    auto* text = static_cast<impl::formatters::TextLogItem*>(batch[i].item.get());
+                    if (!text) continue;
+                    const auto view = text->payload.view();
                     for (const auto& s : snapshot) {
                         if (!s->ShouldLog(batch[i].level)) continue;
-                        try { s->Write(batch[i].payload); }
+                        try { s->Write(view); }
                         catch (...) {}
                     }
+                    batch[i].item.reset();
                 }
-                pending.fetch_sub(n, std::memory_order_relaxed);
+                pending.fetch_sub(n, std::memory_order_release);
                 total_logged.fetch_add(n, std::memory_order_relaxed);
-                WakeWorker();  // in case a blocked producer was waiting on capacity
+                // Blocked producers waiting on capacity may be parked.
+                WakeForControl();
             }
         };
 
@@ -141,7 +159,6 @@ struct AsyncLogger::State {
             });
         }
 
-        // Final drain after stop signal.
         drain_records();
         drain_reopens();
         drain_flushes();
@@ -157,7 +174,7 @@ AsyncLogger::AsyncLogger(const Config& cfg) : impl::TextLoggerBase(cfg.format) {
 
 AsyncLogger::~AsyncLogger() {
     state_->stop.store(true, std::memory_order_release);
-    state_->WakeWorker();
+    state_->WakeForControl();
     if (state_->worker.joinable()) state_->worker.join();
 }
 
@@ -169,14 +186,14 @@ void AsyncLogger::AddSink(sinks::SinkPtr sink) {
 
 void AsyncLogger::RequestReopen(sinks::ReopenMode mode) {
     state_->reopens.enqueue({mode});
-    state_->WakeWorker();
+    state_->WakeForControl();
 }
 
-void AsyncLogger::Log(Level level, impl::LoggerItemRef item) {
-    auto& text = static_cast<impl::formatters::TextLogItem&>(item);
+void AsyncLogger::Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) {
+    if (!item) return;
     LogRecord rec;
     rec.level = level;
-    rec.payload.assign(text.payload.data(), text.payload.size());
+    rec.item = std::move(item);
     state_->TryEnqueueRecord(std::move(rec));
 }
 
@@ -184,7 +201,7 @@ void AsyncLogger::Flush() {
     std::promise<void> done;
     auto fut = done.get_future();
     state_->flushes.enqueue({&done});
-    state_->WakeWorker();
+    state_->WakeForControl();
     fut.wait();
 }
 

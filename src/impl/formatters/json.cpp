@@ -74,7 +74,8 @@ std::string_view JsonFormatter::TranslateKey(std::string_view key) const noexcep
 }
 
 void JsonFormatter::Finalize() {
-    auto& b = item_.payload;
+    if (!item_) return;
+    auto& b = item_->payload;
     b += '{';
     bool first = true;
 
@@ -103,12 +104,13 @@ void JsonFormatter::Finalize() {
     b += "}\n";
 }
 
-LoggerItemRef JsonFormatter::ExtractLoggerItem() {
+std::unique_ptr<LoggerItemBase> JsonFormatter::ExtractLoggerItem() {
+    if (!item_) return nullptr;
     if (!finalized_) {
         Finalize();
         finalized_ = true;
     }
-    return item_;
+    return std::move(item_);
 }
 
 }  // namespace ulog::impl::formatters

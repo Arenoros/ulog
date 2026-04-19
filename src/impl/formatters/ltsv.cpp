@@ -1,5 +1,7 @@
 #include <ulog/impl/formatters/ltsv.hpp>
 
+#include <utility>
+
 #include <fmt/format.h>
 
 #include <ulog/detail/timestamp.hpp>
@@ -17,7 +19,7 @@ LtsvFormatter::LtsvFormatter(Level level,
                              std::string_view module_file,
                              int module_line,
                              std::chrono::system_clock::time_point tp) {
-    auto& b = item_.payload;
+    auto& b = item_->payload;
 
     detail::EncodeTskv(b, "timestamp", detail::TskvMode::kKey);
     b += kLtsvSeparator;
@@ -39,7 +41,8 @@ LtsvFormatter::LtsvFormatter(Level level,
 }
 
 void LtsvFormatter::AddTag(std::string_view key, std::string_view value) {
-    auto& b = item_.payload;
+    if (!item_) return;
+    auto& b = item_->payload;
     b += kLtsvPairsSeparator;
     detail::EncodeTskv(b, key, detail::TskvMode::kKeyReplacePeriod);
     b += kLtsvSeparator;
@@ -51,19 +54,21 @@ void LtsvFormatter::AddJsonTag(std::string_view key, const JsonString& value) {
 }
 
 void LtsvFormatter::SetText(std::string_view text) {
-    auto& b = item_.payload;
+    if (!item_) return;
+    auto& b = item_->payload;
     b += kLtsvPairsSeparator;
     detail::EncodeTskv(b, "text", detail::TskvMode::kKey);
     b += kLtsvSeparator;
     detail::EncodeTskv(b, text, detail::TskvMode::kValue);
 }
 
-LoggerItemRef LtsvFormatter::ExtractLoggerItem() {
+std::unique_ptr<LoggerItemBase> LtsvFormatter::ExtractLoggerItem() {
+    if (!item_) return nullptr;
     if (!finalized_) {
-        item_.payload += '\n';
+        item_->payload += '\n';
         finalized_ = true;
     }
-    return item_;
+    return std::move(item_);
 }
 
 }  // namespace ulog::impl::formatters
