@@ -51,7 +51,9 @@ struct LogHelper::Impl {
           active(active),
           writer(nullptr) {
         if (active) {
-            formatter = logger_ref.MakeFormatter(
+            formatter = logger_ref.MakeFormatterInto(
+                &formatter_scratch,
+                sizeof(formatter_scratch),
                 level,
                 location.function ? std::string_view(location.function) : std::string_view{},
                 location.file ? std::string_view(location.file) : std::string_view{},
@@ -65,6 +67,11 @@ struct LogHelper::Impl {
     Level level;
     LogRecordLocation location;
     bool active;
+    /// Inline scratch for the concrete formatter. Destructor runs via
+    /// the `formatter` deleter — no heap alloc for the formatter itself
+    /// on the hot path (formerly one `new` per record).
+    alignas(impl::LoggerBase::kInlineFormatterAlign)
+        std::byte formatter_scratch[impl::LoggerBase::kInlineFormatterSize];
     impl::formatters::BasePtr formatter;
     detail::SmallString<1024> text;
     impl::TagWriter writer;

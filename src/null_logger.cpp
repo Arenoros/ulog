@@ -15,8 +15,10 @@ public:
     }
     void Log(Level, std::unique_ptr<impl::LoggerItemBase>) override {}
     void Flush() override {}
-    impl::formatters::BasePtr MakeFormatter(Level, std::string_view, std::string_view, int) override {
-        return nullptr;
+    impl::formatters::BasePtr MakeFormatterInto(void*, std::size_t,
+                                                Level, std::string_view,
+                                                std::string_view, int) override {
+        return impl::formatters::BasePtr{};
     }
 };
 

@@ -22,7 +22,8 @@ class RateLimiter;
 class TagWriter;
 namespace formatters {
 class Base;
-using BasePtr = std::unique_ptr<Base>;
+struct BaseDeleter;
+using BasePtr = std::unique_ptr<Base, BaseDeleter>;
 }  // namespace formatters
 }  // namespace impl
 

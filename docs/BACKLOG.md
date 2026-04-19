@@ -45,12 +45,6 @@
 
 ## Performance
 
-### Arena allocator formatter+item в одном malloc (из review 19)
-**Что:** формттер + TextLogItem в одном buffer через placement new.
-**Зачем:** 2 heap alloc'а per log → 1. ~50 ns save.
-**Effort:** средний (1 день с осторожным lifetime).
-**Impact:** средний — sub-микросекундный выигрыш.
-
 ### Multi-worker async logger (из review 20)
 **Что:** пул worker threads на один queue (backed by moodycamel SPMC).
 **Зачем:** больше чем 4M rec/s single-consumer — если sink параллелится.

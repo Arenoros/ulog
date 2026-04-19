@@ -239,6 +239,37 @@ TEST(FormatterText, TraceContextFallsBackToPlainTags) {
     ulog::SetDefaultLogger(nullptr);
 }
 
+TEST(FormatterInlineAlloc, PlacesFormatterIntoScratchWhenFits) {
+    // White-box check on the Phase 26 inline-construction path:
+    // MakeFormatterInto with a correctly-sized scratch should placement-new
+    // the formatter inside that buffer and return a BasePtr carrying the
+    // destroy-only deleter (heap=false).
+    ulog::MemLogger logger(ulog::Format::kJson);
+    alignas(ulog::impl::LoggerBase::kInlineFormatterAlign)
+        std::byte scratch[ulog::impl::LoggerBase::kInlineFormatterSize]{};
+    auto fmt = logger.MakeFormatterInto(
+        scratch, sizeof(scratch), ulog::Level::kInfo, {}, {}, 0);
+    ASSERT_NE(fmt, nullptr);
+    const auto* raw = reinterpret_cast<const std::byte*>(fmt.get());
+    EXPECT_GE(raw, scratch);
+    EXPECT_LT(raw, scratch + sizeof(scratch));
+    EXPECT_FALSE(fmt.get_deleter().heap);
+}
+
+TEST(FormatterInlineAlloc, FallsBackToHeapWhenScratchTooSmall) {
+    // Symmetric test: passing a zero-sized scratch forces the heap path.
+    // The pointer must NOT lie inside the caller's buffer and the
+    // deleter must run delete on destruction (heap=true).
+    ulog::MemLogger logger(ulog::Format::kJson);
+    std::byte scratch[1]{};
+    auto fmt = logger.MakeFormatterInto(
+        scratch, 0, ulog::Level::kInfo, {}, {}, 0);
+    ASSERT_NE(fmt, nullptr);
+    const auto* raw = reinterpret_cast<const std::byte*>(fmt.get());
+    EXPECT_TRUE(raw < scratch || raw >= scratch + sizeof(scratch));
+    EXPECT_TRUE(fmt.get_deleter().heap);
+}
+
 TEST(FormatterJson, RepeatedSetTextKeepsLastValue) {
     // SmallString::assign clears-then-appends, so a second SetText must
     // replace the first — not concatenate. Formatter is normally one-shot

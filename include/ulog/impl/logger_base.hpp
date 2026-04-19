@@ -30,13 +30,30 @@ public:
     /// Flushes pending output (if any).
     virtual void Flush() = 0;
 
+    /// Scratch buffer size reserved by `LogHelper::Impl` for inline
+    /// formatter construction. Large enough to fit every built-in
+    /// formatter; a logger that wants a custom formatter exceeding this
+    /// budget falls back to a heap allocation inside `MakeFormatterInto`.
+    static constexpr std::size_t kInlineFormatterSize = 256;
+    static constexpr std::size_t kInlineFormatterAlign = 16;
+
     /// Creates a formatter suited to this logger's text format.
-    /// `module_function`, `module_file`, `module_line` describe the call site
-    /// (from the LOG_* macro expansion). `tp` is the record's timestamp.
-    virtual formatters::BasePtr MakeFormatter(Level level,
-                                              std::string_view module_function,
-                                              std::string_view module_file,
-                                              int module_line) = 0;
+    /// `module_function`, `module_file`, `module_line` describe the call
+    /// site (from the LOG_* macro expansion). Implementations try to
+    /// placement-new the formatter into `scratch` (capacity/alignment
+    /// guaranteed by `LogHelper` to meet the constants above) — when that
+    /// works the returned `BasePtr` carries a destroy-only deleter so
+    /// LogHelper pays zero heap allocations for the formatter. If the
+    /// scratch is too small (custom big formatter, or the caller passed
+    /// null/undersized), the implementation falls back to `new` and the
+    /// deleter reclaims memory on destruction.
+    virtual formatters::BasePtr MakeFormatterInto(
+        void* scratch,
+        std::size_t scratch_size,
+        Level level,
+        std::string_view module_function,
+        std::string_view module_file,
+        int module_line) = 0;
 
     void SetLevel(Level level) noexcept { level_.store(level, std::memory_order_relaxed); }
     Level GetLevel() const noexcept { return level_.load(std::memory_order_relaxed); }
@@ -62,10 +79,12 @@ class TextLoggerBase : public LoggerBase {
 public:
     explicit TextLoggerBase(Format format) noexcept : format_(format) {}
     Format GetFormat() const noexcept { return format_; }
-    formatters::BasePtr MakeFormatter(Level level,
-                                      std::string_view module_function,
-                                      std::string_view module_file,
-                                      int module_line) override;
+    formatters::BasePtr MakeFormatterInto(void* scratch,
+                                          std::size_t scratch_size,
+                                          Level level,
+                                          std::string_view module_function,
+                                          std::string_view module_file,
+                                          int module_line) override;
 
 private:
     Format format_;

@@ -85,6 +85,20 @@ public:
     virtual std::unique_ptr<LoggerItemBase> ExtractLoggerItem() = 0;
 };
 
-using BasePtr = std::unique_ptr<Base>;
+/// Deleter that knows whether the Base instance was constructed inline
+/// into caller-provided scratch (destroy-only) or on the heap (delete).
+/// Enables `MakeFormatterInto` to place the formatter directly inside a
+/// LogHelper's stack buffer, shedding the otherwise-mandatory heap alloc
+/// on the logging hot path.
+struct BaseDeleter {
+    bool heap{true};
+    void operator()(Base* p) const noexcept {
+        if (!p) return;
+        if (heap) { delete p; }
+        else      { p->~Base(); }
+    }
+};
+
+using BasePtr = std::unique_ptr<Base, BaseDeleter>;
 
 }  // namespace ulog::impl::formatters
