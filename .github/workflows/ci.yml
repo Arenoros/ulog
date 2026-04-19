@@ -36,7 +36,9 @@ jobs:
             build_type: Release
             cppstd: "17"
           - name: macos-clang
-            os: macos-13
+            # macos-13 was retired as a hosted runner label in Apr 2026.
+            # Use `macos-14` (Sonoma / Apple Silicon).
+            os: macos-14
             cc: clang
             cxx: clang++
             build_type: Release

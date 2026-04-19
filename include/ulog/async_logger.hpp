@@ -38,7 +38,8 @@ public:
         OverflowBehavior overflow = OverflowBehavior::kDiscard;
     };
 
-    explicit AsyncLogger(const Config& cfg = {});
+    AsyncLogger();
+    explicit AsyncLogger(const Config& cfg);
     ~AsyncLogger() override;
 
     AsyncLogger(const AsyncLogger&) = delete;
