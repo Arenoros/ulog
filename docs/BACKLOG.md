@@ -104,23 +104,6 @@
 
 ## Build / infrastructure
 
-### CI cache for Conan downloads (из review 15)
-**Что:** `actions/cache` для `~/.conan2/p` между runs.
-**Зачем:** первый run GH Actions будет собирать fmt/gtest/boost с нуля — долго.
-**Effort:** маленький (5 строк YAML).
-**Impact:** средний — ускорит CI.
-
-### CI C++20/23 matrix row (из review 15)
-**Что:** дополнительный job с `compiler.cppstd=20`.
-**Зачем:** ловит accidental C++17-only idioms.
-**Effort:** маленький.
-**Impact:** средний.
-
-### CI artifact upload on test failure (из review 15)
-**Что:** `actions/upload-artifact` при ctest fail — upload `build/Testing/Temporary/LastTest.log`.
-**Effort:** маленький.
-**Impact:** ops comfort.
-
 ### Google Benchmark в CI (из BACKLOG)
 **Что:** отдельный job запускает `ulog-bench`, сохраняет JSON result как artifact. Опционально compare with baseline.
 **Effort:** средний.

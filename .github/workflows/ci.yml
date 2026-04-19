@@ -28,21 +28,33 @@ jobs:
             cc: gcc
             cxx: g++
             build_type: Release
+            cppstd: "17"
           - name: linux-clang
             os: ubuntu-22.04
             cc: clang
             cxx: clang++
             build_type: Release
+            cppstd: "17"
           - name: macos-clang
             os: macos-13
             cc: clang
             cxx: clang++
             build_type: Release
+            cppstd: "17"
           - name: windows-msvc
             os: windows-2022
             cc: cl
             cxx: cl
             build_type: Release
+            cppstd: "17"
+          # C++20 row: catches accidental C++17-only idioms before they
+          # reach downstream userver integrations that build with -std=c++20.
+          - name: linux-clang-cpp20
+            os: ubuntu-22.04
+            cc: clang
+            cxx: clang++
+            build_type: Release
+            cppstd: "20"
           # Sanitizer builds: Linux clang, RelWithDebInfo so reports carry
           # frames. Only ulog's own code is instrumented — Conan deps stay
           # stock, which is cheap and sufficient for catching bugs in
@@ -55,18 +67,21 @@ jobs:
             cc: clang
             cxx: clang++
             build_type: RelWithDebInfo
+            cppstd: "17"
             sanitizer: address
           - name: linux-tsan
             os: ubuntu-22.04
             cc: clang
             cxx: clang++
             build_type: RelWithDebInfo
+            cppstd: "17"
             sanitizer: thread
           - name: linux-ubsan
             os: ubuntu-22.04
             cc: clang
             cxx: clang++
             build_type: RelWithDebInfo
+            cppstd: "17"
             sanitizer: undefined
 
     steps:
@@ -82,6 +97,20 @@ jobs:
           conan profile detect --force
           conan profile show
 
+      # Cache Conan's package store so repeat runs skip the fmt/boost/gtest
+      # build from source. Key fingerprint includes matrix identity +
+      # conanfile contents so sanitizer rows keep their own cache slice
+      # (they rebuild deps with instrumented flags in future phases).
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.conan2/p
+          key: conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-${{ matrix.sanitizer || 'none' }}-${{ hashFiles('conanfile.txt') }}
+          restore-keys: |
+            conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-${{ matrix.sanitizer || 'none' }}-
+            conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-
+
       - name: Install Ninja (Linux / macOS)
         if: runner.os != 'Windows'
         run: |
@@ -95,11 +124,12 @@ jobs:
       - name: Conan install
         env:
           BUILD_TYPE: ${{ matrix.build_type }}
+          CPPSTD: ${{ matrix.cppstd }}
         run: |
           conan install . \
             --output-folder=build \
             -s build_type="$BUILD_TYPE" \
-            -s compiler.cppstd=17 \
+            -s compiler.cppstd="$CPPSTD" \
             -c tools.cmake.cmaketoolchain:generator=Ninja \
             --build=missing
 
@@ -110,6 +140,10 @@ jobs:
           SANITIZER: ${{ matrix.sanitizer }}
           BUILD_TYPE: ${{ matrix.build_type }}
         run: |
+          # CMAKE_CXX_STANDARD is driven by Conan's toolchain via
+          # `-s compiler.cppstd=<N>` passed to the Conan install step.
+          # The CMakeLists.txt respects that via its `if(NOT DEFINED
+          # CMAKE_CXX_STANDARD)` guard, so no CLI override needed here.
           SAN_CXXFLAGS=""
           SAN_LDFLAGS=""
           EXTRA_CMAKE=()
@@ -142,3 +176,18 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
         run: ctest --output-on-failure -C ${{ matrix.build_type }}
+
+      # Capture ctest artifacts whenever the Test step fails so the log
+      # is available for post-mortem without re-running CI in debug mode.
+      # `if-no-files-found: ignore` because some failures (e.g., a build
+      # step earlier) leave no ctest logs on disk.
+      - name: Upload ctest logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-${{ matrix.name }}
+          path: |
+            build/Testing/Temporary/LastTest.log
+            build/Testing/Temporary/LastTestsFailed.log
+          if-no-files-found: ignore
+          retention-days: 14

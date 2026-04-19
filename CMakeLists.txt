@@ -21,7 +21,14 @@ set(ULOG_SOURCE_ROOT "" CACHE STRING "Prefix stripped from __FILE__ in LOG_* rec
 # ---------------------------------------------------------------------------
 # Compile settings
 # ---------------------------------------------------------------------------
-set(CMAKE_CXX_STANDARD 17)
+# C++17 is the floor — `target_compile_features(... cxx_std_17)` below
+# pins the minimum for the ulog target and its consumers. The global
+# default is only set when the caller hasn't overridden via CLI
+# (`-DCMAKE_CXX_STANDARD=20`) or via the Conan toolchain, so CI can
+# exercise newer standards without editing this file.
+if(NOT DEFINED CMAKE_CXX_STANDARD)
+    set(CMAKE_CXX_STANDARD 17)
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
