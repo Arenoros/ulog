@@ -40,4 +40,11 @@ endif()
 
 if(WIN32)
     target_sources(ulog PRIVATE win/named_event_handler.cpp)
+    # Win10 1803+ brings AF_UNIX via <afunix.h>. Opt in with
+    # `-DULOG_WITH_AFUNIX=ON` — the top-level CMakeLists then pushes
+    # `ULOG_HAVE_AFUNIX=1` as a PUBLIC compile definition and the sink
+    # source comes into the build.
+    if(ULOG_WITH_AFUNIX)
+        target_sources(ulog PRIVATE sinks/unix_socket_sink.cpp)
+    endif()
 endif()

@@ -47,6 +47,9 @@ jobs:
             cxx: cl
             build_type: Release
             cppstd: "17"
+            # Windows-2022 runners ship the 1803+ SDK that provides
+            # <afunix.h>, so we opt ulog's AF_UNIX sink into the matrix.
+            afunix: "ON"
           # C++20 row: catches accidental C++17-only idioms before they
           # reach downstream userver integrations that build with -std=c++20.
           - name: linux-clang-cpp20
@@ -148,6 +151,7 @@ jobs:
           CXX: ${{ matrix.cxx }}
           SANITIZER: ${{ matrix.sanitizer }}
           BUILD_TYPE: ${{ matrix.build_type }}
+          AFUNIX: ${{ matrix.afunix }}
         run: |
           # CMAKE_CXX_STANDARD is driven by Conan's toolchain via
           # `-s compiler.cppstd=<N>` passed to the Conan install step.
@@ -160,6 +164,9 @@ jobs:
             SAN_CXXFLAGS="-fsanitize=$SANITIZER -fno-omit-frame-pointer -fno-sanitize-recover=all"
             SAN_LDFLAGS="-fsanitize=$SANITIZER"
             EXTRA_CMAKE+=(-DULOG_BUILD_BENCH=OFF)
+          fi
+          if [ "$AFUNIX" = "ON" ]; then
+            EXTRA_CMAKE+=(-DULOG_WITH_AFUNIX=ON)
           fi
           cmake -S . -B build \
             -G Ninja \

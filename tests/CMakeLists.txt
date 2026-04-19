@@ -23,6 +23,13 @@ if(NOT WIN32)
 endif()
 if(WIN32)
     target_sources(ulog-tests PRIVATE named_event_reopen_test.cpp)
+    # Compiled on Windows only when the AF_UNIX sink was enabled via
+    # ULOG_WITH_AFUNIX — the test file itself is guarded on
+    # ULOG_HAVE_AFUNIX so a stray inclusion without the PUBLIC define
+    # would still expand to an empty translation unit.
+    if(ULOG_WITH_AFUNIX)
+        target_sources(ulog-tests PRIVATE unix_sink_test.cpp)
+    endif()
 endif()
 target_link_libraries(ulog-tests PRIVATE ulog::ulog GTest::gtest GTest::gtest_main)
 add_test(NAME ulog-tests COMMAND ulog-tests)

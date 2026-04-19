@@ -19,11 +19,6 @@
 **Effort:** большой (2-3 дня + boxing grpc через Conan).
 **Impact:** низкий для большинства — HTTP/JSON покрывает 90%.
 
-### Windows AF_UNIX тест (BACKLOG)
-**Что:** активировать `UnixSocketSink` на Win10 1803+ через `#define ULOG_HAVE_AFUNIX`, test.
-**Effort:** маленький (30 мин).
-**Impact:** нишевой (редкий deploy scenario).
-
 ---
 
 ## Performance

@@ -13,6 +13,7 @@ option(ULOG_BUILD_EXAMPLES   "Build examples"                   ON)
 option(ULOG_BUILD_BENCH      "Build benchmarks"                 OFF)
 option(ULOG_WITH_NLOHMANN    "Use nlohmann::json for JsonString" OFF)
 option(ULOG_WITH_YAML        "Enable yaml-cpp config loader"    OFF)
+option(ULOG_WITH_AFUNIX      "Enable AF_UNIX sink on Windows (requires Win10 1803+)" OFF)
 option(ULOG_NO_SHORT_MACROS  "Disable short LOG_* macros (expose ULOG_LOG_* only)" OFF)
 option(ULOG_INSTALL          "Generate install rules"           ON)
 set(ULOG_ERASE_LOG_WITH_LEVEL "0" CACHE STRING "Compile-erase logs strictly below this level (0..5). 0 disables.")
@@ -84,6 +85,13 @@ endif()
 
 if(ULOG_NO_SHORT_MACROS)
     target_compile_definitions(ulog PUBLIC ULOG_NO_SHORT_MACROS=1)
+endif()
+
+if(ULOG_WITH_AFUNIX AND WIN32)
+    # Opts ulog into the Winsock AF_UNIX path — header <afunix.h> from the
+    # Windows 10 1803+ SDK. PUBLIC so downstream consumers building
+    # against installed ulog pick up the matching sink surface.
+    target_compile_definitions(ulog PUBLIC ULOG_HAVE_AFUNIX=1)
 endif()
 
 if(NOT ULOG_ERASE_LOG_WITH_LEVEL STREQUAL "0")
