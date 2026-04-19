@@ -57,12 +57,6 @@
 **Effort:** большой (2 дня — queue redesign, per-sink lock contention).
 **Impact:** нишевой — мало кто упирается в 4M rec/s.
 
-### Short-circuit formatter alloc when logger rejects level (из review 20)
-**Что:** в LogHelper ctor проверять `logger.ShouldLog(level)` до `MakeFormatter`.
-**Зачем:** если logger отклонит уровень позже — сэкономить `make_unique<TextLogItem>` 540 байт.
-**Проблема:** макрос уже делает `ShouldNotLog` check — LogHelper конструируется только если логирование прошло фильтр. Этот пункт возможно уже закрыт и остался в review по ошибке.
-**Effort:** пересмотреть — скорее всего redundant.
-
 ---
 
 ## Config / integrations
