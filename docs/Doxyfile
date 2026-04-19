@@ -1,0 +1,67 @@
+# Minimal Doxygen config for ulog.
+# Generates HTML reference under build/docs/html (no LaTeX, no search
+# engine, no inheritance graphs) so the output is cheap enough to
+# regenerate on every CI run if we ever wire it up.
+#
+# Invocation (from repo root):
+#     doxygen docs/Doxyfile
+#
+# Output:  build/docs/html/index.html
+
+PROJECT_NAME            = ulog
+PROJECT_BRIEF           = "Standalone C++17 logging library"
+PROJECT_NUMBER          =
+
+INPUT                   = include src
+FILE_PATTERNS           = *.hpp *.h *.cpp
+RECURSIVE               = YES
+EXCLUDE_PATTERNS        = */third_party/* */build/*
+
+OUTPUT_DIRECTORY        = build/docs
+GENERATE_HTML           = YES
+GENERATE_LATEX          = NO
+GENERATE_TREEVIEW       = YES
+DISABLE_INDEX           = NO
+
+# Include the free-form `///` and `/** */` comments already sprinkled
+# through the headers. @brief is the first sentence by convention.
+JAVADOC_AUTOBRIEF       = YES
+QT_AUTOBRIEF            = YES
+MARKDOWN_SUPPORT        = YES
+AUTOLINK_SUPPORT        = YES
+
+EXTRACT_ALL             = YES
+EXTRACT_PRIVATE         = NO
+EXTRACT_STATIC          = YES
+EXTRACT_LOCAL_CLASSES   = YES
+HIDE_UNDOC_MEMBERS      = NO
+INTERNAL_DOCS           = NO
+
+# No call/caller graphs — they quickly dwarf the textual reference and
+# we don't have `dot` available on the CI runner by default.
+HAVE_DOT                = NO
+
+# Keep the warnings pile-up minimal; headers without docs are fine for
+# private-helper types.
+WARN_IF_UNDOCUMENTED    = NO
+WARN_IF_DOC_ERROR       = YES
+WARN_NO_PARAMDOC        = NO
+WARN_AS_ERROR           = NO
+
+QUIET                   = YES
+
+# Makes the generated pages look less 2005.
+HTML_DYNAMIC_SECTIONS   = YES
+HTML_COLORSTYLE         = LIGHT
+FULL_SIDEBAR            = NO
+
+# Useful landing page — README is already written in Markdown.
+USE_MDFILE_AS_MAINPAGE  = README.md
+INPUT                  += README.md
+
+# Stable ordering so diffs between Doxygen runs are reviewable.
+SORT_MEMBERS_CTORS_1ST  = YES
+SORT_BRIEF_DOCS         = YES
+
+# Do not regenerate when inputs are unchanged.
+HTML_TIMESTAMP          = NO

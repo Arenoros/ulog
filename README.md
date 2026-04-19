@@ -135,6 +135,17 @@ ulog/
 
 `.github/workflows/ci.yml` defines a cross-platform matrix (Ubuntu gcc/clang, macOS clang, Windows MSVC). Each job runs Conan install → CMake configure → build → ctest. The workflow activates once ulog is extracted to its own repository; while nested inside userver, GitHub does not pick up workflows outside the repo root and the file lies dormant.
 
+## API reference
+
+A minimal Doxygen config lives at [`docs/Doxyfile`](docs/Doxyfile).
+Regenerate the HTML reference with:
+
+```
+doxygen docs/Doxyfile
+```
+
+Output lands under `build/docs/html/index.html`. `dot` is not required.
+
 ## License
 
 Apache-2.0 (inherited from userver).

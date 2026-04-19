@@ -73,18 +73,6 @@
 
 ---
 
-## Удобство разработчика
-
-### `ULOG_EXAMPLES_DIR` пример с structured JSON consumer
-**Что:** пример "tail -f ulog.jsonl | jq" — показать user'у что он получает.
-**Effort:** маленький.
-
-### Doxygen config
-**Что:** `docs/Doxyfile`, генерация HTML reference.
-**Effort:** маленький.
-
----
-
 ## Priority matrix
 
 ### Высокий impact, средний effort
@@ -95,10 +83,9 @@
 3. **YAML config loader**.
 
 ### Низкий приоритет
-5. **OtlpGrpcSink**.
-6. **Multi-worker async**.
-7. **Hot config reload**.
-8. **Doxygen**.
+4. **OtlpGrpcSink**.
+5. **Multi-worker async**.
+6. **Hot config reload**.
 
 ---
 

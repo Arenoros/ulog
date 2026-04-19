@@ -12,3 +12,6 @@ target_link_libraries(ulog-example-custom-sink PRIVATE ulog::ulog)
 
 add_executable(ulog-example-otlp otlp_json/main.cpp)
 target_link_libraries(ulog-example-otlp PRIVATE ulog::ulog)
+
+add_executable(ulog-example-json-consumer json_consumer/main.cpp)
+target_link_libraries(ulog-example-json-consumer PRIVATE ulog::ulog)
