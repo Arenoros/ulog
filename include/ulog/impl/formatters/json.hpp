@@ -4,9 +4,9 @@
 /// @brief JSON formatter — emits one JSON object per record with a trailing newline.
 
 #include <chrono>
+#include <memory>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include <ulog/impl/formatters/base.hpp>
 #include <ulog/impl/formatters/text_item.hpp>
@@ -14,6 +14,11 @@
 
 namespace ulog::impl::formatters {
 
+/// Direct-emit JSON formatter: tags are escaped and appended into the
+/// TextLogItem buffer as they arrive, matching the TSKV formatter's
+/// streaming pattern. The only deferred field is `text`, which is
+/// written on ExtractLoggerItem() so it appears last in the object
+/// regardless of when SetText() was called.
 class JsonFormatter final : public Base {
 public:
     enum class Variant { kStandard, kYaDeploy };
@@ -31,18 +36,11 @@ public:
     std::unique_ptr<LoggerItemBase> ExtractLoggerItem() override;
 
 private:
-    struct Field {
-        std::string key;
-        std::string value;
-        bool is_json{false};  // true => value is raw JSON, emit as-is
-    };
-
-    void Finalize();
+    void EmitField(std::string_view key, std::string_view value, bool value_is_json);
     std::string_view TranslateKey(std::string_view key) const noexcept;
 
-    std::vector<Field> fields_;
-    std::string text_;
     std::unique_ptr<TextLogItem> item_{std::make_unique<TextLogItem>()};
+    std::string text_;
     Variant variant_;
     bool finalized_{false};
 };
