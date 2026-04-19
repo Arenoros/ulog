@@ -26,6 +26,10 @@ public:
     void AddJsonTag(std::string_view key, const JsonString& value) override {
         if (f_) f_->AddJsonTag(key, value);
     }
+    void SetTraceContext(std::string_view trace_id_hex,
+                         std::string_view span_id_hex) override {
+        if (f_) f_->SetTraceContext(trace_id_hex, span_id_hex);
+    }
 private:
     impl::formatters::Base* f_;
 };

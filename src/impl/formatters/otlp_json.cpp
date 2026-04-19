@@ -120,6 +120,16 @@ void OtlpJsonFormatter::AddTag(std::string_view key, std::string_view value) {
     EmitStringAttribute(key, value);
 }
 
+void OtlpJsonFormatter::SetTraceContext(std::string_view trace_id_hex,
+                                        std::string_view span_id_hex) {
+    // OTLP LogRecord carries `traceId` / `spanId` as top-level hex strings
+    // (not as attributes) — see opentelemetry.proto.logs.v1. Stash into
+    // dedicated slots and emit at finalization so Tempo/Jaeger can
+    // correlate logs with spans.
+    if (!trace_id_hex.empty()) trace_id_.assign(trace_id_hex.data(), trace_id_hex.size());
+    if (!span_id_hex.empty())  span_id_.assign(span_id_hex.data(),  span_id_hex.size());
+}
+
 void OtlpJsonFormatter::AddJsonTag(std::string_view key, const JsonString& value) {
     // OTLP `AnyValue` has no raw-JSON variant; emit as a string attribute
     // carrying the serialized JSON text so consumers can post-parse.
@@ -155,6 +165,16 @@ std::unique_ptr<LoggerItemBase> OtlpJsonFormatter::ExtractLoggerItem() {
     if (!finalized_) {
         auto& b = item_->payload;
         if (!first_attr_) b += ']';  // close the attributes array
+        if (!trace_id_.empty()) {
+            b += ",\"traceId\":\"";
+            AppendJsonEscaped(b, trace_id_);
+            b += '"';
+        }
+        if (!span_id_.empty()) {
+            b += ",\"spanId\":\"";
+            AppendJsonEscaped(b, span_id_);
+            b += '"';
+        }
         b += ",\"body\":{\"stringValue\":\"";
         AppendJsonEscaped(b, body_text_);
         b += "\"}";

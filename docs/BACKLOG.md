@@ -9,13 +9,6 @@
 **Effort:** средний (1-2 дня).
 **Impact:** высокий для operations.
 
-### `trace_id` / `span_id` → top-level в OTLP LogRecord (из review 12)
-**Что:** интерсептить attribute keys `trace_id`/`span_id`, выносить на top уровня LogRecord (hex string) вместо attribute.
-**Зачем:** correlation logs↔traces в Tempo/Jaeger не работает если trace_id в attributes — только если в top-level поле.
-**Как:** в `OtlpJsonFormatter::AddTag`: если `key == "trace_id"|"span_id"` → сохранить в отдельный slot, эмитить перед `attributes` на финализации.
-**Effort:** маленький (2-3 часа).
-**Impact:** высокий для tracing ecosystem.
-
 ### RateLimiter per-source callback (из BACKLOG rev.1)
 **Что:** `SetRateLimitDropHandler(fn)` — вызов per drop event.
 **Зачем:** push to monitoring system без pull'а глобального счётчика.
@@ -51,13 +44,6 @@
 ---
 
 ## Performance
-
-### Sanitizer CI (ASan / TSan / UBSan) (из review 15)
-**Что:** GH Actions matrix добавить 3 job'а с sanitizer'ами.
-**Зачем:** ловить UB, data race, heap errors. `ConcurrentSwapWhileLoggingDoesNotCrash` — реально проверяется только с TSan.
-**Как:** отдельные matrix entries `linux-asan`, `linux-tsan`, `linux-ubsan` с `-fsanitize=...` + опцией `ULOG_BUILD_BENCH=OFF`.
-**Effort:** маленький (2 часа).
-**Impact:** высокий — может найти скрытые race'ы.
 
 ### Moodycamel per-producer token caching (из review 20)
 **Что:** thread_local `ProducerToken` для moodycamel queue.
@@ -202,33 +188,31 @@
 ## Priority matrix
 
 ### Высокий impact, низкий effort (делать в первую очередь)
-1. **Sanitizer CI** — может поймать скрытые race'ы.
-2. **`trace_id`/`span_id` top-level в OTLP** — critical для tracing-correlation.
-3. **Moodycamel producer token caching** — фикс перф-регрессии на 8T.
-4. **CI cache + C++20 row** — улучшить CI pipeline.
+1. **Moodycamel producer token caching** — фикс перф-регрессии на 8T.
+2. **CI cache + C++20 row** — улучшить CI pipeline.
 
 ### Высокий impact, средний effort
-5. **Per-sink метрики** — essential для production.
-6. **OtlpBatchSink HTTP** — real OTLP transport без sidecar.
+3. **Per-sink метрики** — essential для production.
+4. **OtlpBatchSink HTTP** — real OTLP transport без sidecar.
 
 ### Средний impact
-7. **Compile-erase assertion test**.
-8. **TCP multi-accept reopen тест**.
-9. **Arena allocator**.
-10. **YAML config loader**.
+5. **Compile-erase assertion test**.
+6. **TCP multi-accept reopen тест**.
+7. **Arena allocator**.
+8. **YAML config loader**.
 
 ### Низкий приоритет
-11. **OtlpGrpcSink**.
-12. **Multi-worker async**.
-13. **Hot config reload**.
-14. **Doxygen**.
+9.  **OtlpGrpcSink**.
+10. **Multi-worker async**.
+11. **Hot config reload**.
+12. **Doxygen**.
 
 ---
 
 ## Рекомендация
 
-Следующая фаза — **Phase 23: sanitizer CI + trace correlation**:
-- Добавить CI matrix rows для ASan/TSan/UBSan.
-- Top-level `trace_id`/`span_id` в OtlpJsonFormatter.
+Следующая фаза — **Phase 24: perf regression fix + CI polish**:
+- Moodycamel per-producer token caching (фикс 8T regression).
+- CI conan cache + C++20 matrix row + test-log artifact upload.
 
-Обе — маленькие, высокий impact, отлично дополняют OTLP фазу (чтобы tracing correlation реально работал) и закрывают безопасность (sanitizers).
+Все — маленькие, комплементарные: token caching возвращает перф на 8T, CI улучшения ускоряют CI pipeline (sanitizer matrix из Phase 23 сейчас пересобирает conan deps с нуля каждый запуск).

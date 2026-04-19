@@ -56,6 +56,27 @@ public:
         AddTag(key, value ? "true" : "false");
     }
 
+    /// Attaches W3C trace-context identifiers to the current record. OTLP
+    /// carries `traceId` / `spanId` as dedicated top-level fields on the
+    /// LogRecord (not as attributes) — structured formatters override to
+    /// honor that shape. Text formatters inherit the default, which
+    /// round-trips the hex strings through `AddTag` so plain-text logs
+    /// still carry the IDs as ordinary key=value pairs.
+    ///
+    /// Contract:
+    ///  * Either argument may be empty — that half is skipped, the other
+    ///    half is still applied.
+    ///  * Expected to be called at most once per record. If called more
+    ///    than once, structured formatters keep last-write-wins semantics
+    ///    on each non-empty half; text formatters emit duplicate tags
+    ///    (one `AddTag` per call). Callers should collapse the context
+    ///    into a single invocation.
+    virtual void SetTraceContext(std::string_view trace_id_hex,
+                                 std::string_view span_id_hex) {
+        if (!trace_id_hex.empty()) AddTag("trace_id", trace_id_hex);
+        if (!span_id_hex.empty())  AddTag("span_id",  span_id_hex);
+    }
+
     /// Sets the "text" field — the free-form message body.
     virtual void SetText(std::string_view text) = 0;
 

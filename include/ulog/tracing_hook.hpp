@@ -22,6 +22,20 @@ public:
     virtual ~TagSink() = default;
     virtual void AddTag(std::string_view key, std::string_view value) = 0;
     virtual void AddJsonTag(std::string_view key, const JsonString& value) = 0;
+
+    /// Dedicated path for W3C trace-context IDs. Structured formatters
+    /// (OTLP) promote them to top-level `traceId` / `spanId`; plain-text
+    /// formatters fall back to emitting `trace_id=` / `span_id=` tags.
+    /// Prefer this over two `AddTag` calls with the magic keys.
+    ///
+    /// Contract mirrors `formatters::Base::SetTraceContext`: empty halves
+    /// are skipped, call once per record (multiple calls yield duplicate
+    /// tags on text formatters; OTLP last-write-wins per non-empty half).
+    virtual void SetTraceContext(std::string_view trace_id_hex,
+                                 std::string_view span_id_hex) {
+        if (!trace_id_hex.empty()) AddTag("trace_id", trace_id_hex);
+        if (!span_id_hex.empty())  AddTag("span_id",  span_id_hex);
+    }
 };
 
 /// Signature of a tracing-context callback.

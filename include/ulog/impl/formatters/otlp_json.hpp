@@ -59,6 +59,8 @@ public:
     void AddTagUInt64(std::string_view key, std::uint64_t value) override;
     void AddTagDouble(std::string_view key, double value) override;
     void AddTagBool(std::string_view key, bool value) override;
+    void SetTraceContext(std::string_view trace_id_hex,
+                         std::string_view span_id_hex) override;
     void SetText(std::string_view text) override;
     std::unique_ptr<LoggerItemBase> ExtractLoggerItem() override;
 
@@ -72,6 +74,14 @@ private:
 
     std::unique_ptr<TextLogItem> item_{std::make_unique<TextLogItem>()};
     std::string body_text_;
+    /// `trace_id` / `span_id` are first-class top-level fields in the OTLP
+    /// LogRecord schema. Populated by `SetTraceContext` (invoked from the
+    /// tracing hook) and emitted at `ExtractLoggerItem` time so that
+    /// backends (Tempo/Jaeger/Grafana) can correlate logs with traces.
+    /// Values are expected to be hex-encoded per the OTLP spec; the
+    /// formatter passes them through verbatim.
+    std::string trace_id_;
+    std::string span_id_;
     bool first_attr_{true};
     bool finalized_{false};
 };

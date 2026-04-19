@@ -27,18 +27,47 @@ jobs:
             os: ubuntu-22.04
             cc: gcc
             cxx: g++
+            build_type: Release
           - name: linux-clang
             os: ubuntu-22.04
             cc: clang
             cxx: clang++
+            build_type: Release
           - name: macos-clang
             os: macos-13
             cc: clang
             cxx: clang++
+            build_type: Release
           - name: windows-msvc
             os: windows-2022
             cc: cl
             cxx: cl
+            build_type: Release
+          # Sanitizer builds: Linux clang, RelWithDebInfo so reports carry
+          # frames. Only ulog's own code is instrumented — Conan deps stay
+          # stock, which is cheap and sufficient for catching bugs in
+          # ulog's queue, sink, and hook paths (see docs/BACKLOG.md
+          # "Sanitizer CI"). Benchmarks are disabled because moodycamel's
+          # lock-free internals trigger TSan false positives that swamp
+          # real findings.
+          - name: linux-asan
+            os: ubuntu-22.04
+            cc: clang
+            cxx: clang++
+            build_type: RelWithDebInfo
+            sanitizer: address
+          - name: linux-tsan
+            os: ubuntu-22.04
+            cc: clang
+            cxx: clang++
+            build_type: RelWithDebInfo
+            sanitizer: thread
+          - name: linux-ubsan
+            os: ubuntu-22.04
+            cc: clang
+            cxx: clang++
+            build_type: RelWithDebInfo
+            sanitizer: undefined
 
     steps:
       - uses: actions/checkout@v4
@@ -64,10 +93,12 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Conan install
+        env:
+          BUILD_TYPE: ${{ matrix.build_type }}
         run: |
           conan install . \
             --output-folder=build \
-            -s build_type=Release \
+            -s build_type="$BUILD_TYPE" \
             -s compiler.cppstd=17 \
             -c tools.cmake.cmaketoolchain:generator=Ninja \
             --build=missing
@@ -76,16 +107,38 @@ jobs:
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
+          SANITIZER: ${{ matrix.sanitizer }}
+          BUILD_TYPE: ${{ matrix.build_type }}
         run: |
+          SAN_CXXFLAGS=""
+          SAN_LDFLAGS=""
+          EXTRA_CMAKE=()
+          if [ -n "$SANITIZER" ]; then
+            SAN_CXXFLAGS="-fsanitize=$SANITIZER -fno-omit-frame-pointer -fno-sanitize-recover=all"
+            SAN_LDFLAGS="-fsanitize=$SANITIZER"
+            EXTRA_CMAKE+=(-DULOG_BUILD_BENCH=OFF)
+          fi
           cmake -S . -B build \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
             -DCMAKE_POLICY_DEFAULT_CMP0091=NEW \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DCMAKE_CXX_FLAGS="$SAN_CXXFLAGS" \
+            -DCMAKE_C_FLAGS="$SAN_CXXFLAGS" \
+            -DCMAKE_EXE_LINKER_FLAGS="$SAN_LDFLAGS" \
+            -DCMAKE_SHARED_LINKER_FLAGS="$SAN_LDFLAGS" \
+            "${EXTRA_CMAKE[@]}"
 
       - name: Build
         run: cmake --build build --parallel
 
       - name: Test
         working-directory: build
-        run: ctest --output-on-failure -C Release
+        env:
+          # Fail tests on the first sanitizer error instead of letting
+          # them continue and mask later issues. `detect_leaks=1` is the
+          # default on Linux but we spell it out for macOS parity.
+          ASAN_OPTIONS: halt_on_error=1:detect_leaks=1:strict_string_checks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --output-on-failure -C ${{ matrix.build_type }}

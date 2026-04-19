@@ -5,6 +5,7 @@
 
 #include <ulog/log.hpp>
 #include <ulog/mem_logger.hpp>
+#include <ulog/tracing_hook.hpp>
 
 namespace {
 
@@ -148,6 +149,89 @@ TEST(FormatterOtlpJson, NoAttributesElidesTheArray) {
     const auto r = mem->GetRecords().front();
     EXPECT_TRUE(Contains(r, "\"body\":{\"stringValue\":\"plain\"}"));
     EXPECT_TRUE(Contains(r, "\"severityText\":\"INFO\""));
+    ulog::SetDefaultLogger(nullptr);
+}
+
+namespace {
+
+struct TraceCtx {
+    std::string trace_id;
+    std::string span_id;
+};
+
+void TraceCtxHook(ulog::TagSink& sink, void* user_ctx) {
+    const auto* c = static_cast<const TraceCtx*>(user_ctx);
+    sink.SetTraceContext(c->trace_id, c->span_id);
+}
+
+}  // namespace
+
+TEST(FormatterOtlpJson, TraceAndSpanIdsPromotedToTopLevel) {
+    auto mem = InstallMem(ulog::Format::kOtlpJson);
+    TraceCtx ctx{"0123456789abcdef0123456789abcdef", "fedcba9876543210"};
+    ulog::SetTracingHook(&TraceCtxHook, &ctx);
+    LOG_INFO() << "correlated" << ulog::LogExtra{{"user_id", 42}};
+    ulog::SetTracingHook(nullptr);
+
+    const auto r = mem->GetRecords().front();
+    EXPECT_TRUE(Contains(r,
+        "\"traceId\":\"0123456789abcdef0123456789abcdef\"")) << r;
+    EXPECT_TRUE(Contains(r, "\"spanId\":\"fedcba9876543210\"")) << r;
+    // Not duplicated into attributes.
+    EXPECT_FALSE(Contains(r, "\"key\":\"trace_id\"")) << r;
+    EXPECT_FALSE(Contains(r, "\"key\":\"span_id\"")) << r;
+    // User-supplied tags still flow through the attribute array with their
+    // native OTLP value kind.
+    EXPECT_TRUE(Contains(r,
+        "\"key\":\"user_id\",\"value\":{\"intValue\":\"42\"}")) << r;
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(FormatterOtlpJson, TraceIdAloneKeepsAttributesArrayShape) {
+    auto mem = InstallMem(ulog::Format::kOtlpJson);
+    TraceCtx ctx{"0123456789abcdef0123456789abcdef", ""};
+    ulog::SetTracingHook(&TraceCtxHook, &ctx);
+    LOG_INFO() << "solo";
+    ulog::SetTracingHook(nullptr);
+
+    const auto r = mem->GetRecords().front();
+    EXPECT_TRUE(Contains(r,
+        "\"traceId\":\"0123456789abcdef0123456789abcdef\""));
+    EXPECT_FALSE(Contains(r, "\"spanId\":"));
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(FormatterOtlpJson, EmptyTraceContextEmitsNothing) {
+    // Both halves empty -> formatter must produce neither top-level fields
+    // nor attribute entries. Catches accidental "" emission if the
+    // override short-circuits on the wrong branch.
+    auto mem = InstallMem(ulog::Format::kOtlpJson);
+    TraceCtx ctx{"", ""};
+    ulog::SetTracingHook(&TraceCtxHook, &ctx);
+    LOG_INFO() << "nohook";
+    ulog::SetTracingHook(nullptr);
+
+    const auto r = mem->GetRecords().front();
+    EXPECT_FALSE(Contains(r, "\"traceId\":")) << r;
+    EXPECT_FALSE(Contains(r, "\"spanId\":")) << r;
+    EXPECT_FALSE(Contains(r, "\"key\":\"trace_id\"")) << r;
+    EXPECT_FALSE(Contains(r, "\"key\":\"span_id\"")) << r;
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(FormatterText, TraceContextFallsBackToPlainTags) {
+    // Non-OTLP formatters inherit the default Base::SetTraceContext, which
+    // emits `trace_id=` / `span_id=` as ordinary tags so plain-text tails
+    // still carry the correlation data.
+    auto mem = InstallMem(ulog::Format::kTskv);
+    TraceCtx ctx{"0123456789abcdef0123456789abcdef", "fedcba9876543210"};
+    ulog::SetTracingHook(&TraceCtxHook, &ctx);
+    LOG_INFO() << "plain";
+    ulog::SetTracingHook(nullptr);
+
+    const auto r = mem->GetRecords().front();
+    EXPECT_TRUE(Contains(r, "trace_id=0123456789abcdef0123456789abcdef")) << r;
+    EXPECT_TRUE(Contains(r, "span_id=fedcba9876543210")) << r;
     ulog::SetDefaultLogger(nullptr);
 }
 

@@ -11,8 +11,10 @@ thread_local std::string g_trace_id;
 thread_local std::string g_span_id;
 
 void EmitTraceTags(ulog::TagSink& sink, void* /*ctx*/) {
-    if (!g_trace_id.empty()) sink.AddTag("trace_id", g_trace_id);
-    if (!g_span_id.empty())  sink.AddTag("span_id",  g_span_id);
+    // `SetTraceContext` is the typed path — OTLP formatters lift the IDs
+    // into top-level `traceId` / `spanId`, other formatters fall back to
+    // emitting them as `trace_id=` / `span_id=` tags.
+    sink.SetTraceContext(g_trace_id, g_span_id);
 }
 
 }  // namespace
