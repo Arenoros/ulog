@@ -1,0 +1,14 @@
+# Source archives per released version. Update on every new tag.
+#
+# sha256 lines are placeholders — regenerate with
+#   curl -L <url> | sha256sum
+# before opening the ConanCenter PR; the CCI hooks refuse a recipe
+# whose archive hash does not match.
+
+sources:
+  "0.1.0":
+    url: "https://github.com/Arenoros/ulog/archive/refs/tags/v0.1.0.tar.gz"
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+
+patches:
+  # Any version-specific patches land here. None needed at v0.1.0.
