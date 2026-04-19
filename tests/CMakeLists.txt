@@ -33,3 +33,9 @@ if(WIN32)
 endif()
 target_link_libraries(ulog-tests PRIVATE ulog::ulog GTest::gtest GTest::gtest_main)
 add_test(NAME ulog-tests COMMAND ulog-tests)
+# Kill the test binary after 5 minutes rather than letting CI burn
+# credit on a hang. The suite normally runs under 10 s; the budget is
+# deliberately wide to absorb sanitizer overhead (TSan can be 10x).
+# If a future test deadlocks or livelocks, ctest's timeout report
+# names the test that was running when the process was killed.
+set_tests_properties(ulog-tests PROPERTIES TIMEOUT 300)

@@ -205,7 +205,15 @@ jobs:
           # moodycamel ConcurrentQueue's lock-free slot recycling. See
           # `ci/tsan.supp` for the pattern + rationale.
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:suppressions=${{ github.workspace }}/ci/tsan.supp
-        run: ctest --output-on-failure -C ${{ matrix.build_type }}
+          # GTest prints "[ RUN      ] SuiteName.TestName" before each
+          # case; force line-buffering so a crashed / hung run still
+          # reveals which test was last alive.
+          GTEST_COLOR: "no"
+        # `--verbose` streams the ulog-tests output (the single ctest
+        # target that wraps all gtest cases) so the CI log shows gtest
+        # progress in real time. Combined with the CMake-level TIMEOUT,
+        # a hang is interruptible and diagnosable.
+        run: ctest --verbose -C ${{ matrix.build_type }}
 
       # Capture ctest artifacts whenever the Test step fails so the log
       # is available for post-mortem without re-running CI in debug mode.
