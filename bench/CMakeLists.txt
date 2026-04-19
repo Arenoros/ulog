@@ -4,6 +4,9 @@ add_executable(ulog-bench
     default_logger_bench.cpp
     sync_throughput_bench.cpp
     async_throughput_bench.cpp
+    multi_producer_bench.cpp
+    slow_sink_bench.cpp
+    formatter_bench.cpp
     bench_main.cpp
 )
 target_link_libraries(ulog-bench
