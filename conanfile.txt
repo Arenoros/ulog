@@ -13,6 +13,15 @@ boost/*:shared=False
 boost/*:header_only=False
 boost/*:without_container=False
 boost/*:without_stacktrace=False
+# boost/1.90.0 + C++20 trips a package_info() bug in the Conan recipe:
+# `boost_cobalt_io_ssl` gets built but isn't mapped into any component,
+# and the check at line 2024 of the recipe raises:
+#   ConanException: These libraries were built, but were not used in
+#   any boost module: {'boost_cobalt_io_ssl'}
+# We don't use boost::cobalt — disable the sub-library so the recipe
+# skips the whole component (and the broken ssl wrapper). Works on both
+# C++17 (no-op, cobalt was already inactive there) and C++20.
+boost/*:without_cobalt=True
 fmt/*:shared=False
 gtest/*:shared=False
 benchmark/*:shared=False
