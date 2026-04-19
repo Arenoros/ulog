@@ -40,13 +40,68 @@ int main() {
 Conan 2 + Ninja + MSVC on Windows:
 
 ```
-conan install ulog --output-folder=ulog/build -s build_type=RelWithDebInfo -s compiler.cppstd=23 -c tools.cmake.cmaketoolchain:generator=Ninja
+conan install ulog --output-folder=ulog/build -s build_type=RelWithDebInfo -s compiler.cppstd=23 -o "&:build_tests=True" -c tools.cmake.cmaketoolchain:generator=Ninja
 cmake -S ulog -B ulog/build -G Ninja -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build ulog/build
 ctest --test-dir ulog/build
 ```
 
-Dependencies: `fmt` + Boost `container` & `stacktrace` (via Conan or any package manager). Optional: `nlohmann_json`, `yaml-cpp`, `GTest` for tests.
+Dependencies: `fmt` + Boost `container` & `stacktrace` (via Conan or any package manager). Optional: `nlohmann_json`, `yaml-cpp`, `cpp-httplib`, `GTest` + `benchmark` (tests / benches only).
+
+## Consuming ulog as a Conan package
+
+ulog ships a `conanfile.py` recipe at the repo root — both as the
+dev-time dependency declaration and as a publishable package recipe.
+
+### Build and cache the package locally
+
+```
+# From inside the ulog checkout:
+conan create . --build=missing
+```
+
+This runs the recipe's `build()` + `package()`, producing a versioned
+binary (`ulog/0.1.0`) in your local Conan cache. Consumers can then:
+
+```python
+# consumer's conanfile.py
+def requirements(self):
+    self.requires("ulog/0.1.0")
+```
+
+or via `conanfile.txt`:
+
+```
+[requires]
+ulog/0.1.0
+```
+
+and CMake-side:
+
+```cmake
+find_package(ulog CONFIG REQUIRED)
+target_link_libraries(myapp PRIVATE ulog::ulog)
+```
+
+### Recipe options
+
+| Option | Default | Effect |
+|---|---|---|
+| `shared` | `False` | Build as shared lib (default: static) |
+| `with_nlohmann` | `False` | Validate `JsonString` via nlohmann::json |
+| `with_yaml` | `False` | Enable yaml-cpp config loader |
+| `with_http` | `False` | Enable `OtlpBatchSink` + `otlp:` spec (pulls cpp-httplib) |
+| `with_afunix` | `False` | Enable AF_UNIX sink on Windows 10 1803+ |
+| `no_short_macros` | `False` | Hide `LOG_*` short names; keep `ULOG_LOG_*` only |
+| `erase_log_with_level` | `0` | Compile-erase levels below this (1..4) |
+| `build_tests` | `False` | Build gtest suite (dev use) |
+| `build_bench` | `False` | Build benchmarks (dev use) |
+
+Example opting into HTTP + hiding short macros:
+
+```
+conan create . -o "&:with_http=True" -o "&:no_short_macros=True"
+```
 
 ### CMake options
 
