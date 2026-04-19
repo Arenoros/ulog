@@ -243,7 +243,27 @@ jobs:
       # 10-15x more than the installed binaries need.
       - name: Trim Conan cache before save
         if: always()
-        run: conan cache clean "*" --build --source --download || true
+        run: conan cache clean "*" --build --source --download --temp --backup-sources
+
+      # Diagnostic: dump the Conan home tree after the trim so CI logs
+      # show exactly what ends up in the saved tarball. Useful when the
+      # saved cache is larger than the trimmed install budget would
+      # suggest.
+      - name: Inspect Conan cache
+        if: always()
+        run: |
+          echo "--- du -sh ~/.conan2 ---"
+          du -sh ~/.conan2 || true
+          echo "--- immediate subdirs ---"
+          du -sh ~/.conan2/* 2>/dev/null || true
+          echo "--- p/ subdir breakdown ---"
+          du -sh ~/.conan2/p/* 2>/dev/null | sort -h | tail -20 || true
+          echo "--- largest 20 files ---"
+          find ~/.conan2 -type f -printf '%s %p\n' 2>/dev/null | sort -rn | head -20 || true
+          echo "--- restore summary ---"
+          echo "cache-hit = ${{ steps.conan-cache.outputs.cache-hit }}"
+          echo "cache-primary-key = ${{ steps.conan-cache.outputs.cache-primary-key }}"
+          echo "cache-matched-key = ${{ steps.conan-cache.outputs.cache-matched-key }}"
 
       # Save the Conan home cache regardless of whether the row
       # succeeded — a failed row still produces a valid conan cache (the
@@ -346,7 +366,24 @@ jobs:
       # rationale as the matrix job.
       - name: Trim Conan cache before save
         if: always()
-        run: conan cache clean "*" --build --source --download || true
+        run: conan cache clean "*" --build --source --download --temp --backup-sources
+
+      # Diagnostic — see matrix job step for rationale.
+      - name: Inspect Conan cache
+        if: always()
+        run: |
+          echo "--- du -sh ~/.conan2 ---"
+          du -sh ~/.conan2 || true
+          echo "--- immediate subdirs ---"
+          du -sh ~/.conan2/* 2>/dev/null || true
+          echo "--- p/ subdir breakdown ---"
+          du -sh ~/.conan2/p/* 2>/dev/null | sort -h | tail -20 || true
+          echo "--- largest 20 files ---"
+          find ~/.conan2 -type f -printf '%s %p\n' 2>/dev/null | sort -rn | head -20 || true
+          echo "--- restore summary ---"
+          echo "cache-hit = ${{ steps.conan-cache.outputs.cache-hit }}"
+          echo "cache-primary-key = ${{ steps.conan-cache.outputs.cache-primary-key }}"
+          echo "cache-matched-key = ${{ steps.conan-cache.outputs.cache-matched-key }}"
 
       # Save under the primary key regardless of Run / Upload success.
       # Skip on exact key hit (nothing changed on disk).
