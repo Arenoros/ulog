@@ -11,6 +11,7 @@ add_executable(ulog-tests
     sink_test.cpp
     instrumented_sink_test.cpp
     async_logger_test.cpp
+    otlp_batch_sink_test.cpp
     config_test.cpp
     tracing_hook_test.cpp
     rate_limit_test.cpp

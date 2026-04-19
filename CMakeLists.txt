@@ -14,6 +14,7 @@ option(ULOG_BUILD_BENCH      "Build benchmarks"                 OFF)
 option(ULOG_WITH_NLOHMANN    "Use nlohmann::json for JsonString" OFF)
 option(ULOG_WITH_YAML        "Enable yaml-cpp config loader"    OFF)
 option(ULOG_WITH_AFUNIX      "Enable AF_UNIX sink on Windows (requires Win10 1803+)" OFF)
+option(ULOG_WITH_HTTP        "Enable OtlpBatchSink + http spec (adds cpp-httplib dep)" OFF)
 option(ULOG_NO_SHORT_MACROS  "Disable short LOG_* macros (expose ULOG_LOG_* only)" OFF)
 option(ULOG_INSTALL          "Generate install rules"           ON)
 set(ULOG_ERASE_LOG_WITH_LEVEL "0" CACHE STRING "Compile-erase logs strictly below this level (0..5). 0 disables.")
@@ -54,6 +55,10 @@ if(ULOG_WITH_YAML)
     find_package(yaml-cpp CONFIG REQUIRED)
 endif()
 
+if(ULOG_WITH_HTTP)
+    find_package(httplib CONFIG REQUIRED)
+endif()
+
 # ---------------------------------------------------------------------------
 # Main target
 # ---------------------------------------------------------------------------
@@ -92,6 +97,14 @@ if(ULOG_WITH_AFUNIX AND WIN32)
     # Windows 10 1803+ SDK. PUBLIC so downstream consumers building
     # against installed ulog pick up the matching sink surface.
     target_compile_definitions(ulog PUBLIC ULOG_HAVE_AFUNIX=1)
+endif()
+
+if(ULOG_WITH_HTTP)
+    # PUBLIC so the OtlpBatchSink header compiles for downstream users.
+    # cpp-httplib is single-header but conan packages it as a CMake
+    # interface target `httplib::httplib`.
+    target_link_libraries(ulog PUBLIC httplib::httplib)
+    target_compile_definitions(ulog PUBLIC ULOG_HAVE_HTTP=1)
 endif()
 
 if(NOT ULOG_ERASE_LOG_WITH_LEVEL STREQUAL "0")

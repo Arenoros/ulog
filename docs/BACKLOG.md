@@ -2,16 +2,6 @@
 
 ## Transport / delivery
 
-### `OtlpBatchSink` через HTTP/JSON POST (из review 12)
-**Что:** sink, собирающий N записей → оборачивает в `ExportLogsServiceRequest` → POST `http://collector:4318/v1/logs`.
-**Зачем:** без otel-collector-sidecar, прямой push в backend (Grafana Cloud, Honeycomb).
-**Как:** добавить HTTP client. Варианты:
-- `cpp-httplib` (single-header, MIT, 150KB) — easy add.
-- `libcurl` — fattt dep, but battle-tested.
-- Свой winhttp + POSIX — портируемо но много кода.
-**Effort:** средний (1 день с cpp-httplib).
-**Impact:** средний — многие деплои уже используют collector-sidecar.
-
 ### `OtlpGrpcSink` через opentelemetry-cpp (BACKLOG)
 **Что:** полноценный OTLP/gRPC.
 **Зачем:** canonical OTLP transport, стриминг, mTLS, compression.
@@ -66,17 +56,14 @@
 
 ## Priority matrix
 
-### Высокий impact, средний effort
-1. **OtlpBatchSink HTTP** — real OTLP transport без sidecar.
-
 ### Средний impact
-2. **Compile-erase assertion test**.
-3. **YAML config loader**.
+1. **Compile-erase assertion test**.
+2. **YAML config loader**.
 
 ### Низкий приоритет
-4. **OtlpGrpcSink**.
-5. **Multi-worker async**.
-6. **Hot config reload**.
+3. **OtlpGrpcSink**.
+4. **Multi-worker async**.
+5. **Hot config reload**.
 
 ---
 

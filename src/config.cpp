@@ -17,6 +17,10 @@
 #include <ulog/sinks/unix_socket_sink.hpp>
 #endif
 
+#if defined(ULOG_HAVE_HTTP)
+#include <ulog/sinks/otlp_batch_sink.hpp>
+#endif
+
 namespace ulog {
 
 namespace {
@@ -55,6 +59,16 @@ sinks::SinkPtr MakeSinkFromSpec(const std::string& spec, bool truncate_on_start)
         return std::make_shared<sinks::UnixSocketSink>(spec.substr(std::string_view("unix:").size()));
 #else
         throw std::invalid_argument("unix sockets unsupported on this platform");
+#endif
+    }
+    if (StartsWith(spec, "otlp:")) {
+#if defined(ULOG_HAVE_HTTP)
+        // spec = "otlp:http://host:port/path"
+        sinks::OtlpBatchSink::Config cfg;
+        cfg.endpoint = std::string(spec.substr(std::string_view("otlp:").size()));
+        return std::make_shared<sinks::OtlpBatchSink>(cfg);
+#else
+        throw std::invalid_argument("otlp:// sinks require -DULOG_WITH_HTTP=ON");
 #endif
     }
     return std::make_shared<sinks::FileSink>(spec, truncate_on_start);

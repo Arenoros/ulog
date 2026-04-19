@@ -14,6 +14,7 @@ target_sources(ulog PRIVATE
     sinks/fd_sink.cpp
     sinks/file_sink.cpp
     sinks/instrumented_sink.cpp
+    sinks/otlp_batch_sink.cpp
     sinks/tcp_socket_sink.cpp
 
     dynamic_debug.cpp

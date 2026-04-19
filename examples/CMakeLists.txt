@@ -15,3 +15,8 @@ target_link_libraries(ulog-example-otlp PRIVATE ulog::ulog)
 
 add_executable(ulog-example-json-consumer json_consumer/main.cpp)
 target_link_libraries(ulog-example-json-consumer PRIVATE ulog::ulog)
+
+if(ULOG_WITH_HTTP)
+    add_executable(ulog-example-otlp-http otlp_http/main.cpp)
+    target_link_libraries(ulog-example-otlp-http PRIVATE ulog::ulog)
+endif()

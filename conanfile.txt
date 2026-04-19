@@ -3,6 +3,7 @@ fmt/12.1.0
 boost/1.90.0
 gtest/1.17.0
 benchmark/1.9.4
+cpp-httplib/0.20.1
 
 [generators]
 CMakeDeps
@@ -25,3 +26,6 @@ boost/*:without_cobalt=True
 fmt/*:shared=False
 gtest/*:shared=False
 benchmark/*:shared=False
+cpp-httplib/*:with_openssl=False
+cpp-httplib/*:with_zlib=False
+cpp-httplib/*:with_brotli=False
