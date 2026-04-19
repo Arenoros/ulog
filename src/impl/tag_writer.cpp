@@ -19,7 +19,14 @@ void TagWriter::PutJsonTag(std::string_view key, const JsonString& value) {
 
 void TagWriter::PutLogExtra(const LogExtra& extra) {
     if (!formatter_) return;
-    for (const auto& [k, v] : extra.extra_) {
+    // Plain member references instead of structured bindings — C++17
+    // forbids lambdas from capturing binding names (gcc 12 enforces it,
+    // MSVC / newer gcc are lenient). Converting to `item.first` /
+    // `item.second` avoids the substantive complaint without splitting
+    // the loop body.
+    for (const auto& item : extra.extra_) {
+        const auto& k = item.first;
+        const auto& v = item.second;
         std::visit(
             [&](const auto& x) {
                 using T = std::decay_t<decltype(x)>;
