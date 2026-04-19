@@ -45,13 +45,6 @@
 
 ## Performance
 
-### Moodycamel per-producer token caching (из review 20)
-**Что:** thread_local `ProducerToken` для moodycamel queue.
-**Зачем:** multi-producer 8T regression — bench показал drop с 4.35M → 1.66M rec/s.
-**Как:** `moodycamel::ProducerToken tls_token(queue)`; `enqueue(tls_token, ...)`.
-**Effort:** маленький (1 час).
-**Impact:** средний — actual perf выигрыш на 8+ threads.
-
 ### Arena allocator formatter+item в одном malloc (из review 19)
 **Что:** формттер + TextLogItem в одном buffer через placement new.
 **Зачем:** 2 heap alloc'а per log → 1. ~50 ns save.
@@ -188,8 +181,7 @@
 ## Priority matrix
 
 ### Высокий impact, низкий effort (делать в первую очередь)
-1. **Moodycamel producer token caching** — фикс перф-регрессии на 8T.
-2. **CI cache + C++20 row** — улучшить CI pipeline.
+1. **CI cache + C++20 row** — улучшить CI pipeline.
 
 ### Высокий impact, средний effort
 3. **Per-sink метрики** — essential для production.

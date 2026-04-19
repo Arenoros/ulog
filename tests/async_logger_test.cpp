@@ -108,6 +108,56 @@ TEST(AsyncLogger, DiscardOverflowCountsDrops) {
     EXPECT_GT(logger->GetDroppedCount(), 0u);
 }
 
+TEST(AsyncLogger, SingleThreadPublishesToMultipleLoggers) {
+    // Exercises the TLS producer-token cache under the "one thread, two
+    // AsyncLoggers" scenario: each enqueue alternates loggers so the TLS
+    // slot is invalidated and re-bound every call. Both sinks must still
+    // receive every record for the logger they're attached to.
+    auto sink_a = std::make_shared<CapturingSink>();
+    auto sink_b = std::make_shared<CapturingSink>();
+    auto logger_a = std::make_shared<ulog::AsyncLogger>();
+    auto logger_b = std::make_shared<ulog::AsyncLogger>();
+    logger_a->SetLevel(ulog::Level::kTrace);
+    logger_b->SetLevel(ulog::Level::kTrace);
+    logger_a->AddSink(sink_a);
+    logger_b->AddSink(sink_b);
+
+    constexpr int kN = 300;
+    for (int i = 0; i < kN; ++i) {
+        ulog::LogHelper(*logger_a, ulog::Level::kInfo, {}) << "a " << i;
+        ulog::LogHelper(*logger_b, ulog::Level::kInfo, {}) << "b " << i;
+    }
+    logger_a->Flush();
+    logger_b->Flush();
+
+    EXPECT_EQ(sink_a->Size(), static_cast<std::size_t>(kN));
+    EXPECT_EQ(sink_b->Size(), static_cast<std::size_t>(kN));
+
+    logger_a.reset();
+    logger_b.reset();
+}
+
+TEST(AsyncLogger, TlsCacheSurvivesLoggerRecycleAtSameAddress) {
+    // Create a logger, publish, destroy, then create a new one at a
+    // (potentially) recycled allocation. The per-State generation counter
+    // must force a cache miss so the thread does not hand out a token
+    // bound to the freed queue.
+    for (int round = 0; round < 3; ++round) {
+        auto sink = std::make_shared<CapturingSink>();
+        auto logger = std::make_shared<ulog::AsyncLogger>();
+        logger->SetLevel(ulog::Level::kTrace);
+        logger->AddSink(sink);
+
+        ulog::SetDefaultLogger(logger);
+        for (int i = 0; i < 50; ++i) LOG_INFO() << "round=" << round << " i=" << i;
+        ulog::LogFlush();
+        ulog::SetDefaultLogger(nullptr);
+        logger.reset();
+
+        EXPECT_EQ(sink->Size(), 50u) << "round " << round;
+    }
+}
+
 TEST(AsyncLogger, MultiThreadedProducers) {
     auto sink = std::make_shared<CapturingSink>();
     auto logger = std::make_shared<ulog::AsyncLogger>();

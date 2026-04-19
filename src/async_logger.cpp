@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -32,9 +33,38 @@ struct FlushRequest {
     std::promise<void>* promise;
 };
 
+/// Per-thread cache for the most recently used AsyncLogger's
+/// `ProducerToken`. moodycamel's implicit-producer path walks a lock-free
+/// hashtable keyed by thread id on every `enqueue(...)` call; supplying a
+/// `ProducerToken` skips that lookup and talks directly to the per-token
+/// producer block. See `docs/BACKLOG.md` "Moodycamel per-producer token
+/// caching" for the 8-thread regression that motivates this.
+///
+/// Single-slot cache: the overwhelming-common case is one AsyncLogger per
+/// process (the default logger). Threads that publish to multiple loggers
+/// will thrash this slot — not great, but still correct: the slow path
+/// rebinds and re-caches, pointer identity plus a monotonic generation
+/// counter stops stale-pointer reuse when a new State happens to reclaim
+/// the old allocation address.
+struct TlsProducerCache {
+    const void* owner{nullptr};                 ///< State* (opaque here).
+    std::uint64_t generation{0};                ///< State::generation snapshot.
+    moodycamel::ProducerToken* token{nullptr};  ///< Non-owning; State owns.
+};
+
+thread_local TlsProducerCache g_tls_producer{};
+
 }  // namespace
 
 struct AsyncLogger::State {
+    /// Generation id — monotonically bumped on every State construction
+    /// so the TLS producer cache can distinguish "same State" from "new
+    /// State at the reclaimed address". Read-only after construction.
+    static std::atomic<std::uint64_t>& NextGeneration() {
+        static std::atomic<std::uint64_t> next{1};
+        return next;
+    }
+
     Config config;
 
     moodycamel::ConcurrentQueue<LogRecord> records;
@@ -51,10 +81,55 @@ struct AsyncLogger::State {
     std::atomic<std::uint64_t> dropped{0};
     std::atomic<std::uint64_t> total_logged{0};
 
+    /// ProducerTokens cached per producing thread. State owns the tokens
+    /// so they are destroyed strictly before the queue (vector is the
+    /// last member destroyed; deletion happens before `records` goes
+    /// out of scope since member destruction is reverse declaration
+    /// order — see `producers` position below).
+    std::mutex producers_mu;
+    std::vector<std::unique_ptr<moodycamel::ProducerToken>> producers;
+
+    /// Unique identity for cache-invalidation on State reuse.
+    const std::uint64_t generation;
+
     std::thread worker;
 
     explicit State(const Config& cfg)
-        : config(cfg), records(cfg.queue_capacity > 0 ? cfg.queue_capacity : 32) {}
+        : config(cfg),
+          records(cfg.queue_capacity > 0 ? cfg.queue_capacity : 32),
+          generation(NextGeneration().fetch_add(1, std::memory_order_relaxed)) {}
+
+    /// Slow path: walked on first enqueue from a given thread or after
+    /// a cache invalidation. Protected by a mutex since the producers
+    /// vector is shared across threads; contention is bounded to one hit
+    /// per (thread, logger) pair for the lifetime of the logger.
+    moodycamel::ProducerToken& AcquireToken() {
+        auto& tls = g_tls_producer;
+        if (tls.owner == this && tls.generation == generation) {
+            return *tls.token;
+        }
+        auto tok = std::make_unique<moodycamel::ProducerToken>(records);
+        auto* raw = tok.get();
+        {
+            std::lock_guard lk(producers_mu);
+            producers.push_back(std::move(tok));
+        }
+        tls.owner = this;
+        tls.generation = generation;
+        tls.token = raw;
+        return *raw;
+    }
+
+    /// Destruction order matters: the `producers` vector must be cleared
+    /// before `records` is destroyed so ProducerToken destructors can
+    /// detach cleanly from the queue's producer list. Member destruction
+    /// runs in reverse declaration order — `producers` is declared after
+    /// `records`, so it is destroyed first. The explicit dtor below is a
+    /// belt-and-suspenders clear in case the class grows more members.
+    ~State() {
+        std::lock_guard lk(producers_mu);
+        producers.clear();
+    }
 
     /// Wakes the worker only when it might actually be asleep. When pending
     /// was already non-zero before this producer's fetch_add, the worker is
@@ -79,7 +154,7 @@ struct AsyncLogger::State {
             });
             if (stop.load(std::memory_order_relaxed)) return false;
         }
-        records.enqueue(std::move(rec));
+        records.enqueue(AcquireToken(), std::move(rec));
         const auto prev = pending.fetch_add(1, std::memory_order_release);
         WakeIfIdle(prev);
         return true;
