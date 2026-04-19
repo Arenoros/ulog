@@ -207,3 +207,80 @@ jobs:
             build/Testing/Temporary/LastTestsFailed.log
           if-no-files-found: ignore
           retention-days: 14
+
+  # -----------------------------------------------------------------
+  # Benchmark job — runs ulog-bench on a pinned Linux runner and
+  # uploads the JSON result as an artifact. Numbers are indicative
+  # (shared-runner variance), but the trend is useful for spotting
+  # regressions; a future follow-up can wire `benchmark_compare` in.
+  # -----------------------------------------------------------------
+  bench:
+    name: bench
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Conan 2
+        uses: turtlebrowser/get-conan@main
+        with:
+          version: 2.14.0
+
+      - name: Configure Conan default profile
+        run: |
+          conan remote add conancenter https://center2.conan.io --force
+          conan profile detect --force
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.conan2/p
+          key: conan-ubuntu-22.04-gcc-cpp17-Release-none-${{ hashFiles('conanfile.txt') }}
+          restore-keys: |
+            conan-ubuntu-22.04-gcc-cpp17-Release-none-
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Conan install
+        run: |
+          conan install . \
+            --output-folder=build \
+            -s build_type=Release \
+            -s compiler.cppstd=17 \
+            -c tools.cmake.cmaketoolchain:generator=Ninja \
+            --build=missing
+
+      - name: CMake configure
+        env:
+          CC: gcc
+          CXX: g++
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DULOG_BUILD_BENCH=ON \
+            -DULOG_BUILD_TESTS=OFF \
+            -DULOG_BUILD_EXAMPLES=OFF
+
+      - name: Build benchmarks
+        run: cmake --build build --parallel --target ulog-bench
+
+      - name: Run ulog-bench
+        run: |
+          # Console output stays tabular (visible in the CI log); the
+          # JSON snapshot at bench.json is what gets uploaded for
+          # diff-across-runs tooling.
+          ./build/bench/ulog-bench \
+            --benchmark_out=bench.json \
+            --benchmark_out_format=json \
+            --benchmark_min_time=0.3s
+
+      - name: Upload bench result
+        uses: actions/upload-artifact@v4
+        with:
+          name: ulog-bench-${{ github.sha }}
+          path: bench.json
+          retention-days: 90

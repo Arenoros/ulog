@@ -64,15 +64,6 @@
 
 ---
 
-## Build / infrastructure
-
-### Google Benchmark в CI (из BACKLOG)
-**Что:** отдельный job запускает `ulog-bench`, сохраняет JSON result как artifact. Опционально compare with baseline.
-**Effort:** средний.
-**Impact:** средний — tracking perf regressions.
-
----
-
 ## Priority matrix
 
 ### Высокий impact, средний effort
