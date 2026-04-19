@@ -2,13 +2,6 @@
 
 ## Observability / metrics
 
-### Per-sink метрики (из BACKLOG rev.1)
-**Что:** write latency histogram + error counter для каждого sink.
-**Зачем:** видеть какой sink тормозит (disk fsync, TCP backpressure), какой возвращает ошибки.
-**Как:** `BaseSink::stats()` → `{writes, errors, total_write_ns, p99_ns}`. Обёртка-декоратор `InstrumentedSink` + Writer-interface для per-sink вывода.
-**Effort:** средний (1-2 дня).
-**Impact:** высокий для operations.
-
 ### RateLimiter per-source callback (из BACKLOG rev.1)
 **Что:** `SetRateLimitDropHandler(fn)` — вызов per drop event.
 **Зачем:** push to monitoring system без pull'а глобального счётчика.
@@ -145,24 +138,19 @@
 
 ## Priority matrix
 
-### Высокий impact, низкий effort (делать в первую очередь)
-1. **CI cache + C++20 row** — улучшить CI pipeline.
-
 ### Высокий impact, средний effort
-3. **Per-sink метрики** — essential для production.
-4. **OtlpBatchSink HTTP** — real OTLP transport без sidecar.
+1. **OtlpBatchSink HTTP** — real OTLP transport без sidecar.
 
 ### Средний impact
-5. **Compile-erase assertion test**.
-6. **TCP multi-accept reopen тест**.
-7. **Arena allocator**.
-8. **YAML config loader**.
+2. **Compile-erase assertion test**.
+3. **TCP multi-accept reopen тест**.
+4. **YAML config loader**.
 
 ### Низкий приоритет
-9.  **OtlpGrpcSink**.
-10. **Multi-worker async**.
-11. **Hot config reload**.
-12. **Doxygen**.
+5. **OtlpGrpcSink**.
+6. **Multi-worker async**.
+7. **Hot config reload**.
+8. **Doxygen**.
 
 ---
 

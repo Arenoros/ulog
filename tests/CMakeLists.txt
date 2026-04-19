@@ -9,6 +9,7 @@ add_executable(ulog-tests
     formatter_test.cpp
     dynamic_debug_test.cpp
     sink_test.cpp
+    instrumented_sink_test.cpp
     async_logger_test.cpp
     config_test.cpp
     tracing_hook_test.cpp

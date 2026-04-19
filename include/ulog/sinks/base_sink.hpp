@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include <ulog/level.hpp>
+#include <ulog/sinks/sink_stats.hpp>
 
 namespace ulog::sinks {
 
@@ -33,6 +34,12 @@ public:
 
     /// Reopens the underlying resource (file rotation). Default: no-op.
     virtual void Reopen(ReopenMode /*mode*/) {}
+
+    /// Returns a snapshot of per-sink counters. Default: all-zero — only
+    /// sinks wrapped in an `InstrumentedSink` decorator record real
+    /// numbers. The caller can diff two consecutive snapshots to get
+    /// per-interval rates.
+    virtual SinkStats GetStats() const noexcept { return {}; }
 
     /// Per-sink level gate (kNone by default — sink accepts everything).
     /// Applied BEFORE Write is called via ShouldLog().
