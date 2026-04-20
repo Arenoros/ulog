@@ -126,12 +126,13 @@ Thread-safe by TLS. На thread exit residual slabs leak-freed через `threa
 **Зачем:** enables Priority 1 (без explicit finalize point pool Push не знает когда Impl готов к переиспользованию). Также — явная точка для unit-testing finalization без dtor ceremony.
 **Effort:** рефактор, embedded в Priority 1. Без Priority 1 не даёт value.
 
-### Priority 5: Combined Impl+formatter single heap alloc (опционально)
+### Priority 5: Combined Impl+formatter single heap alloc (опционально) 🟡 DEFERRED (Phase 46)
 **Что:** arena — размещать `Impl` + primary `TskvFormatter` (или др.) + `TextLogItem` в одном heap block через placement-new.
 **Зачем:** после Priority 1 remaining alloc — formatter+item (~540 байт). Один большой alloc вместо двух малых.
 **Блок:** формттер size варьируется (TSKV ~256, JSON больше, OTLP больше). Нужен runtime sizing или worst-case allocation. Усложняет `MakeFormatterInto` API.
 **Effort:** средний (1 день с осторожным lifetime handling).
 **Impact:** средний — ~50 ns save after Priority 1.
+**Defer:** `docs/review/36-phase-46-deferral.md` — cross-thread TextLogItem lifetime (async queue owns past producer), marginal payoff на baseline sync 580 ns. Re-open on real-world allocator-pressure evidence.
 
 ### Priority 6: per-logger `PrependCommonTags` virtual (уже close) ✅ DONE (Phase 45)
 **Что:** virtual hook `LoggerBase::PrependCommonTags(TagWriter&)` вызывается в `LogHelper` ctor, добавляет service-wide tags (hostname, service, version) в каждую запись.
