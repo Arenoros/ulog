@@ -21,7 +21,6 @@
 #include <utility>
 
 #include <ulog/detail/timestamp.hpp>
-#include <ulog/impl/tag_writer.hpp>
 #include <ulog/log_helper.hpp>
 
 namespace ulog {
@@ -93,12 +92,8 @@ inline LogHelper&& operator<<(LogHelper&& lh,
 /// Prefer this over the named `LogHelper::WithException` when streaming
 /// fits the call-site idiom: `LOG_ERROR() << "parse failed: " << ex`.
 inline LogHelper& operator<<(LogHelper& lh, const std::exception& ex) noexcept {
-    try {
-        lh << std::string_view(ex.what() ? ex.what() : "");
-        lh.GetTagWriter().PutTag("exception_type", typeid(ex).name());
-    } catch (...) {
-        // noexcept-safe — drop silently on alloc failure.
-    }
+    lh << std::string_view(ex.what() ? ex.what() : "");
+    lh.PutTag("exception_type", typeid(ex).name());
     return lh;
 }
 inline LogHelper&& operator<<(LogHelper&& lh, const std::exception& ex) noexcept {

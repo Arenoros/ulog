@@ -15,6 +15,7 @@
 #include <ulog/detail/range_traits.hpp>
 #include <ulog/detail/source_root.hpp>
 #include <ulog/fwd.hpp>
+#include <ulog/json_string.hpp>
 #include <ulog/level.hpp>
 #include <ulog/log_extra.hpp>
 
@@ -280,9 +281,27 @@ public:
     LogHelper& WithException(const std::exception& ex) & noexcept;
     LogHelper&& WithException(const std::exception& ex) && noexcept { return std::move(WithException(ex)); }
 
-    /// Access low-level tag writer. Returns a per-thread dummy writer
-    /// when the helper failed to construct (e.g. pool Pop threw); the
-    /// caller's tag writes become no-ops rather than null-dereferences.
+    /// Attach a plain string-valued tag to the record. No-op on a
+    /// broken or inactive helper. Extension `operator<<` overloads
+    /// that need to add structured fields should call this (or
+    /// `PutJsonTag`) directly rather than reaching for
+    /// `GetTagWriter()` — the tag writer is an implementation
+    /// detail that may change shape.
+    void PutTag(std::string_view key, std::string_view value) noexcept;
+
+    /// Attach a tag whose value is pre-serialised JSON. Identical
+    /// gating to `PutTag`.
+    void PutJsonTag(std::string_view key, const JsonString& value) noexcept;
+
+    /// Access low-level tag writer. Deprecated — prefer `PutTag` /
+    /// `PutJsonTag`. Retained for backwards compatibility with
+    /// extension code compiled against earlier ulog releases.
+    /// Returns a per-thread dummy writer when the helper failed to
+    /// construct (e.g. pool `Pop` threw); the caller's tag writes
+    /// become no-ops rather than null-dereferences.
+    [[deprecated("Prefer LogHelper::PutTag / PutJsonTag — GetTagWriter "
+                 "exposes the internal writer and will be made private "
+                 "in a future release")]]
     impl::TagWriter& GetTagWriter() noexcept;
 
     /// True if the helper will emit when destroyed.

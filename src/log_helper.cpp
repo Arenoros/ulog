@@ -422,6 +422,78 @@ struct LogHelper::Impl {
         return truncated || text.size() >= kSizeLimit;
     }
 
+    /// Appends `sv` to the text buffer. Gates on broken/active/limit.
+    /// Overshoot-by-one-chunk allowance — `sv` is never split; if the
+    /// post-append size crosses the cap we flag `truncated=true` so
+    /// `DoLog` emits the `truncated=true` tag.
+    void AddText(std::string_view sv) noexcept {
+        if (!active || broken) return;
+        if (text.size() >= kSizeLimit) {
+            truncated = true;
+            return;
+        }
+        try {
+            text += sv;
+        } catch (...) {
+            broken = true;
+            return;
+        }
+        if (text.size() >= kSizeLimit) {
+            truncated = true;
+        }
+    }
+
+    /// Appends a single character — same gating as `AddText`. Separate
+    /// method avoids constructing a `string_view` for single-char writes
+    /// (`operator<<(Quoted)` calls this for the bracketing `"`).
+    void AddChar(char c) noexcept {
+        if (!active || broken) return;
+        if (text.size() >= kSizeLimit) {
+            truncated = true;
+            return;
+        }
+        try {
+            text += c;
+        } catch (...) {
+            broken = true;
+            return;
+        }
+        if (text.size() >= kSizeLimit) {
+            truncated = true;
+        }
+    }
+
+    /// Plain string-valued tag. No-op on broken/inactive record;
+    /// swallows any exception from the writer via `broken` mark.
+    void AddTag(std::string_view key, std::string_view value) noexcept {
+        if (!active || broken) return;
+        try {
+            writer.PutTag(key, value);
+        } catch (...) {
+            broken = true;
+        }
+    }
+
+    /// Tag whose value is pre-serialized JSON. Same gating as AddTag.
+    void AddJsonTag(std::string_view key, const JsonString& value) noexcept {
+        if (!active || broken) return;
+        try {
+            writer.PutJsonTag(key, value);
+        } catch (...) {
+            broken = true;
+        }
+    }
+
+    /// Spills every key-value pair of `extra` through the tag writer.
+    void AddLogExtra(const LogExtra& extra) noexcept {
+        if (!active || broken) return;
+        try {
+            writer.PutLogExtra(extra);
+        } catch (...) {
+            broken = true;
+        }
+    }
+
     impl::LoggerBase& logger_ref;
     LoggerPtr logger_owner;                     ///< Keeps the logger alive; may be null for ref path.
     Level level;
@@ -525,56 +597,40 @@ void LogHelper::InternalLoggingError(const char* msg) noexcept {
 
 // ---- text stream appenders ----
 //
-// These may throw from `SmallString::operator+=` on OOM; public `<<`
-// overloads wrap them in try/catch so the user-facing noexcept contract
-// holds. `broken` short-circuit makes further writes to a broken record
-// no-ops so a failed format doesn't keep retrying.
+// LogHelper-level `Put*` are thin delegates to `Impl::AddText` /
+// `Impl::AddChar`. All mutation / limit / broken-flag logic lives
+// on Impl so the public surface stays minimal and internals don't
+// leak into extension operators.
 
 void LogHelper::Put(std::string_view sv) {
-    if (!impl_ || !impl_->active || impl_->broken) return;
-    if (impl_->text.size() >= kSizeLimit) {
-        impl_->truncated = true;
-        return;
-    }
-    impl_->text += sv;
-    // Overshoot-by-at-most-one-chunk allowance (see Phase 44) — we
-    // intentionally do NOT split `sv` mid-append. When the post-append
-    // size crosses the cap, flag the record so DoLog emits
-    // `truncated=true` alongside the (slightly oversized) body.
-    // Without this, a single big write that jumps from below cap to
-    // well above it would leave the flag unset and downstream
-    // consumers could not tell the record was cut.
-    if (impl_->text.size() >= kSizeLimit) {
-        impl_->truncated = true;
-    }
+    if (impl_) impl_->AddText(sv);
 }
-void LogHelper::Put(const char* s) { Put(std::string_view(s ? s : "")); }
-void LogHelper::Put(bool v) { Put(std::string_view(v ? "true" : "false")); }
+void LogHelper::Put(const char* s) {
+    if (impl_) impl_->AddText(std::string_view(s ? s : ""));
+}
+void LogHelper::Put(bool v) {
+    if (impl_) impl_->AddText(std::string_view(v ? "true" : "false"));
+}
 void LogHelper::Put(char v) {
-    if (!impl_ || !impl_->active || impl_->broken) return;
-    if (impl_->text.size() >= kSizeLimit) {
-        impl_->truncated = true;
-        return;
-    }
-    impl_->text += v;
-    if (impl_->text.size() >= kSizeLimit) {
-        impl_->truncated = true;
-    }
+    if (impl_) impl_->AddChar(v);
 }
-void LogHelper::PutFormatted(std::string s) { Put(std::string_view(s)); }
+void LogHelper::PutFormatted(std::string s) {
+    if (impl_) impl_->AddText(std::string_view(s));
+}
+
+void LogHelper::PutTag(std::string_view key, std::string_view value) noexcept {
+    if (impl_) impl_->AddTag(key, value);
+}
+void LogHelper::PutJsonTag(std::string_view key, const JsonString& value) noexcept {
+    if (impl_) impl_->AddJsonTag(key, value);
+}
 
 bool LogHelper::IsLimitReached() const noexcept {
     return !impl_ || impl_->IsLimitReached();
 }
 
 LogHelper& LogHelper::operator<<(const LogExtra& extra) & noexcept {
-    if (impl_ && impl_->active && !impl_->broken) {
-        try {
-            impl_->writer.PutLogExtra(extra);
-        } catch (...) {
-            InternalLoggingError("operator<<(LogExtra) threw");
-        }
-    }
+    if (impl_) impl_->AddLogExtra(extra);
     return *this;
 }
 LogHelper&& LogHelper::operator<<(const LogExtra& extra) && noexcept {
@@ -583,9 +639,9 @@ LogHelper&& LogHelper::operator<<(const LogExtra& extra) && noexcept {
 }
 
 LogHelper& LogHelper::operator<<(Hex v) & noexcept {
-    if (impl_ && impl_->active && !impl_->broken) {
+    if (IsActive()) {
         try {
-            PutFormatted(fmt::format("0x{:016X}", v.value));
+            impl_->AddText(fmt::format("0x{:016X}", v.value));
         } catch (...) {
             InternalLoggingError("operator<<(Hex) threw");
         }
@@ -593,9 +649,9 @@ LogHelper& LogHelper::operator<<(Hex v) & noexcept {
     return *this;
 }
 LogHelper& LogHelper::operator<<(HexShort v) & noexcept {
-    if (impl_ && impl_->active && !impl_->broken) {
+    if (IsActive()) {
         try {
-            PutFormatted(fmt::format("{:X}", v.value));
+            impl_->AddText(fmt::format("{:X}", v.value));
         } catch (...) {
             InternalLoggingError("operator<<(HexShort) threw");
         }
@@ -603,36 +659,29 @@ LogHelper& LogHelper::operator<<(HexShort v) & noexcept {
     return *this;
 }
 LogHelper& LogHelper::operator<<(Quoted v) & noexcept {
-    if (impl_ && impl_->active && !impl_->broken) {
-        // Route through `Put` so the kSizeLimit gate applies uniformly —
-        // otherwise a gigantic quoted payload would bypass truncation.
-        try {
-            Put('"');
-            Put(v.value);
-            Put('"');
-        } catch (...) {
-            InternalLoggingError("operator<<(Quoted) threw");
-        }
+    if (IsActive()) {
+        // Route through the gated appenders so the kSizeLimit cap
+        // applies uniformly — otherwise a gigantic quoted payload
+        // would bypass truncation.
+        impl_->AddChar('"');
+        impl_->AddText(v.value);
+        impl_->AddChar('"');
     }
     return *this;
 }
 
 LogHelper& LogHelper::WithException(const std::exception& ex) & noexcept {
-    if (impl_ && impl_->active && !impl_->broken) {
-        try {
-            impl_->writer.PutTag("exception_type", typeid(ex).name());
-            impl_->writer.PutTag("exception_msg", ex.what());
-        } catch (...) {
-            InternalLoggingError("WithException threw");
-        }
+    if (IsActive()) {
+        impl_->AddTag("exception_type", typeid(ex).name());
+        impl_->AddTag("exception_msg", ex.what());
     }
     return *this;
 }
 
 LogHelper& LogHelper::operator<<(const impl::RateLimiter& rl) & noexcept {
-    if (impl_ && impl_->active && !impl_->broken && rl.GetDroppedCount() > 0) {
+    if (IsActive() && rl.GetDroppedCount() > 0) {
         try {
-            PutFormatted(fmt::format(" [dropped={}]", rl.GetDroppedCount()));
+            impl_->AddText(fmt::format(" [dropped={}]", rl.GetDroppedCount()));
         } catch (...) {
             InternalLoggingError("operator<<(RateLimiter) threw");
         }
