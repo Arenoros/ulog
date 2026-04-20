@@ -131,7 +131,7 @@ jobs:
         with:
           path: |
             ~/.conan2
-          key: conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-${{ matrix.sanitizer || 'none' }}-${{ hashFiles('conanfile.txt') }}
+          key: conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-${{ matrix.sanitizer || 'none' }}-${{ hashFiles('conanfile.py') }}
           restore-keys: |
             conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-${{ matrix.sanitizer || 'none' }}-
             conan-${{ matrix.os }}-${{ matrix.cc }}-cpp${{ matrix.cppstd }}-${{ matrix.build_type }}-
@@ -318,7 +318,7 @@ jobs:
         with:
           path: |
             ~/.conan2
-          key: conan-ubuntu-22.04-gcc-cpp17-Release-none-${{ hashFiles('conanfile.txt') }}
+          key: conan-ubuntu-22.04-gcc-cpp17-Release-none-${{ hashFiles('conanfile.py') }}
           restore-keys: |
             conan-ubuntu-22.04-gcc-cpp17-Release-none-
 

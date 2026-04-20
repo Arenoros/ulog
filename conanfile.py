@@ -14,7 +14,7 @@ consumers don't drag them transitively).
 """
 
 from conan import ConanFile
-from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
+from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain
 
 
 class UlogConan(ConanFile):
@@ -118,8 +118,22 @@ class UlogConan(ConanFile):
         if self.options.build_bench:
             self.test_requires("benchmark/1.9.4")
 
-    def layout(self):
-        cmake_layout(self)
+    # No `def layout()` — the recipe stays layout-less on purpose.
+    #
+    # `conan install . --output-folder=build` is the canonical entry point
+    # for both CI and local dev; without a layout method every generated
+    # file lands flat under that folder, so CMake finds
+    # `build/conan_toolchain.cmake` at the expected path.
+    #
+    # Adding `cmake_layout(self)` would nest generators under
+    # `build/<BuildType>/generators/` on single-config generators and
+    # break the CI configure step that currently references the flat
+    # path. The build/source separation `cmake_layout` offers is not
+    # needed here — a single build_type per `conan install` call.
+    #
+    # `conan create .` still works: it sets its own source/build/package
+    # cache folders internally during the create pipeline, independent of
+    # whether the recipe defines a layout.
 
     def generate(self):
         tc = CMakeToolchain(self)
