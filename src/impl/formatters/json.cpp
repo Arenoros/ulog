@@ -142,15 +142,15 @@ void JsonFormatter::AddTagBool(std::string_view key, bool value) {
 
 void JsonFormatter::SetText(std::string_view text) { text_.assign(text); }
 
-std::unique_ptr<LoggerItemBase> JsonFormatter::ExtractLoggerItem() {
-    if (!item_) return nullptr;
+LoggerItemPtr JsonFormatter::ExtractLoggerItem() {
+    if (!item_) return LoggerItemPtr{nullptr};
     if (!finalized_) {
         EmitField("text", text_.view(), /*is_json=*/false);
         item_->payload += '}';
         item_->payload += '\n';
         finalized_ = true;
     }
-    return std::move(item_);
+    return LoggerItemPtr{item_.release()};
 }
 
 }  // namespace ulog::impl::formatters

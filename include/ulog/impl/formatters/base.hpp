@@ -19,6 +19,19 @@ struct LoggerItemBase {
 };
 using LoggerItemRef = LoggerItemBase&;
 
+/// Deleter that routes destruction through `TextLogItemPool::Release`
+/// instead of `delete`. Declaration only — definition in
+/// `text_item_pool.cpp` so `base.hpp` does not have to pull the pool
+/// header. Concrete subclass of `LoggerItemBase` is assumed to be
+/// `TextLogItem` (sole subtype today); if a second subtype is added,
+/// the deleter needs to dispatch on dynamic type.
+struct LoggerItemDeleter {
+    void operator()(LoggerItemBase* p) const noexcept;
+};
+
+/// Owning handle used across the `Log` / queue / sink pipeline.
+using LoggerItemPtr = std::unique_ptr<LoggerItemBase, LoggerItemDeleter>;
+
 /// Interface every concrete formatter implements. A formatter is created per
 /// log record, receives tags and text via AddTag/SetText, then releases a
 /// finalized record payload via ExtractLoggerItem().
@@ -80,9 +93,12 @@ public:
     /// Sets the "text" field — the free-form message body.
     virtual void SetText(std::string_view text) = 0;
 
-    /// Finalizes the record and yields ownership of the payload.
-    /// Subsequent calls return nullptr.
-    virtual std::unique_ptr<LoggerItemBase> ExtractLoggerItem() = 0;
+    /// Finalizes the record and yields ownership of the payload. The
+    /// returned handle carries `LoggerItemDeleter`, which routes
+    /// destruction back through `TextLogItemPool::Release` — steady
+    /// state on the hot path performs no heap allocations. Subsequent
+    /// calls return a handle whose internal pointer is null.
+    virtual LoggerItemPtr ExtractLoggerItem() = 0;
 };
 
 /// Deleter that knows whether the Base instance was constructed inline

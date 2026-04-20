@@ -65,13 +65,13 @@ void LtsvFormatter::SetText(std::string_view text) {
     detail::EncodeTskv(b, text, detail::TskvMode::kValue);
 }
 
-std::unique_ptr<LoggerItemBase> LtsvFormatter::ExtractLoggerItem() {
-    if (!item_) return nullptr;
+LoggerItemPtr LtsvFormatter::ExtractLoggerItem() {
+    if (!item_) return LoggerItemPtr{nullptr};
     if (!finalized_) {
         item_->payload += '\n';
         finalized_ = true;
     }
-    return std::move(item_);
+    return LoggerItemPtr{item_.release()};
 }
 
 }  // namespace ulog::impl::formatters

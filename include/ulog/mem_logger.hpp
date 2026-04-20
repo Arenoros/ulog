@@ -24,7 +24,7 @@ public:
         SetFlushOn(Level::kNone);
     }
 
-    void Log(Level, std::unique_ptr<impl::LoggerItemBase> item) override {
+    void Log(Level, impl::LoggerItemPtr item) override {
         if (!item) return;
         auto& text = static_cast<impl::formatters::TextLogItem&>(*item);
         std::lock_guard lock(mu_);

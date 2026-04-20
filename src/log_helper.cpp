@@ -84,8 +84,8 @@ public:
     void SetText(std::string_view text) override {
         record_->text = std::string(text);
     }
-    std::unique_ptr<impl::formatters::LoggerItemBase> ExtractLoggerItem() override {
-        return nullptr;  // unused — LogHelper pulls the record via Release()
+    impl::formatters::LoggerItemPtr ExtractLoggerItem() override {
+        return impl::formatters::LoggerItemPtr{nullptr};  // unused — LogHelper pulls the record via Release()
     }
 
 private:
@@ -130,8 +130,8 @@ public:
     void SetText(std::string_view text) override {
         for (auto* t : targets_) t->SetText(text);
     }
-    std::unique_ptr<impl::formatters::LoggerItemBase> ExtractLoggerItem() override {
-        return nullptr;  // unused — see class comment
+    impl::formatters::LoggerItemPtr ExtractLoggerItem() override {
+        return impl::formatters::LoggerItemPtr{nullptr};  // unused — see class comment
     }
 
 private:

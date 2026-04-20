@@ -421,7 +421,7 @@ void AsyncLogger::RequestReopen(sinks::ReopenMode mode) {
     state_->WakeForControl();
 }
 
-void AsyncLogger::Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) {
+void AsyncLogger::Log(Level level, impl::LoggerItemPtr item) {
     if (!item) return;
     QueueRecord rec;
     rec.level = level;

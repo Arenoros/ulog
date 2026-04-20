@@ -38,13 +38,13 @@ public:
     void AddTagDouble(std::string_view key, double value) override;
     void AddTagBool(std::string_view key, bool value) override;
     void SetText(std::string_view text) override;
-    std::unique_ptr<LoggerItemBase> ExtractLoggerItem() override;
+    LoggerItemPtr ExtractLoggerItem() override;
 
 private:
     void EmitField(std::string_view key, std::string_view value, bool value_is_json);
     std::string_view TranslateKey(std::string_view key) const noexcept;
 
-    std::unique_ptr<TextLogItem> item_{std::make_unique<TextLogItem>()};
+    PooledTextLogItemPtr item_{TextLogItemPool::Instance().Acquire()};
     /// Free-form message body. Short messages (≤64 bytes — the bulk of
     /// production records) live entirely in this SSO slab; longer ones
     /// spill to the heap transparently via `boost::small_vector`.

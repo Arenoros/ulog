@@ -30,13 +30,13 @@ void RawFormatter::SetText(std::string_view text) {
     has_fields_ = true;
 }
 
-std::unique_ptr<LoggerItemBase> RawFormatter::ExtractLoggerItem() {
-    if (!item_) return nullptr;
+LoggerItemPtr RawFormatter::ExtractLoggerItem() {
+    if (!item_) return LoggerItemPtr{nullptr};
     if (!finalized_) {
         item_->payload += '\n';
         finalized_ = true;
     }
-    return std::move(item_);
+    return LoggerItemPtr{item_.release()};
 }
 
 }  // namespace ulog::impl::formatters

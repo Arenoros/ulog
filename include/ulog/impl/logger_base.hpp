@@ -30,11 +30,14 @@ class TextLoggerBase;  // defined below
 
 using formatters::LoggerItemBase;
 using formatters::LoggerItemRef;
+using formatters::LoggerItemPtr;
 
 /// Inline-capacity 1 small_vector — multi-format records carry one item per
 /// active format. The common case (single format) avoids heap allocation
-/// for the carrier itself.
-using LogItemList = boost::container::small_vector<std::unique_ptr<LoggerItemBase>, 1>;
+/// for the carrier itself. Each handle uses the pool-aware deleter so
+/// destruction returns the item to the global `TextLogItemPool` rather
+/// than calling `delete`.
+using LogItemList = boost::container::small_vector<LoggerItemPtr, 1>;
 
 /// Base class for all loggers. Thread-safe level access via atomics.
 class LoggerBase {
@@ -43,8 +46,9 @@ public:
 
     /// Writes a formatted log item. Takes ownership — synchronous loggers
     /// consume immediately, asynchronous loggers move the pointer into
-    /// their queue.
-    virtual void Log(Level level, std::unique_ptr<LoggerItemBase> item) = 0;
+    /// their queue. The handle uses `LoggerItemDeleter` so destruction
+    /// returns the underlying `TextLogItem` to the global pool.
+    virtual void Log(Level level, LoggerItemPtr item) = 0;
 
     /// Multi-format + optional structured variant. `items[i]` was rendered
     /// with format `GetActiveFormats()[i]`; `structured` is the raw record

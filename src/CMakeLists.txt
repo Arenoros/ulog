@@ -9,6 +9,7 @@ target_sources(ulog PRIVATE
     impl/formatters/ltsv.cpp
     impl/formatters/otlp_json.cpp
     impl/formatters/raw.cpp
+    impl/formatters/text_item_pool.cpp
     impl/formatters/tskv.cpp
 
     sinks/fd_sink.cpp

@@ -54,7 +54,7 @@ void SyncLogger::AddStructuredSink(sinks::StructuredSinkPtr sink) {
     SetHasStructuredSinks(true);
 }
 
-void SyncLogger::Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) {
+void SyncLogger::Log(Level level, impl::LoggerItemPtr item) {
     if (!item) return;
     // Lock-free atomic snapshot of the sink list. Sinks added mid-call
     // publish a new vector; this thread keeps iterating the pinned

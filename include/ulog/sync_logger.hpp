@@ -47,7 +47,7 @@ public:
     /// pay nothing until a structured sink is attached.
     void AddStructuredSink(sinks::StructuredSinkPtr sink);
 
-    void Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) override;
+    void Log(Level level, impl::LoggerItemPtr item) override;
     void LogMulti(Level level,
                   impl::LogItemList items,
                   std::unique_ptr<sinks::LogRecord> structured = nullptr) override;

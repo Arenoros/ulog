@@ -163,8 +163,8 @@ void OtlpJsonFormatter::SetText(std::string_view text) {
     body_text_.assign(text);
 }
 
-std::unique_ptr<LoggerItemBase> OtlpJsonFormatter::ExtractLoggerItem() {
-    if (!item_) return nullptr;
+LoggerItemPtr OtlpJsonFormatter::ExtractLoggerItem() {
+    if (!item_) return LoggerItemPtr{nullptr};
     if (!finalized_) {
         auto& b = item_->payload;
         if (!first_attr_) b += ']';  // close the attributes array
@@ -184,7 +184,7 @@ std::unique_ptr<LoggerItemBase> OtlpJsonFormatter::ExtractLoggerItem() {
         b += "}\n";
         finalized_ = true;
     }
-    return std::move(item_);
+    return LoggerItemPtr{item_.release()};
 }
 
 }  // namespace ulog::impl::formatters

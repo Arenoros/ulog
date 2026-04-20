@@ -62,7 +62,7 @@ public:
     void SetTraceContext(std::string_view trace_id_hex,
                          std::string_view span_id_hex) override;
     void SetText(std::string_view text) override;
-    std::unique_ptr<LoggerItemBase> ExtractLoggerItem() override;
+    LoggerItemPtr ExtractLoggerItem() override;
 
 private:
     /// Emits a `{"key": ..., "value": {"<kind>":<raw>}}` entry into the
@@ -72,7 +72,7 @@ private:
     /// Convenience for string-typed attributes (quotes + escapes).
     void EmitStringAttribute(std::string_view key, std::string_view value);
 
-    std::unique_ptr<TextLogItem> item_{std::make_unique<TextLogItem>()};
+    PooledTextLogItemPtr item_{TextLogItemPool::Instance().Acquire()};
     /// Free-form message body. Short messages stay on the stack via
     /// SmallString's SSO slab; longer ones spill to heap.
     detail::SmallString<64> body_text_;

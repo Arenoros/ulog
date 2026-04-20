@@ -63,13 +63,16 @@ void TskvFormatter::SetText(std::string_view text) {
     detail::EncodeTskv(b, text, detail::TskvMode::kValue);
 }
 
-std::unique_ptr<LoggerItemBase> TskvFormatter::ExtractLoggerItem() {
-    if (!item_) return nullptr;
+LoggerItemPtr TskvFormatter::ExtractLoggerItem() {
+    if (!item_) return LoggerItemPtr{nullptr};
     if (!finalized_) {
         item_->payload += '\n';
         finalized_ = true;
     }
-    return std::move(item_);
+    // Release ownership from the concrete-typed unique_ptr and re-wrap
+    // with the polymorphic deleter — both deleters route to the same
+    // pool, so steady-state still pays zero heap operations.
+    return LoggerItemPtr{item_.release()};
 }
 
 }  // namespace ulog::impl::formatters
