@@ -1,5 +1,7 @@
 #include <ulog/log_helper.hpp>
 
+#include <array>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -133,6 +135,94 @@ private:
     std::vector<impl::formatters::Base*> targets_;
 };
 
+/// Thread-local object cache. Amortizes heap allocation of `T` across
+/// logs on the same thread: first `MaxCapacity` records in a thread
+/// call `new Storage`; subsequent records reuse freed slabs. `Push` in
+/// the record dtor returns the storage to the cache; when full, the
+/// slab is freed normally. Thread-exit cleanup: `LocalState` dtor walks
+/// remaining slabs and frees them (`T` objects have already been
+/// destroyed by the corresponding `Push`).
+///
+/// Based on `userver::logging::ThreadLocalMemPool`
+/// (universal/src/logging/log_helper.cpp) with `thread_local` static
+/// instead of userver's `compiler::ThreadLocal` abstraction.
+///
+/// Thread-safety: per-thread state, no cross-thread synchronization. A
+/// `Push` must happen on the *same thread* that called `Pop`, otherwise
+/// the slab leaks into the wrong cache (still memory-safe — the `T` is
+/// destroyed first and the raw storage is trivially freeable — but the
+/// pool amortization is lost for that pair of logs).
+template <typename T, std::size_t MaxCapacity = 16>
+class ThreadLocalMemPool {
+    // Push() calls std::destroy_at under noexcept; a throwing dtor would
+    // violate the contract and terminate. Guard at compile time.
+    static_assert(std::is_nothrow_destructible_v<T>,
+                  "ThreadLocalMemPool<T>: T destructor must be noexcept");
+public:
+    template <typename... Args>
+    static std::unique_ptr<T> Pop(Args&&... args) {
+        auto& pool = LocalPool();
+        Storage* raw;
+        if (pool.count == 0) {
+            raw = new Storage;  // uninitialized — placement-new below
+        } else {
+            // Take top of stack; release() transfers ownership out of the
+            // unique_ptr without invoking its deleter (which would free the
+            // raw memory we want to reuse).
+            raw = pool.slabs[--pool.count].release();
+        }
+        try {
+            T* obj = ::new (static_cast<void*>(raw)) T(std::forward<Args>(args)...);
+            return std::unique_ptr<T>(obj);
+        } catch (...) {
+            delete raw;  // Storage is trivially destructible; frees memory.
+            throw;
+        }
+    }
+
+    /// Return an object to the per-thread cache. Destroys `*obj`
+    /// unconditionally; if the cache is full, frees the storage. Always
+    /// leaves `obj` null on exit.
+    static void Push(std::unique_ptr<T> obj) noexcept {
+        if (!obj) return;
+        auto& pool = LocalPool();
+        if (pool.count == MaxCapacity) {
+            // Cache full — let the default deleter free everything at
+            // scope exit. Explicit reset() to make the dtor chain run
+            // before we return (cheaper than deferring it to the
+            // caller's stack frame).
+            obj.reset();
+            return;
+        }
+        // Disarm the default deleter: we'll destroy T manually and keep
+        // the raw storage alive in the cache.
+        T* p = obj.release();
+        std::destroy_at(p);
+        // sizeof/alignof(Storage) == sizeof/alignof(T) by construction,
+        // so reinterpret to Storage* is well-defined; `delete` on this
+        // pointer later (via Storage unique_ptr) uses the correct size
+        // and alignment.
+        pool.slabs[pool.count++].reset(reinterpret_cast<Storage*>(p));
+    }
+
+private:
+    struct alignas(T) Storage {
+        std::byte raw[sizeof(T)];
+    };
+
+    struct LocalState {
+        std::array<std::unique_ptr<Storage>, MaxCapacity> slabs{};
+        std::size_t count{0};
+        // Implicit dtor: the array's unique_ptrs free their slabs on
+        // thread exit. Objects inside were destroyed by earlier Push().
+    };
+
+    static LocalState& LocalPool() noexcept {
+        thread_local LocalState state;
+        return state;
+    }
+};
+
 }  // namespace
 
 // ---------------- LogHelper::Impl ----------------
@@ -234,6 +324,66 @@ struct LogHelper::Impl {
         // pointer inside TagWriter.
     }
 
+    /// Finalize the record: dispatch hooks, mirror text to targets,
+    /// extract items, route through the logger, and flush when the
+    /// level warrants it. Never throws — any exception is swallowed so
+    /// the dtor path stays `noexcept`-safe. No-op when `!active`.
+    void DoLog() noexcept {
+        if (!active) return;
+        try {
+            // Dispatch the tracing hook + record enrichers through whichever
+            // target TagWriter currently points to — the fanout when multiple
+            // destinations are active, otherwise the sole target (formatter
+            // OR recorder). Both satisfy the TagSink / Base contract.
+            impl::formatters::Base* hook_target = nullptr;
+            if (fanout)         hook_target = &*fanout;
+            else if (formatter) hook_target = formatter.get();
+            else if (recorder)  hook_target = &*recorder;
+            if (hook_target) {
+                FormatterTagSink sink(hook_target);
+                impl::DispatchTracingHook(sink);
+                impl::DispatchRecordEnrichers(sink);
+            }
+
+            // SetText mirrors to every destination so each produced item /
+            // record carries the same text body.
+            const auto text_view = text.view();
+            if (formatter) formatter->SetText(text_view);
+            for (auto& e : extras) if (e) e->SetText(text_view);
+            if (recorder)  recorder->SetText(text_view);
+
+            const bool want_flush = level >= logger_ref.GetFlushOn();
+
+            // Single-format text-only hot path: no extras, no structured.
+            // Route straight to Log(level, item) — skips the LogItemList
+            // wrap and the LogMulti vector snapshot. This is the LOG_* path
+            // for the overwhelming common case (one format, no structured
+            // sink).
+            if (formatter && extras.empty() && !recorder) {
+                auto item = formatter->ExtractLoggerItem();
+                logger_ref.Log(level, std::move(item));
+                if (want_flush) logger_ref.Flush();
+                return;
+            }
+
+            impl::LogItemList items;
+            if (formatter) {
+                items.reserve(1 + extras.size());
+                items.push_back(formatter->ExtractLoggerItem());
+                for (auto& e : extras) {
+                    if (e) items.push_back(e->ExtractLoggerItem());
+                }
+            }
+            std::unique_ptr<sinks::LogRecord> structured =
+                recorder ? recorder->Release() : nullptr;
+
+            logger_ref.LogMulti(level, std::move(items), std::move(structured));
+            if (want_flush) logger_ref.Flush();
+        } catch (...) {
+            // Never throw from DoLog — invariant relied on by ~LogHelper.
+        }
+    }
+
     impl::LoggerBase& logger_ref;
     LoggerPtr logger_owner;                     ///< Keeps the logger alive; may be null for ref path.
     Level level;
@@ -263,77 +413,43 @@ struct LogHelper::Impl {
 
 // ---------------- LogHelper ----------------
 
+// Pool allocation failure (bad_alloc or Impl ctor throw) leaves impl_
+// null and the dtor fast-path silently drops the record. Phase 2 will
+// surface the error on stderr via InternalLoggingError.
+
 LogHelper::LogHelper(LoggerRef logger, Level level, const LogRecordLocation& location) noexcept
-    : impl_(std::make_unique<Impl>(logger, LoggerPtr{}, level, location, /*active=*/true)) {}
+    : impl_(nullptr) {
+    try {
+        impl_ = ThreadLocalMemPool<Impl>::Pop(
+            logger, LoggerPtr{}, level, location, /*active=*/true);
+    } catch (...) {}
+}
 
 LogHelper::LogHelper(LoggerRef logger, Level level, NoLog, const LogRecordLocation& location) noexcept
-    : impl_(std::make_unique<Impl>(logger, LoggerPtr{}, level, location, /*active=*/false)) {}
+    : impl_(nullptr) {
+    try {
+        impl_ = ThreadLocalMemPool<Impl>::Pop(
+            logger, LoggerPtr{}, level, location, /*active=*/false);
+    } catch (...) {}
+}
 
 LogHelper::LogHelper(LoggerPtr logger, Level level, const LogRecordLocation& location) noexcept
     : impl_(nullptr) {
     if (!logger) {
         // Pathological case — caller passed null. Drop.
-        impl_ = nullptr;
         return;
     }
     auto& ref = *logger;
-    impl_ = std::make_unique<Impl>(ref, std::move(logger), level, location, /*active=*/true);
+    try {
+        impl_ = ThreadLocalMemPool<Impl>::Pop(
+            ref, std::move(logger), level, location, /*active=*/true);
+    } catch (...) {}
 }
 
 LogHelper::~LogHelper() {
-    if (!impl_ || !impl_->active) return;
-    try {
-        // Dispatch the tracing hook + record enrichers through whichever
-        // target TagWriter currently points to — the fanout when multiple
-        // destinations are active, otherwise the sole target (formatter
-        // OR recorder). Both satisfy the TagSink / Base contract.
-        impl::formatters::Base* hook_target = nullptr;
-        if (impl_->fanout)         hook_target = &*impl_->fanout;
-        else if (impl_->formatter) hook_target = impl_->formatter.get();
-        else if (impl_->recorder)  hook_target = &*impl_->recorder;
-        if (hook_target) {
-            FormatterTagSink sink(hook_target);
-            impl::DispatchTracingHook(sink);
-            impl::DispatchRecordEnrichers(sink);
-        }
-
-        // SetText mirrors to every destination so each produced item /
-        // record carries the same text body.
-        const auto text_view = impl_->text.view();
-        if (impl_->formatter) impl_->formatter->SetText(text_view);
-        for (auto& e : impl_->extras) if (e) e->SetText(text_view);
-        if (impl_->recorder)  impl_->recorder->SetText(text_view);
-
-        const bool want_flush = impl_->level >= impl_->logger_ref.GetFlushOn();
-
-        // Single-format text-only hot path: no extras, no structured.
-        // Route straight to Log(level, item) — skips the LogItemList
-        // wrap and the LogMulti vector snapshot. This is the LOG_* path
-        // for the overwhelming common case (one format, no structured
-        // sink).
-        if (impl_->formatter && impl_->extras.empty() && !impl_->recorder) {
-            auto item = impl_->formatter->ExtractLoggerItem();
-            impl_->logger_ref.Log(impl_->level, std::move(item));
-            if (want_flush) impl_->logger_ref.Flush();
-            return;
-        }
-
-        impl::LogItemList items;
-        if (impl_->formatter) {
-            items.reserve(1 + impl_->extras.size());
-            items.push_back(impl_->formatter->ExtractLoggerItem());
-            for (auto& e : impl_->extras) {
-                if (e) items.push_back(e->ExtractLoggerItem());
-            }
-        }
-        std::unique_ptr<sinks::LogRecord> structured =
-            impl_->recorder ? impl_->recorder->Release() : nullptr;
-
-        impl_->logger_ref.LogMulti(impl_->level, std::move(items), std::move(structured));
-        if (want_flush) impl_->logger_ref.Flush();
-    } catch (...) {
-        // Never throw from a logger destructor.
-    }
+    if (!impl_) return;
+    impl_->DoLog();
+    ThreadLocalMemPool<Impl>::Push(std::move(impl_));
 }
 
 bool LogHelper::IsActive() const noexcept { return impl_ && impl_->active; }
