@@ -338,8 +338,17 @@ _HTML_TEMPLATE = """<!doctype html>
   #legend .item.dimmed { opacity: 0.35; }
   #legend .item.dimmed:hover,
   #legend .item.dimmed.hovered { opacity: 0.55; }
+  #legend .item.copied { background: #c7ebcd; }
   #legend .swatch { width: 11px; height: 11px; border-radius: 2px;
                     flex-shrink: 0; }
+
+  #status { margin-top: 0.8em; font-family: ui-monospace, Menlo, monospace;
+            font-size: 0.85em; color: #22863a; min-height: 1.3em;
+            opacity: 0; transition: opacity .2s;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #status.show { opacity: 1; }
+  #status.err { color: #c0392b; }
+  #canvas-host { cursor: pointer; }
 </style>
 </head>
 <body>
@@ -358,15 +367,19 @@ _HTML_TEMPLATE = """<!doctype html>
     <span style="margin-left:1em"></span>
     <button id="btn-all">all on</button>
     <button id="btn-none">all off</button>
-    <span style="color:#666">(click legend item to dim, hover line / item to focus)</span>
+    <span style="color:#666">click point = copy · legend click = dim · Shift+click = copy name</span>
   </div>
-  <canvas id="combined-canvas"></canvas>
+  <div id="canvas-host"><canvas id="combined-canvas"></canvas></div>
+  <div id="status"></div>
   <div id="legend"></div>
 </div>
 
 <script>
-const SERIES = __DATA__;
+const DATA = __DATA__;
+const SERIES = DATA.series;
+const COMMITS = DATA.commits;  // chronological: [{short, full, date}, ...]
 const NAMES = Object.keys(SERIES);
+const LABELS = COMMITS.map(c => c.short);
 
 function colorFor(i, n) {
   // Evenly spaced hues; skip the yellow band by offsetting.
@@ -374,17 +387,28 @@ function colorFor(i, n) {
   return `hsl(${hue}, 65%, 45%)`;
 }
 
-// Union of shas across every series, chronologically sorted.
-function buildLabels(series) {
-  const shaDate = new Map();
-  for (const pts of Object.values(series)) {
-    for (const p of pts) shaDate.set(p.sha, p.date);
+// Clipboard: Clipboard API requires a secure context. file:// URLs are
+// not secure in Firefox, so fall back to a hidden textarea + execCommand.
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text).then(() => true, () => false);
   }
-  return [...shaDate.entries()]
-    .sort((a, b) => a[1] < b[1] ? -1 : (a[1] > b[1] ? 1 : 0))
-    .map(e => e[0]);
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (_) {}
+  document.body.removeChild(ta);
+  return Promise.resolve(ok);
 }
-const LABELS = buildLabels(SERIES);
+
+function flashCopied(el) {
+  el.classList.add('copied');
+  setTimeout(() => el.classList.remove('copied'), 650);
+}
 
 const COLORS = NAMES.map((_, i) => colorFor(i, NAMES.length));
 
@@ -431,6 +455,31 @@ let combined = new Chart(ctx, {
       const idx = (elements && elements.length) ? elements[0].datasetIndex : null;
       if (idx !== hoveredIdx) setHover(idx);
     },
+    onClick: (_, elements) => {
+      if (!elements || !elements.length) return;
+      const el = elements[0];
+      const name = combined.data.datasets[el.datasetIndex].label;
+      const pts = SERIES[name];
+      const sha = LABELS[el.index];
+      const p = pts.find(x => x.sha === sha);
+      if (!p) return;
+      const metric = currentMetric();
+      const raw = p[metric];
+      const unit = p.unit || '';
+      const baseline = pts[0] ? pts[0][metric] : null;
+      let pctStr = '';
+      if (baseline && isFinite(raw)) {
+        const pct = (raw / baseline - 1) * 100;
+        const sign = pct >= 0 ? '+' : '';
+        pctStr = ' \u00b7 ' + sign + pct.toFixed(1) + '% vs first';
+      }
+      const shaOut = (SHA_TO_FULL[sha] || sha).slice(0, 12);
+      const text = shaOut + ' \u00b7 ' + name + ' \u00b7 ' +
+                   metric + '=' + raw.toFixed(2) + unit + pctStr;
+      copyText(text).then(ok => {
+        showStatus(ok ? 'copied: ' + text : 'copy failed', !ok);
+      });
+    },
     plugins: {
       legend: { display: false },
       tooltip: {
@@ -464,7 +513,12 @@ const legendItems = NAMES.map((name, i) => {
   item.dataset.idx = i;
   item.innerHTML = '<span class="swatch" style="background:' + COLORS[i] +
                    '"></span>' + name;
-  item.addEventListener('click', () => {
+  item.addEventListener('click', (e) => {
+    if (e.shiftKey) {
+      e.preventDefault();
+      copyText(name).then(ok => { if (ok) flashCopied(item); });
+      return;
+    }
     item.classList.toggle('dimmed');
     applyStyles();
   });
@@ -476,6 +530,19 @@ const legendItems = NAMES.map((name, i) => {
 
 function isDimmed(i) { return legendItems[i].classList.contains('dimmed'); }
 
+const SHA_TO_FULL = Object.fromEntries(COMMITS.map(c => [c.short, c.full]));
+
+// ---- status toast --------------------------------------------------
+let statusTimer = null;
+function showStatus(msg, isErr) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.classList.toggle('err', !!isErr);
+  el.classList.add('show');
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => el.classList.remove('show'), 2800);
+}
+
 function setHover(i) {
   hoveredIdx = i;
   legendItems.forEach((el, k) => el.classList.toggle('hovered', k === i));
@@ -485,16 +552,18 @@ function setHover(i) {
 function applyStyles() {
   combined.data.datasets.forEach((ds, i) => {
     const dim = isDimmed(i);
+    // Dimmed = hidden. Chart.js drops the line entirely and excludes it
+    // from axis auto-scale, which matters for normalized / log modes.
+    combined.setDatasetVisibility(i, !dim);
+    if (dim) return;
     const focus = (hoveredIdx != null) && (hoveredIdx === i);
     const defocus = (hoveredIdx != null) && (hoveredIdx !== i);
-    let alpha = 1.0;
-    if (dim) alpha = 0.12;
-    else if (defocus) alpha = 0.30;
+    const alpha = defocus ? 0.30 : 1.0;
     ds.borderColor = alpha === 1.0 ? COLORS[i] : hslWithAlpha(COLORS[i], alpha);
     ds.backgroundColor = ds.borderColor;
     ds.borderWidth = focus ? 3 : 1.5;
-    ds.pointRadius = dim ? 0 : (focus ? 4 : 2.5);
-    ds.order = focus ? 0 : (dim ? 999 : 100);  // focused on top, dimmed behind
+    ds.pointRadius = focus ? 4 : 2.5;
+    ds.order = focus ? 0 : 100;  // focused line on top
   });
   combined.update('none');
 }
@@ -609,13 +678,23 @@ def cmd_trends(args: argparse.Namespace) -> int:
     for pts in series.values():
         pts.sort(key=lambda p: p["date"])
 
+    # Canonical chronological commit list — the HTML uses this both as
+    # the x-axis label sequence and as the copy-to-clipboard commit row.
+    commits_payload = [
+        {"short": sha[:12], "full": sha, "date": created}
+        for sha, _run_id, created in items
+    ]
+
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     out_path = CACHE_DIR / "trends.html"
     subtitle = (
         f"{len(items)} commits, {len(series)} benchmarks. "
-        f"Hover a point for sha / date / iters."
+        f"Shift+click a legend item or click a commit hash to copy."
     )
-    data_json = json.dumps(series, ensure_ascii=False).replace("</", "<\\/")
+    data_json = json.dumps(
+        {"series": series, "commits": commits_payload},
+        ensure_ascii=False,
+    ).replace("</", "<\\/")
     html = _HTML_TEMPLATE.replace("__SUBTITLE__", subtitle).replace(
         "__DATA__", data_json
     )
