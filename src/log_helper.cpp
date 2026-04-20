@@ -234,7 +234,7 @@ constexpr std::size_t kSizeLimit = 10000;
 
 // ---------------- LogHelper::Impl ----------------
 
-struct LogHelper::Impl {
+ struct LogHelper::Impl {
     Impl(impl::LoggerBase& logger_ref,
          LoggerPtr logger_owner,
          Level level,
@@ -247,72 +247,73 @@ struct LogHelper::Impl {
           active(active),
           writer(nullptr) {
         if (!active) return;
-
-        const bool want_text = logger_ref.HasTextSinks();
-        const bool want_structured = logger_ref.HasStructuredSinks();
-        // Single vtable slot — cheaper than dynamic_cast; null for non-text
-        // loggers. Cached once for both the extras branch and the
-        // structured emit_location lookup below.
+        // Single vtable slot — cheaper than dynamic_cast; null for
+        // non-text loggers. Shared by text / structured setup paths.
         impl::TextLoggerBase* text_base = logger_ref.AsTextLoggerBase();
+        PrepareTextFormatters(text_base);
+        PrepareStructuredRecorder(text_base);
+        SelectWriterTarget();
+    }
 
-        // Materialize the primary text formatter only when at least one
-        // text sink is attached. Logger with only structured sinks skips
-        // the formatter path entirely — zero bytes allocated for text
-        // rendering on that path.
-        if (want_text) {
-            formatter = logger_ref.MakeFormatterInto(
-                &formatter_scratch,
-                sizeof(formatter_scratch),
-                level, location);
+    /// Materialise the primary formatter (placement-new into inline
+    /// scratch when it fits) plus any extra formatters registered
+    /// through `TextLoggerBase::RegisterSinkFormat` for per-sink
+    /// format overrides. No-op when the logger has no text sinks.
+    void PrepareTextFormatters(impl::TextLoggerBase* text_base) {
+        if (!logger_ref.HasTextSinks()) return;
 
-            // Extras engage only when the logger has registered more than
-            // the primary format. Atomic count check short-circuits the
-            // snapshot pin for the single-format hot path. The snapshot,
-            // once taken, is immutable (COW registry) — a concurrent
-            // AddSink publishes a new vector; already-pinned vectors
-            // stay valid for the LogHelper's lifetime. Sinks appended
-            // after we pinned are invisible to this record; their
-            // format_idx may overshoot items.size() and LogMulti skips
-            // them via the out-of-range check.
-            if (text_base && text_base->GetActiveFormatCount() > 1) {
-                auto snap = text_base->GetActiveFormatsSnapshot();
-                if (snap && snap->size() > 1) {
-                    extras.reserve(snap->size() - 1);
-                    for (std::size_t i = 1; i < snap->size(); ++i) {
-                        extras.push_back(text_base->MakeFormatterForFormat(
-                            (*snap)[i], level, location));
-                    }
-                }
-            }
+        formatter = logger_ref.MakeFormatterInto(
+            &formatter_scratch,
+            sizeof(formatter_scratch),
+            level, location);
+
+        // Extras engage only when the logger has registered more than
+        // the primary format. Atomic count check short-circuits the
+        // snapshot pin for the single-format hot path. The snapshot,
+        // once taken, is immutable (COW registry) — a concurrent
+        // AddSink publishes a new vector; already-pinned vectors stay
+        // valid for the LogHelper's lifetime. Sinks appended after we
+        // pinned are invisible to this record; their format_idx may
+        // overshoot items.size() and LogMulti skips them via the
+        // out-of-range check.
+        if (!text_base || text_base->GetActiveFormatCount() <= 1) return;
+        auto snap = text_base->GetActiveFormatsSnapshot();
+        if (!snap || snap->size() <= 1) return;
+        extras.reserve(snap->size() - 1);
+        for (std::size_t i = 1; i < snap->size(); ++i) {
+            extras.push_back(text_base->MakeFormatterForFormat(
+                (*snap)[i], level, location));
         }
+    }
 
-        // Prime the structured recorder when any structured sink is present.
-        // The record is seeded with level / timestamp / call-site metadata;
-        // tags and text land later through the fanout / SetText path.
-        //
-        // Respect `TextLoggerBase::GetEmitLocation()` symmetrically with
-        // the text formatter — a logger configured with
-        // `emit_location = false` wants the location suppressed *everywhere*,
-        // not only in the text `module` field.
-        if (want_structured) {
-            recorder.emplace();
-            auto* rec = recorder->mutable_record();
-            rec->level = level;
-            rec->timestamp = std::chrono::system_clock::now();
-            const bool emit_loc = text_base ? text_base->GetEmitLocation() : true;
-            if (emit_loc) {
-                const auto fn = location.function_name();
-                const auto fl = location.file_name();
-                if (!fn.empty()) rec->module_function.assign(fn);
-                if (!fl.empty()) rec->module_file.assign(fl);
-                rec->module_line = static_cast<int>(location.line());
-            }
-        }
+    /// Seed the structured record with level / timestamp / call-site
+    /// metadata; tags and text land later through the fanout / SetText
+    /// path. Respects `TextLoggerBase::GetEmitLocation()` symmetrically
+    /// with the text formatter — a logger configured with
+    /// `emit_location = false` wants the location suppressed
+    /// everywhere, not only in the text `module` field.
+    void PrepareStructuredRecorder(impl::TextLoggerBase* text_base) {
+        if (!logger_ref.HasStructuredSinks()) return;
+        recorder.emplace();
+        auto* rec = recorder->mutable_record();
+        rec->level = level;
+        rec->timestamp = std::chrono::system_clock::now();
+        const bool emit_loc = text_base ? text_base->GetEmitLocation() : true;
+        if (!emit_loc) return;
+        const auto fn = location.function_name();
+        const auto fl = location.file_name();
+        if (!fn.empty()) rec->module_function.assign(fn);
+        if (!fl.empty()) rec->module_file.assign(fl);
+        rec->module_line = static_cast<int>(location.line());
+    }
 
-        // Pick the writer target. Fanout engages whenever more than one
-        // broadcast destination exists (primary + extras, or primary +
-        // recorder, or any combination thereof). A single target
-        // bypasses fanout entirely — that's the common LOG_* hot path.
+    /// Pick the writer target. Fanout engages whenever more than one
+    /// broadcast destination exists (primary + extras, or primary +
+    /// recorder, or any combination thereof). A single target bypasses
+    /// fanout entirely — the common LOG_* hot path. Zero targets
+    /// (logger has no sinks at all) leaves the writer null; tag /
+    /// trace-hook calls are no-ops on a null formatter pointer.
+    void SelectWriterTarget() {
         const std::size_t target_count =
             (formatter ? 1u : 0u) + extras.size() + (recorder ? 1u : 0u);
         if (target_count >= 2) {
@@ -326,9 +327,6 @@ struct LogHelper::Impl {
         } else if (recorder) {
             writer.Reset(&*recorder);
         }
-        // target_count == 0: logger has no sinks at all. writer stays
-        // null; tag / trace-hook calls are no-ops on a null formatter
-        // pointer inside TagWriter.
     }
 
     /// Finalize the record: dispatch hooks, mirror text to targets,
