@@ -133,11 +133,12 @@ Thread-safe by TLS. На thread exit residual slabs leak-freed через `threa
 **Effort:** средний (1 день с осторожным lifetime handling).
 **Impact:** средний — ~50 ns save after Priority 1.
 
-### Priority 6: per-logger `PrependCommonTags` virtual (уже close)
+### Priority 6: per-logger `PrependCommonTags` virtual (уже close) ✅ DONE (Phase 45)
 **Что:** virtual hook `LoggerBase::PrependCommonTags(TagWriter&)` вызывается в `LogHelper` ctor, добавляет service-wide tags (hostname, service, version) в каждую запись.
 **Статус:** у нас есть `RecordEnricher` — global hooks. Per-logger hook отсутствует; текущие enricher'ы runtime-регистрируются в одном global slot. Userver допускает multiple loggers с разными common tags.
 **Effort:** маленький (2 часа).
 **Impact:** средний для multi-tenant services.
+**Review:** `docs/review/35-phase-45.md` — 180/180 tests pass (+7), bench neutral (sync -2.5% в шуме).
 
 ### Summary benchmark target
 

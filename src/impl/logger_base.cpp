@@ -18,6 +18,67 @@ namespace ulog::impl {
 
 LoggerBase::~LoggerBase() = default;
 
+void LoggerBase::PrependCommonTags(TagSink& sink) const noexcept {
+    // Atomic load of the snapshot — no lock, no allocation on the
+    // fast path (null snapshot == no tags ever set).
+    auto snap = common_tags_.load();
+    if (!snap) return;
+    for (const auto& kv : *snap) {
+        // sink.AddTag is not `noexcept`, but the concrete
+        // FormatterTagSink / TagRecorder implementations do not throw.
+        // Guard with try/catch anyway so a misbehaving override cannot
+        // propagate — we are called from LogHelper's `noexcept` dtor.
+        try {
+            sink.AddTag(kv.first, kv.second);
+        } catch (...) {
+            // Drop the tag silently. LogHelper's DoLog also swallows.
+        }
+    }
+}
+
+void LoggerBase::SetCommonTag(std::string_view key, std::string_view value) {
+    std::lock_guard lk(common_tags_mu_);
+    auto current = common_tags_.load();
+    auto next = boost::make_shared<CommonTagsVec>();
+    if (current) {
+        next->reserve(current->size() + 1);
+        for (const auto& kv : *current) {
+            if (kv.first == key) continue;  // overwrite — skip old entry
+            next->push_back(kv);
+        }
+    }
+    next->emplace_back(std::string(key), std::string(value));
+    common_tags_.store(boost::shared_ptr<const CommonTagsVec>(std::move(next)));
+}
+
+void LoggerBase::RemoveCommonTag(std::string_view key) {
+    std::lock_guard lk(common_tags_mu_);
+    auto current = common_tags_.load();
+    if (!current) return;
+    auto next = boost::make_shared<CommonTagsVec>();
+    next->reserve(current->size());
+    bool removed = false;
+    for (const auto& kv : *current) {
+        if (!removed && kv.first == key) {
+            removed = true;
+            continue;
+        }
+        next->push_back(kv);
+    }
+    if (!removed) return;  // no-op: key not present
+    if (next->empty()) {
+        common_tags_.store(boost::shared_ptr<const CommonTagsVec>{});
+    } else {
+        common_tags_.store(
+            boost::shared_ptr<const CommonTagsVec>(std::move(next)));
+    }
+}
+
+void LoggerBase::ClearCommonTags() noexcept {
+    std::lock_guard lk(common_tags_mu_);
+    common_tags_.store(boost::shared_ptr<const CommonTagsVec>{});
+}
+
 namespace {
 
 /// Returns true if the caller-provided `scratch` buffer is large enough

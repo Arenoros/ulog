@@ -352,6 +352,12 @@ struct LogHelper::Impl {
                 FormatterTagSink sink(hook_target);
                 impl::DispatchTracingHook(sink);
                 impl::DispatchRecordEnrichers(sink);
+                // Per-logger common tags — layered on top of global
+                // enrichers so they appear identically on every record
+                // emitted through this particular logger. Default impl
+                // in LoggerBase walks the atomic snapshot; loggers may
+                // override for runtime-computed tags.
+                logger_ref.PrependCommonTags(sink);
             }
 
             // Surface the size-limit signal through the same writer the

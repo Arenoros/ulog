@@ -7,7 +7,9 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <boost/container/small_vector.hpp>
@@ -20,6 +22,7 @@
 #include <ulog/level.hpp>
 #include <ulog/log_helper.hpp>
 #include <ulog/sinks/structured_sink.hpp>
+#include <ulog/tracing_hook.hpp>
 
 namespace ulog::impl {
 
@@ -129,6 +132,34 @@ public:
         return static_cast<int>(level) >= static_cast<int>(GetLevel());
     }
 
+    /// Per-logger common tags hook. LogHelper invokes this after global
+    /// `RecordEnricher`s and before the user text is mirrored to
+    /// formatters, so the tag appears alongside structured / text
+    /// output on every emitted record.
+    ///
+    /// Default implementation walks the snapshot populated via
+    /// `SetCommonTag` / `RemoveCommonTag` — concrete loggers that
+    /// derive runtime-computed tags (ambient thread-local context,
+    /// formatter-specific metadata) may override instead.
+    ///
+    /// Writes are lock-free via copy-on-write (`AddCommonTag` publishes
+    /// a fresh snapshot under a mutex; readers load the atomic
+    /// `shared_ptr` and walk it without locking). Snapshot pins kept by
+    /// concurrent emissions stay valid until released — the underlying
+    /// vector is immutable after publish.
+    virtual void PrependCommonTags(TagSink& sink) const noexcept;
+
+    /// Publishes `key=value` onto the logger's common-tags snapshot.
+    /// Idempotent per key — a subsequent `SetCommonTag` with the same
+    /// key overwrites the value. Thread-safe; readers never block.
+    void SetCommonTag(std::string_view key, std::string_view value);
+
+    /// Removes the tag published under `key`, if any. Thread-safe.
+    void RemoveCommonTag(std::string_view key);
+
+    /// Drops every common tag on this logger. Thread-safe.
+    void ClearCommonTags() noexcept;
+
 protected:
     LoggerBase() = default;
 
@@ -147,10 +178,21 @@ protected:
     }
 
 private:
+    /// Storage for common tags — vector<pair<key, value>> behind an
+    /// atomic shared_ptr for lock-free snapshot reads. `nullptr` when
+    /// no tags were ever set (fast path — avoids the pin cost).
+    using CommonTagsVec = std::vector<std::pair<std::string, std::string>>;
+
     std::atomic<Level> level_{Level::kInfo};
     std::atomic<Level> flush_on_{Level::kWarning};
     std::atomic<bool> has_text_sinks_{true};
     std::atomic<bool> has_structured_sinks_{false};
+    /// Serialises publication of `common_tags_`. Readers do not lock.
+    mutable std::mutex common_tags_mu_;
+    /// Atomic snapshot of the common-tag list. Copy-on-write: every
+    /// SetCommonTag / RemoveCommonTag rebuilds the vector and publishes
+    /// a fresh `shared_ptr`. Readers load + walk without locking.
+    boost::atomic_shared_ptr<const CommonTagsVec> common_tags_;
 };
 
 /// Logger that produces textual output via one of the built-in formatters
