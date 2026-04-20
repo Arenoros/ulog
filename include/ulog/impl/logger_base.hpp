@@ -191,6 +191,18 @@ private:
     std::atomic<Level> flush_on_{Level::kWarning};
     std::atomic<bool> has_text_sinks_{true};
     std::atomic<bool> has_structured_sinks_{false};
+    /// Fast-path flag for `PrependCommonTags`. Empty-registry is the
+    /// overwhelming-common case on the LOG_* hot path — reading the
+    /// atomic_shared_ptr below costs one atomic RMW on the control
+    /// block's refcount, which pingpongs across cores under producer
+    /// contention. This flag lets the hot path short-circuit before
+    /// touching the shared_ptr at all.
+    ///
+    /// Publish order: writers update `common_tags_` first, then this
+    /// flag with release. Readers load acquire and, on true, load the
+    /// snapshot (acquire). `common_tags_` may legally be null even
+    /// when the flag is briefly true mid-clear — readers handle null.
+    std::atomic<bool> has_common_tags_{false};
     /// Serialises publication of `common_tags_`. Readers do not lock.
     mutable std::mutex common_tags_mu_;
     /// Atomic snapshot of the common-tag list. Copy-on-write: every

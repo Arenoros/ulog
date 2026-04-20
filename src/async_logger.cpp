@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include <boost/atomic.hpp>
 #include <boost/make_shared.hpp>
 #include <boost/smart_ptr/atomic_shared_ptr.hpp>
 #include <boost/smart_ptr/shared_ptr.hpp>
@@ -107,18 +108,20 @@ struct AsyncLogger::State {
     /// Producer → worker wake-up. Fired when a record was enqueued and
     /// the queue transitioned from empty to non-empty (single waiter
     /// sufficient — other workers stay asleep until they see work of
-    /// their own).
+    /// their own). Low contention — only the worker(s) wait on this.
     std::condition_variable records_cv;
-    /// Worker → producer wake-up. Fired when `pending` transitions
-    /// from ≥ capacity to < capacity, releasing blocked producers in
-    /// `kBlock` overflow mode. Separate CV avoids waking workers on
-    /// every drain cycle (they spin on `records_cv` only).
-    std::condition_variable space_cv;
     /// Shutdown + control plane (flushes / reopens). Lightweight path —
     /// shared between workers for stop notification.
     std::condition_variable control_cv;
     std::atomic<bool> stop{false};
-    std::atomic<std::size_t> pending{0};
+    /// Slot count in the records queue. Producer backpressure lives on
+    /// this atomic directly via `boost::atomic<T>::wait` / `notify_all`,
+    /// which lower to Windows `WaitOnAddress` and Linux `futex`. The
+    /// primitive's snapshot-and-park semantics eliminate the classic
+    /// lost-wakeup race that a `condition_variable` wait + unlocked
+    /// notify has — and avoid the `wait_mu` cross-thread contention the
+    /// "notify under lock" textbook fix costs at 16-producer concurrency.
+    boost::atomic<std::uint32_t> pending{0};
     std::atomic<std::uint64_t> dropped{0};
     std::atomic<std::uint64_t> total_logged{0};
 
@@ -180,43 +183,47 @@ struct AsyncLogger::State {
     }
 
     /// Wakes ONE worker when the queue transitioned from empty to
-    /// non-empty. Other workers stay asleep — they'll wake on their own
-    /// enqueue or on `records_cv.notify_all()` at shutdown. `notify_one`
-    /// avoids thundering-herd where all workers wake, find the queue
-    /// already drained by the first responder, and go back to sleep.
-    void WakeIfIdle(std::size_t prev_pending) {
+    /// non-empty. `records_cv`'s waiter (worker) also has a 50 ms
+    /// safety timeout, so a dropped notify gets recovered within a
+    /// tick — unlocked notify is fine here.
+    void WakeIfIdle(std::uint32_t prev_pending) {
         if (prev_pending == 0) records_cv.notify_one();
     }
 
-    /// Wakes producers waiting on capacity release. Called only when
-    /// `pending` actually crossed the capacity threshold downward — not
-    /// on every drain cycle.
-    void WakeProducersForSpace() { space_cv.notify_all(); }
+    /// Wakes every producer parked on `pending`. `notify_all` on
+    /// `boost::atomic` lowers to `WakeByAddressAll` / `futex(FUTEX_WAKE)`
+    /// — lock-free, no race with the waiters' snapshot-and-park sequence.
+    void WakeProducersForSpace() { pending.notify_all(); }
 
     /// Wakes every worker for shutdown + every producer that may be
-    /// parked on capacity. Single-shot broadcast used by the dtor path.
+    /// parked on `pending`. Single-shot broadcast used by the dtor path.
     void WakeForControl() {
         records_cv.notify_all();
-        space_cv.notify_all();
+        pending.notify_all();
         control_cv.notify_all();
     }
 
     bool TryEnqueueRecord(QueueRecord&& rec) {
-        if (config.queue_capacity > 0 &&
-            pending.load(std::memory_order_relaxed) >= config.queue_capacity) {
-            if (config.overflow == OverflowBehavior::kDiscard) {
-                dropped.fetch_add(1, std::memory_order_relaxed);
-                return false;
+        if (config.queue_capacity > 0) {
+            // Backpressure loop: snapshot `pending`, bail if there's room,
+            // otherwise park on the atomic itself. `boost::atomic::wait`
+            // re-reads the value after the caller hands over — a concurrent
+            // drain that mutates `pending` between snapshot and park
+            // returns the waiter immediately. No lost-wakeup possible, no
+            // shared mutex in the wake path, no timer-resolution stalls.
+            for (;;) {
+                const auto cur = pending.load(boost::memory_order_acquire);
+                if (cur < config.queue_capacity) break;
+                if (config.overflow == OverflowBehavior::kDiscard) {
+                    dropped.fetch_add(1, std::memory_order_relaxed);
+                    return false;
+                }
+                if (stop.load(std::memory_order_relaxed)) return false;
+                pending.wait(cur, boost::memory_order_acquire);
             }
-            std::unique_lock lock(wait_mu);
-            space_cv.wait(lock, [&] {
-                return stop.load(std::memory_order_relaxed) ||
-                       pending.load(std::memory_order_relaxed) < config.queue_capacity;
-            });
-            if (stop.load(std::memory_order_relaxed)) return false;
         }
         records.enqueue(AcquireToken(), std::move(rec));
-        const auto prev = pending.fetch_add(1, std::memory_order_release);
+        const auto prev = pending.fetch_add(1, boost::memory_order_release);
         WakeIfIdle(prev);
         return true;
     }
@@ -261,11 +268,12 @@ struct AsyncLogger::State {
                         rec.structured.reset();
                     }
                 }
-                const auto prev = pending.fetch_sub(n, std::memory_order_release);
+                const auto prev = pending.fetch_sub(
+                    static_cast<std::uint32_t>(n), boost::memory_order_release);
                 total_logged.fetch_add(n, std::memory_order_relaxed);
                 // Wake blocked producers only if we actually released
-                // capacity — avoids `notify_all` thundering-herd on the
-                // shared cv for every drain batch. `prev` is the
+                // capacity — avoids the WakeByAddressAll broadcast when
+                // no producer is parked (common case). `prev` is the
                 // pre-subtraction value; crossing from `≥ capacity` to
                 // `< capacity` means at least one producer may now make
                 // progress.
@@ -329,7 +337,7 @@ struct AsyncLogger::State {
             // real work lands or the 50 ms safety timeout expires.
             records_cv.wait_for(lk, std::chrono::milliseconds(50), [&] {
                 return stop.load(std::memory_order_relaxed) ||
-                       pending.load(std::memory_order_relaxed) > 0;
+                       pending.load(boost::memory_order_relaxed) > 0;
             });
         }
 
@@ -461,7 +469,7 @@ std::uint64_t AsyncLogger::GetDroppedCount() const noexcept {
 }
 
 std::size_t AsyncLogger::GetQueueDepth() const noexcept {
-    return state_->pending.load(std::memory_order_relaxed);
+    return state_->pending.load(boost::memory_order_relaxed);
 }
 
 std::uint64_t AsyncLogger::GetTotalLogged() const noexcept {

@@ -19,8 +19,12 @@ namespace ulog::impl {
 LoggerBase::~LoggerBase() = default;
 
 void LoggerBase::PrependCommonTags(TagSink& sink) const noexcept {
-    // Atomic load of the snapshot — no lock, no allocation on the
-    // fast path (null snapshot == no tags ever set).
+    // Fast path: skip the atomic_shared_ptr refcount RMW when no tags
+    // were ever set (or the last one was just cleared). Under 16-thread
+    // producer contention the refcount pingpong on the shared control
+    // block dominates the per-record cost; the atomic<bool> load is
+    // cheap and cache-friendly.
+    if (!has_common_tags_.load(std::memory_order_acquire)) return;
     auto snap = common_tags_.load();
     if (!snap) return;
     for (const auto& kv : *snap) {
@@ -49,6 +53,11 @@ void LoggerBase::SetCommonTag(std::string_view key, std::string_view value) {
     }
     next->emplace_back(std::string(key), std::string(value));
     common_tags_.store(boost::shared_ptr<const CommonTagsVec>(std::move(next)));
+    // Publish the fast-path flag after the snapshot is visible. A reader
+    // that sees the flag = true will load a snapshot at least as new as
+    // this one (acquire-release pair). If the reader still holds an
+    // older pinned snapshot, that is fine — the old one is also valid.
+    has_common_tags_.store(true, std::memory_order_release);
 }
 
 void LoggerBase::RemoveCommonTag(std::string_view key) {
@@ -68,6 +77,11 @@ void LoggerBase::RemoveCommonTag(std::string_view key) {
     if (!removed) return;  // no-op: key not present
     if (next->empty()) {
         common_tags_.store(boost::shared_ptr<const CommonTagsVec>{});
+        // Clear fast-path flag — subsequent PrependCommonTags short-circuit.
+        // A reader that still sees `true` briefly will load the null
+        // snapshot and bail via the null-check — safe, just a missed
+        // short-circuit for one record.
+        has_common_tags_.store(false, std::memory_order_release);
     } else {
         common_tags_.store(
             boost::shared_ptr<const CommonTagsVec>(std::move(next)));
@@ -77,6 +91,7 @@ void LoggerBase::RemoveCommonTag(std::string_view key) {
 void LoggerBase::ClearCommonTags() noexcept {
     std::lock_guard lk(common_tags_mu_);
     common_tags_.store(boost::shared_ptr<const CommonTagsVec>{});
+    has_common_tags_.store(false, std::memory_order_release);
 }
 
 namespace {

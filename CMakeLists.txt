@@ -80,9 +80,18 @@ target_include_directories(ulog
 target_link_libraries(ulog
     PUBLIC
         fmt::fmt
+        Boost::atomic
         Boost::container
         Boost::stacktrace
 )
+
+# Boost::atomic's wait/notify lowers to WaitOnAddress/WakeByAddressAll on
+# Windows 8+. Those live in `Synchronization.lib`; Conan's Boost recipe
+# doesn't propagate the dep through the Boost::atomic target, so link it
+# explicitly here.
+if(WIN32)
+    target_link_libraries(ulog PUBLIC Synchronization)
+endif()
 
 if(ULOG_WITH_NLOHMANN)
     target_link_libraries(ulog PUBLIC nlohmann_json::nlohmann_json)
