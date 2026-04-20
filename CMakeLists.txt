@@ -11,6 +11,7 @@ project(ulog
 option(ULOG_BUILD_TESTS      "Build unit tests"                 ON)
 option(ULOG_BUILD_EXAMPLES   "Build examples"                   ON)
 option(ULOG_BUILD_BENCH      "Build benchmarks"                 OFF)
+option(ULOG_BENCH_SPDLOG     "Include spdlog comparison benchmarks (requires spdlog via Conan)" OFF)
 option(ULOG_WITH_NLOHMANN    "Use nlohmann::json for JsonString" OFF)
 option(ULOG_WITH_YAML        "Enable yaml-cpp config loader"    OFF)
 option(ULOG_WITH_AFUNIX      "Enable AF_UNIX sink on Windows (requires Win10 1803+)" OFF)

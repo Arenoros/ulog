@@ -46,6 +46,7 @@ class UlogConan(ConanFile):
         # OFF by default so `conan create` produces a lean package.
         "build_tests": [True, False],
         "build_bench": [True, False],
+        "bench_spdlog": [True, False],
     }
     default_options = {
         "shared": False,
@@ -58,6 +59,7 @@ class UlogConan(ConanFile):
         "erase_log_with_level": 0,
         "build_tests": False,
         "build_bench": False,
+        "bench_spdlog": False,
         # Transitive-dep option defaults. Pattern keys apply to
         # matching deps without FORCING them — a consumer that
         # explicitly pins `boost/*:shared=True` wins. The ones kept
@@ -70,6 +72,7 @@ class UlogConan(ConanFile):
         "boost/*:without_container": False,
         "boost/*:without_stacktrace": False,
         "boost/*:without_cobalt": True,
+        'spdlog/*:external_fmt': True
     }
 
     exports_sources = (
@@ -100,7 +103,7 @@ class UlogConan(ConanFile):
         # here would raise on conflict.
 
     def requirements(self):
-        self.requires("fmt/12.1.0", transitive_headers=True)
+        self.requires("fmt/12.1.0", transitive_headers=True, override=True)
         self.requires("boost/1.90.0", transitive_headers=True)
         if self.options.with_nlohmann:
             self.requires("nlohmann_json/3.11.3", transitive_headers=True)
@@ -117,6 +120,10 @@ class UlogConan(ConanFile):
             self.test_requires("gtest/1.17.0")
         if self.options.build_bench:
             self.test_requires("benchmark/1.9.4")
+            if self.options.bench_spdlog:
+                # spdlog/1.15.1 supports fmt >=10; Conan unifies with our
+                # fmt/12.1.0 if the recipe range allows it.
+                self.test_requires("spdlog/1.15.1")
 
     # No `def layout()` — the recipe stays layout-less on purpose.
     #
@@ -141,6 +148,7 @@ class UlogConan(ConanFile):
         tc.variables["ULOG_BUILD_EXAMPLES"] = False
         tc.variables["ULOG_BUILD_TESTS"] = bool(self.options.build_tests)
         tc.variables["ULOG_BUILD_BENCH"] = bool(self.options.build_bench)
+        tc.variables["ULOG_BENCH_SPDLOG"] = bool(self.options.bench_spdlog)
         tc.variables["ULOG_WITH_NLOHMANN"] = bool(self.options.with_nlohmann)
         tc.variables["ULOG_WITH_YAML"] = bool(self.options.with_yaml)
         tc.variables["ULOG_WITH_HTTP"] = bool(self.options.with_http)
