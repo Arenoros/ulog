@@ -104,7 +104,19 @@ struct AsyncLogger::State {
     boost::atomic_shared_ptr<StructSinkVec const> struct_sinks;
 
     std::mutex wait_mu;
-    std::condition_variable cv;
+    /// Producer → worker wake-up. Fired when a record was enqueued and
+    /// the queue transitioned from empty to non-empty (single waiter
+    /// sufficient — other workers stay asleep until they see work of
+    /// their own).
+    std::condition_variable records_cv;
+    /// Worker → producer wake-up. Fired when `pending` transitions
+    /// from ≥ capacity to < capacity, releasing blocked producers in
+    /// `kBlock` overflow mode. Separate CV avoids waking workers on
+    /// every drain cycle (they spin on `records_cv` only).
+    std::condition_variable space_cv;
+    /// Shutdown + control plane (flushes / reopens). Lightweight path —
+    /// shared between workers for stop notification.
+    std::condition_variable control_cv;
     std::atomic<bool> stop{false};
     std::atomic<std::size_t> pending{0};
     std::atomic<std::uint64_t> dropped{0};
@@ -167,14 +179,27 @@ struct AsyncLogger::State {
         producers.clear();
     }
 
-    /// Wakes the worker only when it might actually be asleep. When pending
-    /// was already non-zero before this producer's fetch_add, the worker is
-    /// either draining already or about to wake on its next CV wait_for.
+    /// Wakes ONE worker when the queue transitioned from empty to
+    /// non-empty. Other workers stay asleep — they'll wake on their own
+    /// enqueue or on `records_cv.notify_all()` at shutdown. `notify_one`
+    /// avoids thundering-herd where all workers wake, find the queue
+    /// already drained by the first responder, and go back to sleep.
     void WakeIfIdle(std::size_t prev_pending) {
-        if (prev_pending == 0) cv.notify_one();
+        if (prev_pending == 0) records_cv.notify_one();
     }
 
-    void WakeForControl() { cv.notify_all(); }
+    /// Wakes producers waiting on capacity release. Called only when
+    /// `pending` actually crossed the capacity threshold downward — not
+    /// on every drain cycle.
+    void WakeProducersForSpace() { space_cv.notify_all(); }
+
+    /// Wakes every worker for shutdown + every producer that may be
+    /// parked on capacity. Single-shot broadcast used by the dtor path.
+    void WakeForControl() {
+        records_cv.notify_all();
+        space_cv.notify_all();
+        control_cv.notify_all();
+    }
 
     bool TryEnqueueRecord(QueueRecord&& rec) {
         if (config.queue_capacity > 0 &&
@@ -184,7 +209,7 @@ struct AsyncLogger::State {
                 return false;
             }
             std::unique_lock lock(wait_mu);
-            cv.wait(lock, [&] {
+            space_cv.wait(lock, [&] {
                 return stop.load(std::memory_order_relaxed) ||
                        pending.load(std::memory_order_relaxed) < config.queue_capacity;
             });
@@ -236,10 +261,19 @@ struct AsyncLogger::State {
                         rec.structured.reset();
                     }
                 }
-                pending.fetch_sub(n, std::memory_order_release);
+                const auto prev = pending.fetch_sub(n, std::memory_order_release);
                 total_logged.fetch_add(n, std::memory_order_relaxed);
-                // Blocked producers waiting on capacity may be parked.
-                WakeForControl();
+                // Wake blocked producers only if we actually released
+                // capacity — avoids `notify_all` thundering-herd on the
+                // shared cv for every drain batch. `prev` is the
+                // pre-subtraction value; crossing from `≥ capacity` to
+                // `< capacity` means at least one producer may now make
+                // progress.
+                if (config.queue_capacity > 0 &&
+                    prev >= config.queue_capacity &&
+                    prev - n < config.queue_capacity) {
+                    WakeProducersForSpace();
+                }
             }
         };
 
@@ -290,7 +324,10 @@ struct AsyncLogger::State {
             drain_flushes();
 
             std::unique_lock lk(wait_mu);
-            cv.wait_for(lk, std::chrono::milliseconds(50), [&] {
+            // Wait on the producer→worker CV only. Workers are not
+            // woken by `WakeProducersForSpace` — they park here until
+            // real work lands or the 50 ms safety timeout expires.
+            records_cv.wait_for(lk, std::chrono::milliseconds(50), [&] {
                 return stop.load(std::memory_order_relaxed) ||
                        pending.load(std::memory_order_relaxed) > 0;
             });
