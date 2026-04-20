@@ -121,7 +121,14 @@ struct AsyncLogger::State {
     /// Unique identity for cache-invalidation on State reuse.
     const std::uint64_t generation;
 
-    std::thread worker;
+    /// One or more consumer threads draining `records` / `reopens` /
+    /// `flushes`. Sized from `config.worker_count` in the ctor; never
+    /// resized afterwards. `WorkerLoop` is multi-consumer-safe — each
+    /// thread independently pulls bulk batches from the lock-free
+    /// moodycamel queue and dispatches to sinks. Sinks must be
+    /// thread-safe when the vector has more than one element (see
+    /// `Config::worker_count` docs).
+    std::vector<std::thread> workers;
 
     explicit State(const Config& cfg)
         : config(cfg),
@@ -305,13 +312,22 @@ AsyncLogger::AsyncLogger(const Config& cfg)
     // AddSink / AddStructuredSink flips it.
     SetHasTextSinks(false);
     state_ = std::make_unique<State>(cfg);
-    state_->worker = std::thread([this] { state_->WorkerLoop(); });
+    const std::size_t n = cfg.worker_count > 0 ? cfg.worker_count : 1;
+    state_->workers.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        state_->workers.emplace_back([this] { state_->WorkerLoop(); });
+    }
 }
 
 AsyncLogger::~AsyncLogger() {
     state_->stop.store(true, std::memory_order_release);
+    // notify_all wakes every worker — notify_one would wake just one
+    // and leave the rest blocked on the cv until their 50ms timeout
+    // elapses, prolonging shutdown.
     state_->WakeForControl();
-    if (state_->worker.joinable()) state_->worker.join();
+    for (auto& w : state_->workers) {
+        if (w.joinable()) w.join();
+    }
 }
 
 namespace {

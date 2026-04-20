@@ -45,6 +45,18 @@ public:
         /// Timestamp rendering style for TSKV/LTSV/JSON/JsonYaDeploy.
         /// `kOtlpJson` always emits `timeUnixNano` per OTLP spec.
         TimestampFormat timestamp_format = TimestampFormat::kIso8601Micro;
+        /// Number of worker threads draining the record queue in parallel.
+        /// Default 1 preserves the historical single-consumer semantics
+        /// (sinks see records in queue-arrival order per worker).
+        ///
+        /// **Thread-safety contract when `worker_count > 1`:** every
+        /// attached `BaseSink::Write` / `StructuredSink::Write` /
+        /// `Flush` / `Reopen` may be invoked concurrently from distinct
+        /// worker threads. Sinks that are not internally synchronised
+        /// (e.g. a stream that is not atomic on write) must either
+        /// serialise themselves or the caller should keep
+        /// `worker_count = 1`.
+        std::size_t worker_count = 1;
     };
 
     AsyncLogger();
