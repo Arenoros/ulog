@@ -206,13 +206,28 @@ private:
     void Put(const char* s);
     void Put(const std::string& s) { Put(std::string_view(s)); }
 
+    /// Integer / float streaming without allocating a `std::string` —
+    /// `fmt::format_to_n` writes into a 64-byte stack buffer which is
+    /// enough for any `int64_t` (≤20 digits), `uint64_t` (≤20), or
+    /// `double` (17 mantissa + exponent + sign ≈ 25 chars max). The
+    /// resulting `string_view` is appended via the gated text path.
+    /// Saves 1 heap alloc per integer/float on the hot path — sensible
+    /// on loops that stream millions of counter values.
     template <typename T>
     std::enable_if_t<std::is_integral_v<T> || std::is_floating_point_v<T>> Put(T v) {
-        PutFormatted(fmt::format("{}", v));
+        char buf[64];
+        const auto res = fmt::format_to_n(buf, sizeof(buf), "{}", v);
+        Put(std::string_view(buf,
+                             res.size < sizeof(buf) ? res.size : sizeof(buf)));
     }
     template <typename T>
     std::enable_if_t<std::is_enum_v<T>> Put(T v) {
-        PutFormatted(fmt::format("{}", static_cast<std::underlying_type_t<T>>(v)));
+        char buf[64];
+        const auto res = fmt::format_to_n(
+            buf, sizeof(buf), "{}",
+            static_cast<std::underlying_type_t<T>>(v));
+        Put(std::string_view(buf,
+                             res.size < sizeof(buf) ? res.size : sizeof(buf)));
     }
     void Put(bool v);
     void Put(char v);
