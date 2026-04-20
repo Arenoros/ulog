@@ -147,7 +147,59 @@ Thread-safe by TLS. На thread exit residual slabs leak-freed через `threa
 
 ---
 
-## OTLP tracing integration via `LogClass::kTrace`
+## LogHelper streaming parity (userver operator<< gaps)
+
+Наш `LogHelper::operator<<` tplate ограничен string/integral/float/enum/bool/char + `Hex`/`HexShort`/`Quoted`/`LogExtra`/`RateLimiter`. userver покрывает существенно больше типов — код, portировавшийся с userver, часто валится на compile error из-за отсутствия overload'а. Inventory проведён в phase-serie 42-46.
+
+Phase как единый sprint (~1 день) из low-effort high-value overload'ов. Каждый пункт изолирован: free-function `operator<<(LogHelper&, T)` в отдельном header (`ulog/log_helper_extras.hpp`), подключается автоматически через `ulog/log.hpp`.
+
+### Pri 1: `std::chrono::duration` + `time_point`
+**Что:** `operator<<(LogHelper&, std::chrono::duration<Rep, Period>)` — число + суффикс (`s`/`ms`/`us`/`ns`/`min`/`h`). `operator<<(LogHelper&, system_clock::time_point)` — ISO8601 UTC.
+**Зачем:** userver hot pattern `LOG_INFO() << "took " << elapsed` без fmt::format / ручного cast'а. Сейчас fmt без `fmt/chrono.h` не форматирует duration'ы → compile error.
+**Effort:** маленький (1 час).
+**Impact:** высокий — chrono в logs де-факто стандарт.
+
+### Pri 2: `operator<<(const std::exception&)`
+**Что:** free-function overload, эмитит `what()` + `typeid(ex).name()` как tag `exception_type`. Для `TracefulException`-подобных — hook на stacktrace через `LogExtra`.
+**Зачем:** `LOG_ERROR() << ex` — очень распространённый userver pattern. У нас есть `.WithException(ex)` — но syntactic friction.
+**Effort:** маленький (1-2 часа — duplicate логики `WithException` на overload path).
+**Impact:** высокий для code-port с userver.
+
+### Pri 3: `std::optional<T>`
+**Что:** `operator<<(LogHelper&, const std::optional<T>&)` — рекурсивный `*opt` или литерал `"(none)"`.
+**Effort:** очень маленький (30 мин).
+**Impact:** средний — optional в userver logging тоже распространён.
+
+### Pri 4: `std::error_code` / `std::errc`
+**Что:** `operator<<(LogHelper&, std::error_code)` — `category:value (message)`.
+**Effort:** маленький (30 мин).
+**Impact:** средний — system-level error reporting.
+
+### Pri 5: Pointer streaming (null-guard + Hex fallback)
+**Что:** `template <T> operator<<(LogHelper&, const T*)` — `(null)` для nullptr, `const char*` → string_view, остальное → `Hex{p}`. Блокировать function-pointer'ы через `static_assert`.
+**Зачем:** сейчас `LOG_INFO() << some_ptr` падает в `fmt::format("{}", p)` — forms address без nullptr-guard и без защиты от function-pointer'ов. Инструмент пользователю доверять указателям в потоке.
+**Effort:** маленький (30 мин).
+**Impact:** средний — safety + ergonomics.
+
+### Deferred (отдельный sprint)
+
+- **`PutRange` для контейнеров** (vector/map/set/array/ranges) с respect'ом к `IsLimitReached()`. Самая заметная gap ежедневно, но — mid effort: нужен map-specialization, `PutMapElement`, quoted strings для string-like elements. Отдельная фаза.
+- **`LogHelper::Format(fmt_str, args...)`** — helper без `fmt::format` в caller'е. Mid-value, mid-effort.
+- **Callable `operator<<(Fun)`** — deferred formatting lambda. Low value.
+- **`std::atomic<T>` overload** — load + дорисовать. Low value.
+- **`LogExtra&&` rvalue overload** — move оптимизация. Low value.
+- **Ostream adapter** (`meta::kIsOstreamWritable`) — legacy `std::ostream&` bridge. High effort, mid value — отдельный sprint если реальный legacy-tail найдётся.
+
+### Coverage
+
+Каждый overload — unit test на формат:
+- `chrono`: `1000ms` → строка `"1000ms"` в TSKV.
+- `exception`: throw custom → `typeid` и `what` на записи.
+- `optional`: populated + empty.
+- `error_code`: `std::make_error_code(std::errc::timed_out)` → формат включает category/value/message.
+- pointer: nullptr → `(null)`, valid T* → `0x…`, char* → plain string.
+
+Один файл `tests/log_helper_streaming_parity_test.cpp`.
 
 Дополняет Phase 22 (OTLP logs). Userver пропускает spans через ту же `LogHelper` машинерию что и логи — различает их tag'ом `LogClass`. Даёт unified emission path: logs → OTLP `/v1/logs`, spans → OTLP `/v1/traces`, один sink batch'ит оба.
 
