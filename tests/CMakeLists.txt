@@ -19,6 +19,7 @@ add_executable(ulog-tests
     stacktrace_cache_test.cpp
     tcp_sink_test.cpp
     per_sink_format_test.cpp
+    record_enricher_test.cpp
 )
 if(NOT WIN32)
     target_sources(ulog-tests PRIVATE unix_sink_test.cpp)

@@ -26,6 +26,7 @@ target_sources(ulog PRIVATE
     log_extra.cpp
     log_helper.cpp
     null_logger.cpp
+    record_enricher.cpp
     sync_logger.cpp
     async_logger.cpp
     config.cpp

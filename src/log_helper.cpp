@@ -13,6 +13,7 @@
 #include <ulog/impl/logger_base.hpp>
 #include <ulog/impl/tag_writer.hpp>
 #include <ulog/log.hpp>
+#include <ulog/record_enricher.hpp>
 #include <ulog/tracing_hook.hpp>
 
 namespace ulog {
@@ -189,6 +190,7 @@ LogHelper::~LogHelper() {
             : impl_->formatter.get();
         FormatterTagSink sink(hook_target);
         impl::DispatchTracingHook(sink);
+        impl::DispatchRecordEnrichers(sink);
 
         // SetText mirrors to every formatter (primary + extras) so each
         // produced item carries the same text body.
