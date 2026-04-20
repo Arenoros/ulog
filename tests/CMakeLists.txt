@@ -18,6 +18,7 @@ add_executable(ulog-tests
     default_logger_test.cpp
     stacktrace_cache_test.cpp
     tcp_sink_test.cpp
+    per_sink_format_test.cpp
 )
 if(NOT WIN32)
     target_sources(ulog-tests PRIVATE unix_sink_test.cpp)

@@ -3,7 +3,9 @@
 /// @file ulog/sync_logger.hpp
 /// @brief Text logger that writes synchronously to a set of sinks.
 
+#include <cstddef>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,14 +25,26 @@ public:
                         TimestampFormat ts_fmt = TimestampFormat::kIso8601Micro)
         : impl::TextLoggerBase(format, emit_location, ts_fmt) {}
 
+    /// Attach a sink using the logger's base format.
     void AddSink(sinks::SinkPtr sink);
 
+    /// Attach a sink with a per-sink format override. The logger materializes
+    /// an extra formatter per distinct override so each sink receives a
+    /// payload rendered in its chosen format.
+    void AddSink(sinks::SinkPtr sink, Format format_override);
+
     void Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) override;
+    void LogMulti(Level level, impl::LogItemList items) override;
     void Flush() override;
 
 private:
+    struct SinkEntry {
+        sinks::SinkPtr sink;
+        std::size_t format_idx;  ///< Index into TextLoggerBase::GetActiveFormats().
+    };
+
     std::mutex sinks_mu_;
-    std::vector<sinks::SinkPtr> sinks_;
+    std::vector<SinkEntry> sinks_;
 };
 
 }  // namespace ulog

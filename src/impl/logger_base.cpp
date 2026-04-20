@@ -51,6 +51,49 @@ formatters::BasePtr PlaceFormatter(void* scratch,
 
 }  // namespace
 
+namespace {
+
+formatters::BasePtr MakeFormatterImpl(Format fmt,
+                                      TimestampFormat ts_fmt,
+                                      void* scratch,
+                                      std::size_t scratch_size,
+                                      Level level,
+                                      std::string_view module_function,
+                                      std::string_view module_file,
+                                      int module_line,
+                                      std::chrono::system_clock::time_point now) {
+    switch (fmt) {
+        case Format::kTskv:
+            return PlaceFormatter<formatters::TskvFormatter>(
+                scratch, scratch_size,
+                level, module_function, module_file, module_line, now, ts_fmt);
+        case Format::kLtsv:
+            return PlaceFormatter<formatters::LtsvFormatter>(
+                scratch, scratch_size,
+                level, module_function, module_file, module_line, now, ts_fmt);
+        case Format::kRaw:
+            return PlaceFormatter<formatters::RawFormatter>(
+                scratch, scratch_size);
+        case Format::kJson:
+            return PlaceFormatter<formatters::JsonFormatter>(
+                scratch, scratch_size,
+                level, module_function, module_file, module_line, now,
+                formatters::JsonFormatter::Variant::kStandard, ts_fmt);
+        case Format::kJsonYaDeploy:
+            return PlaceFormatter<formatters::JsonFormatter>(
+                scratch, scratch_size,
+                level, module_function, module_file, module_line, now,
+                formatters::JsonFormatter::Variant::kYaDeploy, ts_fmt);
+        case Format::kOtlpJson:
+            return PlaceFormatter<formatters::OtlpJsonFormatter>(
+                scratch, scratch_size,
+                level, module_function, module_file, module_line, now);
+    }
+    return formatters::BasePtr{};
+}
+
+}  // namespace
+
 formatters::BasePtr TextLoggerBase::MakeFormatterInto(
         void* scratch,
         std::size_t scratch_size,
@@ -67,35 +110,45 @@ formatters::BasePtr TextLoggerBase::MakeFormatterInto(
         module_file = {};
         module_line = 0;
     }
-    switch (format_) {
-        case Format::kTskv:
-            return PlaceFormatter<formatters::TskvFormatter>(
-                scratch, scratch_size,
-                level, module_function, module_file, module_line, now, ts_fmt_);
-        case Format::kLtsv:
-            return PlaceFormatter<formatters::LtsvFormatter>(
-                scratch, scratch_size,
-                level, module_function, module_file, module_line, now, ts_fmt_);
-        case Format::kRaw:
-            return PlaceFormatter<formatters::RawFormatter>(
-                scratch, scratch_size);
-        case Format::kJson:
-            return PlaceFormatter<formatters::JsonFormatter>(
-                scratch, scratch_size,
-                level, module_function, module_file, module_line, now,
-                formatters::JsonFormatter::Variant::kStandard, ts_fmt_);
-        case Format::kJsonYaDeploy:
-            return PlaceFormatter<formatters::JsonFormatter>(
-                scratch, scratch_size,
-                level, module_function, module_file, module_line, now,
-                formatters::JsonFormatter::Variant::kYaDeploy, ts_fmt_);
-        case Format::kOtlpJson:
-            // OTLP spec mandates `timeUnixNano` — ts_fmt_ is ignored here.
-            return PlaceFormatter<formatters::OtlpJsonFormatter>(
-                scratch, scratch_size,
-                level, module_function, module_file, module_line, now);
+    return MakeFormatterImpl(format_, ts_fmt_, scratch, scratch_size,
+                             level, module_function, module_file, module_line, now);
+}
+
+formatters::BasePtr TextLoggerBase::MakeFormatterForFormat(
+        Format fmt,
+        Level level,
+        std::string_view module_function,
+        std::string_view module_file,
+        int module_line) {
+    const auto now = std::chrono::system_clock::now();
+    if (!emit_location_) {
+        module_function = {};
+        module_file = {};
+        module_line = 0;
     }
-    return formatters::BasePtr{};
+    // Force heap by passing null scratch.
+    return MakeFormatterImpl(fmt, ts_fmt_, /*scratch=*/nullptr, /*size=*/0,
+                             level, module_function, module_file, module_line, now);
+}
+
+std::size_t TextLoggerBase::RegisterSinkFormat(std::optional<Format> override) {
+    std::lock_guard lk(formats_mu_);
+    const Format want = override.value_or(format_);
+    for (std::size_t i = 0; i < active_formats_.size(); ++i) {
+        if (active_formats_[i] == want) return i;
+    }
+    active_formats_.push_back(want);
+    return active_formats_.size() - 1;
+}
+
+std::vector<Format> TextLoggerBase::GetActiveFormats() const {
+    std::lock_guard lk(formats_mu_);
+    return active_formats_;
+}
+
+std::size_t TextLoggerBase::GetActiveFormatCount() const noexcept {
+    std::lock_guard lk(formats_mu_);
+    return active_formats_.size();
 }
 
 }  // namespace ulog::impl

@@ -5,7 +5,12 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string_view>
+#include <vector>
+
+#include <boost/container/small_vector.hpp>
 
 #include <ulog/format.hpp>
 #include <ulog/fwd.hpp>
@@ -17,6 +22,11 @@ namespace ulog::impl {
 using formatters::LoggerItemBase;
 using formatters::LoggerItemRef;
 
+/// Inline-capacity 1 small_vector — multi-format records carry one item per
+/// active format. The common case (single format) avoids heap allocation
+/// for the carrier itself.
+using LogItemList = boost::container::small_vector<std::unique_ptr<LoggerItemBase>, 1>;
+
 /// Base class for all loggers. Thread-safe level access via atomics.
 class LoggerBase {
 public:
@@ -26,6 +36,15 @@ public:
     /// consume immediately, asynchronous loggers move the pointer into
     /// their queue.
     virtual void Log(Level level, std::unique_ptr<LoggerItemBase> item) = 0;
+
+    /// Multi-format variant — `items[i]` was rendered with format
+    /// `GetActiveFormats()[i]`. Default implementation routes the first
+    /// item to `Log(level, item)` which covers single-format loggers.
+    /// Multi-format capable loggers (Sync/Async) override to dispatch
+    /// each sink to the item matching its registered format index.
+    virtual void LogMulti(Level level, LogItemList items) {
+        if (!items.empty() && items[0]) Log(level, std::move(items[0]));
+    }
 
     /// Flushes pending output (if any).
     virtual void Flush() = 0;
@@ -75,15 +94,26 @@ private:
 
 /// Logger that produces textual output via one of the built-in formatters
 /// (TSKV/LTSV/RAW/JSON). Dispatches `MakeFormatter` by format.
+///
+/// Supports per-sink format overrides: each sink registers the format it
+/// wants via `RegisterSinkFormat`, returning a stable index into the
+/// `GetActiveFormats()` list. LogHelper consults the list to materialize
+/// one formatter per distinct format and pass the resulting items to
+/// `LogMulti`. The index is what concrete loggers (Sync/Async) store
+/// alongside each sink to route.
 class TextLoggerBase : public LoggerBase {
 public:
     explicit TextLoggerBase(Format format,
                             bool emit_location = true,
-                            TimestampFormat ts_fmt = TimestampFormat::kIso8601Micro) noexcept
-        : format_(format), emit_location_(emit_location), ts_fmt_(ts_fmt) {}
+                            TimestampFormat ts_fmt = TimestampFormat::kIso8601Micro)
+        : format_(format), emit_location_(emit_location), ts_fmt_(ts_fmt) {
+        active_formats_.push_back(format_);  // base format is always index 0
+    }
     Format GetFormat() const noexcept { return format_; }
     bool GetEmitLocation() const noexcept { return emit_location_; }
     TimestampFormat GetTimestampFormat() const noexcept { return ts_fmt_; }
+
+    /// Creates a formatter for this logger's base format (index 0).
     formatters::BasePtr MakeFormatterInto(void* scratch,
                                           std::size_t scratch_size,
                                           Level level,
@@ -91,10 +121,37 @@ public:
                                           std::string_view module_file,
                                           int module_line) override;
 
+    /// Creates a formatter for an explicit format (no scratch fast-path,
+    /// always heap-allocates). Used by LogHelper for extra formats beyond
+    /// the primary.
+    formatters::BasePtr MakeFormatterForFormat(Format fmt,
+                                               Level level,
+                                               std::string_view module_function,
+                                               std::string_view module_file,
+                                               int module_line);
+
+    /// Registers the format a sink wants. `override` unset → sink uses the
+    /// logger's base format (index 0). If the format is already active its
+    /// existing index is returned; otherwise the list is extended.
+    ///
+    /// Thread-safe. Indexes are stable for the logger's lifetime (the list
+    /// is append-only).
+    std::size_t RegisterSinkFormat(std::optional<Format> override);
+
+    /// Snapshot copy of the active formats. Index 0 is always the base
+    /// format; subsequent entries are the distinct overrides in
+    /// registration order.
+    std::vector<Format> GetActiveFormats() const;
+
+    /// Number of active formats without allocating a snapshot.
+    std::size_t GetActiveFormatCount() const noexcept;
+
 private:
     Format format_;
     bool emit_location_;
     TimestampFormat ts_fmt_;
+    mutable std::mutex formats_mu_;
+    std::vector<Format> active_formats_;
 };
 
 }  // namespace ulog::impl

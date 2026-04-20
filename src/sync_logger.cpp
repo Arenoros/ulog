@@ -8,24 +8,44 @@ namespace ulog {
 
 void SyncLogger::AddSink(sinks::SinkPtr sink) {
     if (!sink) return;
+    const auto idx = RegisterSinkFormat(std::nullopt);
     std::lock_guard lock(sinks_mu_);
-    sinks_.push_back(std::move(sink));
+    sinks_.push_back({std::move(sink), idx});
+}
+
+void SyncLogger::AddSink(sinks::SinkPtr sink, Format format_override) {
+    if (!sink) return;
+    const auto idx = RegisterSinkFormat(format_override);
+    std::lock_guard lock(sinks_mu_);
+    sinks_.push_back({std::move(sink), idx});
 }
 
 void SyncLogger::Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) {
+    // Compat path — wraps into a single-item list and dispatches.
     if (!item) return;
-    auto& text_item = static_cast<impl::formatters::TextLogItem&>(*item);
-    const auto view = text_item.payload.view();
+    impl::LogItemList items;
+    items.push_back(std::move(item));
+    LogMulti(level, std::move(items));
+}
 
-    std::vector<sinks::SinkPtr> snapshot;
+void SyncLogger::LogMulti(Level level, impl::LogItemList items) {
+    if (items.empty()) return;
+
+    std::vector<SinkEntry> snapshot;
     {
         std::lock_guard lock(sinks_mu_);
         snapshot = sinks_;
     }
-    for (const auto& s : snapshot) {
-        if (!s->ShouldLog(level)) continue;
+    for (const auto& entry : snapshot) {
+        if (!entry.sink->ShouldLog(level)) continue;
+        // `items[format_idx]` is the payload rendered for this sink's
+        // registered format. On the single-format hot path `format_idx`
+        // is 0 for every sink and we touch items[0] only.
+        const std::size_t idx = entry.format_idx < items.size() ? entry.format_idx : 0;
+        auto* text = static_cast<impl::formatters::TextLogItem*>(items[idx].get());
+        if (!text) continue;
         try {
-            s->Write(view);
+            entry.sink->Write(text->payload.view());
         } catch (...) {
             // Sinks must not bring down the application; swallow.
         }
@@ -33,14 +53,14 @@ void SyncLogger::Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) {
 }
 
 void SyncLogger::Flush() {
-    std::vector<sinks::SinkPtr> snapshot;
+    std::vector<SinkEntry> snapshot;
     {
         std::lock_guard lock(sinks_mu_);
         snapshot = sinks_;
     }
-    for (const auto& s : snapshot) {
+    for (const auto& entry : snapshot) {
         try {
-            s->Flush();
+            entry.sink->Flush();
         } catch (...) {
         }
     }

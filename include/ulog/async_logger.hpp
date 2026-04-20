@@ -55,6 +55,11 @@ public:
 
     void AddSink(sinks::SinkPtr sink);
 
+    /// Attach a sink with a per-sink format override. The worker renders
+    /// one payload per distinct format and routes each sink to its
+    /// matching payload.
+    void AddSink(sinks::SinkPtr sink, Format format_override);
+
     /// Requests the worker to reopen every sink (log-rotation entry point).
     void RequestReopen(sinks::ReopenMode mode = sinks::ReopenMode::kAppend);
 
@@ -69,6 +74,7 @@ public:
 
     // LoggerBase
     void Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) override;
+    void LogMulti(Level level, impl::LogItemList items) override;
     void Flush() override;
 
 private:
