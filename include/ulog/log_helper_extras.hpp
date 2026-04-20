@@ -8,6 +8,7 @@
 /// `log_helper.hpp` directly must include this header themselves if they
 /// rely on any of the overloads below.
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -17,6 +18,7 @@
 #include <system_error>
 #include <type_traits>
 #include <typeinfo>
+#include <utility>
 
 #include <ulog/detail/timestamp.hpp>
 #include <ulog/impl/tag_writer.hpp>
@@ -177,6 +179,51 @@ inline LogHelper& operator<<(LogHelper& lh, const void* p) noexcept {
 }
 inline LogHelper&& operator<<(LogHelper&& lh, const void* p) noexcept {
     lh << p;
+    return std::move(lh);
+}
+
+/// `std::atomic<T>` — streams the `.load()` value via the existing
+/// overload chain for `T`. Acquire-order, single load per emission.
+template <typename T>
+inline LogHelper& operator<<(LogHelper& lh, const std::atomic<T>& a) noexcept {
+    lh << a.load(std::memory_order_acquire);
+    return lh;
+}
+template <typename T>
+inline LogHelper&& operator<<(LogHelper&& lh, const std::atomic<T>& a) noexcept {
+    lh << a;
+    return std::move(lh);
+}
+
+/// Callable streaming — invokes `fun(lh)` for deferred / conditional
+/// formatting. The member template `operator<<(const T&)` excludes
+/// invocable types via SFINAE (`!is_invocable_r_v<void, T&, LogHelper&>`)
+/// so this overload wins uniquely for lambdas / functors.
+///
+/// Typical use:
+/// ```cpp
+/// LOG_INFO() << "result=" << [&](ulog::LogHelper& h) {
+///     if (h.IsLimitReached()) return;
+///     // expensive dump only when budget is available
+///     DumpDetailed(h);
+/// };
+/// ```
+template <typename Fun,
+          std::enable_if_t<std::is_invocable_r_v<void, Fun&, LogHelper&>,
+                           int> = 0>
+inline LogHelper& operator<<(LogHelper& lh, Fun&& fun) noexcept {
+    try {
+        std::forward<Fun>(fun)(lh);
+    } catch (...) {
+        // Swallow — streaming is noexcept.
+    }
+    return lh;
+}
+template <typename Fun,
+          std::enable_if_t<std::is_invocable_r_v<void, Fun&, LogHelper&>,
+                           int> = 0>
+inline LogHelper&& operator<<(LogHelper&& lh, Fun&& fun) noexcept {
+    std::forward<Fun>(fun)(lh);
     return std::move(lh);
 }
 

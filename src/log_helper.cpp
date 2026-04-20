@@ -537,6 +537,16 @@ void LogHelper::Put(std::string_view sv) {
         return;
     }
     impl_->text += sv;
+    // Overshoot-by-at-most-one-chunk allowance (see Phase 44) — we
+    // intentionally do NOT split `sv` mid-append. When the post-append
+    // size crosses the cap, flag the record so DoLog emits
+    // `truncated=true` alongside the (slightly oversized) body.
+    // Without this, a single big write that jumps from below cap to
+    // well above it would leave the flag unset and downstream
+    // consumers could not tell the record was cut.
+    if (impl_->text.size() >= kSizeLimit) {
+        impl_->truncated = true;
+    }
 }
 void LogHelper::Put(const char* s) { Put(std::string_view(s ? s : "")); }
 void LogHelper::Put(bool v) { Put(std::string_view(v ? "true" : "false")); }
@@ -547,6 +557,9 @@ void LogHelper::Put(char v) {
         return;
     }
     impl_->text += v;
+    if (impl_->text.size() >= kSizeLimit) {
+        impl_->truncated = true;
+    }
 }
 void LogHelper::PutFormatted(std::string s) { Put(std::string_view(s)); }
 

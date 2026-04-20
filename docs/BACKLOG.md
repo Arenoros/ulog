@@ -211,7 +211,8 @@ Phase как единый sprint (~1 день) из low-effort high-value overlo
 
 ---
 
-## LogHelper::Format + nice-to-have overloads
+## LogHelper::Format + nice-to-have overloads ✅ DONE (Phase 49)
+**Review:** `docs/review/39-phase-49.md` — 213/213 tests pass (+7). Format member, atomic<T>, callable Fun, member-template SFINAE для callable exclusion. Semantic fix: Put(sv) теперь set'ит truncated на overshoot-chunk. LogExtra&& rvalue overload skip'нуто — требует PutLogExtra(&&) API; defer.
 
 Группа мелких улучшений — объединить в один sprint (~2-3 часа).
 

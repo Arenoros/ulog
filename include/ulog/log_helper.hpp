@@ -207,14 +207,18 @@ public:
     /// hex-address rendering. `const char*` is routed back to the
     /// built-in `Put(const char*)` path through the concrete overload
     /// below so string literals and C-strings keep rendering as text.
-    template <typename T, std::enable_if_t<!std::is_pointer_v<T> &&
-                                            !std::is_array_v<T>, int> = 0>
+    template <typename T, std::enable_if_t<
+        !std::is_pointer_v<T> &&
+        !std::is_array_v<T> &&
+        !std::is_invocable_r_v<void, T&, LogHelper&>, int> = 0>
     LogHelper& operator<<(const T& value) & noexcept {
         try { Put(value); } catch (...) { InternalLoggingError("operator<< threw"); }
         return *this;
     }
-    template <typename T, std::enable_if_t<!std::is_pointer_v<T> &&
-                                            !std::is_array_v<T>, int> = 0>
+    template <typename T, std::enable_if_t<
+        !std::is_pointer_v<T> &&
+        !std::is_array_v<T> &&
+        !std::is_invocable_r_v<void, T&, LogHelper&>, int> = 0>
     LogHelper&& operator<<(const T& value) && noexcept {
         try { Put(value); } catch (...) { InternalLoggingError("operator<< threw"); }
         return std::move(*this);
@@ -249,6 +253,25 @@ public:
     /// Stream for the rate limiter used by LOG_LIMITED_*.
     LogHelper& operator<<(const impl::RateLimiter& rl) & noexcept;
     LogHelper&& operator<<(const impl::RateLimiter& rl) && noexcept { return std::move(*this << rl); }
+
+    /// fmt-style helper — forwards to `fmt::format` and appends the
+    /// rendered text directly. Equivalent to
+    /// `lh << fmt::format(fmt_str, args...)` but saves the temporary
+    /// `std::string` copy and keeps `noexcept` guarantee.
+    template <typename... Args>
+    LogHelper& Format(fmt::format_string<Args...> fmt_str, Args&&... args) & noexcept {
+        try {
+            PutFormatted(fmt::format(fmt_str, std::forward<Args>(args)...));
+        } catch (...) {
+            InternalLoggingError("Format() threw");
+        }
+        return *this;
+    }
+    template <typename... Args>
+    LogHelper&& Format(fmt::format_string<Args...> fmt_str, Args&&... args) && noexcept {
+        this->Format(fmt_str, std::forward<Args>(args)...);
+        return std::move(*this);
+    }
 
     /// Captures an exception (message + type) into the record.
     LogHelper& WithException(const std::exception& ex) & noexcept;
