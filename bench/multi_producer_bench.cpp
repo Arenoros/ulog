@@ -30,10 +30,10 @@ void Setup(const benchmark::State& state) {
         cfg.format = ulog::Format::kTskv;
         cfg.queue_capacity = 65536;
         cfg.overflow = ulog::OverflowBehavior::kBlock;
-        // Worker count follows producer count so consumer-side
-        // drainage doesn't become the bottleneck. DiscardSink is
-        // trivially thread-safe (no-op Write).
-        cfg.worker_count = static_cast<std::size_t>(state.threads());
+        // Keep worker_count = 1 here — this bench measures producer
+        // throughput under multi-thread contention, not worker
+        // scaling. Use `BM_AsyncSlowSinkByWorkers` (below) for the
+        // `worker_count` axis.
         auto logger = std::make_shared<ulog::AsyncLogger>(cfg);
         logger->SetLevel(ulog::Level::kTrace);
         logger->AddSink(std::make_shared<DiscardSink>());
