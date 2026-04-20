@@ -20,6 +20,22 @@ void SyncLogger::AddSink(sinks::SinkPtr sink, Format format_override) {
     sinks_.push_back({std::move(sink), idx});
 }
 
+void SyncLogger::AddStructuredSink(sinks::StructuredSinkPtr sink) {
+    if (!sink) return;
+    std::lock_guard lock(struct_sinks_mu_);
+    struct_sinks_.push_back(std::move(sink));
+}
+
+bool SyncLogger::HasTextSinks() const noexcept {
+    std::lock_guard lock(sinks_mu_);
+    return !sinks_.empty();
+}
+
+bool SyncLogger::HasStructuredSinks() const noexcept {
+    std::lock_guard lock(struct_sinks_mu_);
+    return !struct_sinks_.empty();
+}
+
 void SyncLogger::Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) {
     // Compat path — wraps into a single-item list and dispatches.
     if (!item) return;
@@ -28,7 +44,14 @@ void SyncLogger::Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) {
     LogMulti(level, std::move(items));
 }
 
-void SyncLogger::LogMulti(Level level, impl::LogItemList items) {
+void SyncLogger::LogMulti(Level level,
+                          impl::LogItemList items,
+                          std::unique_ptr<sinks::LogRecord> structured) {
+    if (structured) {
+        // Dispatch the structured path first — text and structured sinks
+        // are independent; either may be absent.
+        LogStructured(level, std::move(structured));
+    }
     if (items.empty()) return;
 
     std::vector<SinkEntry> snapshot;
@@ -59,6 +82,23 @@ void SyncLogger::LogMulti(Level level, impl::LogItemList items) {
     }
 }
 
+void SyncLogger::LogStructured(Level level, std::unique_ptr<sinks::LogRecord> record) {
+    if (!record) return;
+    std::vector<sinks::StructuredSinkPtr> snapshot;
+    {
+        std::lock_guard lock(struct_sinks_mu_);
+        snapshot = struct_sinks_;
+    }
+    for (const auto& sink : snapshot) {
+        if (!sink || !sink->ShouldLog(level)) continue;
+        try {
+            sink->Write(*record);
+        } catch (...) {
+            // Sinks must not bring down the application; swallow.
+        }
+    }
+}
+
 void SyncLogger::Flush() {
     std::vector<SinkEntry> snapshot;
     {
@@ -68,6 +108,18 @@ void SyncLogger::Flush() {
     for (const auto& entry : snapshot) {
         try {
             entry.sink->Flush();
+        } catch (...) {
+        }
+    }
+
+    std::vector<sinks::StructuredSinkPtr> s_snapshot;
+    {
+        std::lock_guard lock(struct_sinks_mu_);
+        s_snapshot = struct_sinks_;
+    }
+    for (const auto& sink : s_snapshot) {
+        try {
+            if (sink) sink->Flush();
         } catch (...) {
         }
     }

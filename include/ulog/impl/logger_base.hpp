@@ -16,6 +16,7 @@
 #include <ulog/fwd.hpp>
 #include <ulog/impl/formatters/base.hpp>
 #include <ulog/level.hpp>
+#include <ulog/sinks/structured_sink.hpp>
 
 namespace ulog::impl {
 
@@ -37,14 +38,40 @@ public:
     /// their queue.
     virtual void Log(Level level, std::unique_ptr<LoggerItemBase> item) = 0;
 
-    /// Multi-format variant — `items[i]` was rendered with format
-    /// `GetActiveFormats()[i]`. Default implementation routes the first
-    /// item to `Log(level, item)` which covers single-format loggers.
-    /// Multi-format capable loggers (Sync/Async) override to dispatch
-    /// each sink to the item matching its registered format index.
-    virtual void LogMulti(Level level, LogItemList items) {
+    /// Multi-format + optional structured variant. `items[i]` was rendered
+    /// with format `GetActiveFormats()[i]`; `structured` is the raw record
+    /// accumulated for StructuredSink consumers (non-null iff the logger
+    /// has at least one structured sink registered). LogHelper always
+    /// routes through this single entry point so async loggers can pack
+    /// both halves into one queue entry.
+    ///
+    /// Default: route the first item to `Log(level, item)` (covers
+    /// single-format non-Text loggers), then dispatch `structured`
+    /// through `LogStructured` for the (rare) subclass that mixes text
+    /// and structured paths.
+    virtual void LogMulti(Level level,
+                          LogItemList items,
+                          std::unique_ptr<sinks::LogRecord> structured = nullptr) {
         if (!items.empty() && items[0]) Log(level, std::move(items[0]));
+        if (structured) LogStructured(level, std::move(structured));
     }
+
+    /// Consumes a structured record on its own. Default implementation
+    /// drops it — loggers without structured sinks never have their
+    /// LogHelper build a record in the first place. SyncLogger and
+    /// AsyncLogger override to dispatch to the sinks they hold.
+    virtual void LogStructured(Level /*level*/, std::unique_ptr<sinks::LogRecord> /*record*/) {}
+
+    /// Reports whether this logger owns any text sinks (sinks::BaseSink).
+    /// LogHelper consults this to decide whether to materialize a
+    /// formatter at all — a logger with only structured sinks skips the
+    /// formatter path entirely. Default true preserves legacy behaviour.
+    virtual bool HasTextSinks() const noexcept { return true; }
+
+    /// Reports whether this logger owns any structured sinks. LogHelper
+    /// consults this to decide whether to build a `sinks::LogRecord`.
+    /// Default false — only Sync/AsyncLogger opt in.
+    virtual bool HasStructuredSinks() const noexcept { return false; }
 
     /// Flushes pending output (if any).
     virtual void Flush() = 0;

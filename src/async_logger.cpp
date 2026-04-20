@@ -19,13 +19,17 @@ namespace ulog {
 
 namespace {
 
-struct LogRecord {
+struct QueueRecord {
     Level level{Level::kInfo};
     /// Produced by the formatter on the producer thread; the worker only
     /// reads (never mutates). Owning list — one item per active format
     /// (inline-1 small_vector keeps the common single-format path free of
     /// heap allocations).
     impl::LogItemList items;
+    /// Non-null when the logger has at least one structured sink. The
+    /// producer built the record under `LogHelper::~LogHelper`; the
+    /// worker fans it out to every StructuredSink on consumption.
+    std::unique_ptr<sinks::LogRecord> structured;
 };
 
 /// Non-owning view into a sink + its registered format index. Mirrors
@@ -78,12 +82,14 @@ struct AsyncLogger::State {
 
     Config config;
 
-    moodycamel::ConcurrentQueue<LogRecord> records;
+    moodycamel::ConcurrentQueue<QueueRecord> records;
     moodycamel::ConcurrentQueue<ReopenRequest> reopens;
     moodycamel::ConcurrentQueue<FlushRequest> flushes;
 
     std::mutex sinks_mu;
     std::vector<SinkEntry> sinks;
+    std::mutex struct_sinks_mu;
+    std::vector<sinks::StructuredSinkPtr> struct_sinks;
 
     std::mutex wait_mu;
     std::condition_variable cv;
@@ -151,7 +157,7 @@ struct AsyncLogger::State {
 
     void WakeForControl() { cv.notify_all(); }
 
-    bool TryEnqueueRecord(LogRecord&& rec) {
+    bool TryEnqueueRecord(QueueRecord&& rec) {
         if (config.queue_capacity > 0 &&
             pending.load(std::memory_order_relaxed) >= config.queue_capacity) {
             if (config.overflow == OverflowBehavior::kDiscard) {
@@ -173,32 +179,51 @@ struct AsyncLogger::State {
 
     void WorkerLoop() {
         constexpr std::size_t kBatch = 256;
-        std::vector<LogRecord> batch(kBatch);
+        std::vector<QueueRecord> batch(kBatch);
 
         auto drain_records = [&]() {
             while (true) {
                 const std::size_t n = records.try_dequeue_bulk(batch.begin(), kBatch);
                 if (n == 0) return;
                 std::vector<SinkEntry> snapshot;
+                std::vector<sinks::StructuredSinkPtr> ss_snapshot;
                 {
                     std::lock_guard lk(sinks_mu);
                     snapshot = sinks;
                 }
+                {
+                    std::lock_guard lk(struct_sinks_mu);
+                    ss_snapshot = struct_sinks;
+                }
                 for (std::size_t i = 0; i < n; ++i) {
                     auto& rec = batch[i];
-                    if (rec.items.empty()) continue;
-                    for (const auto& entry : snapshot) {
-                        if (!entry.sink->ShouldLog(rec.level)) continue;
-                        // Sink registered AFTER this record was materialized
-                        // is invisible to it — skip rather than fall through
-                        // to items[0] (wrong format).
-                        if (entry.format_idx >= rec.items.size()) continue;
-                        auto* text = static_cast<impl::formatters::TextLogItem*>(rec.items[entry.format_idx].get());
-                        if (!text) continue;  // OOM upstream — drop sink write
-                        try { entry.sink->Write(text->payload.view()); }
-                        catch (...) {}
+                    // Text sink fan-out.
+                    if (!rec.items.empty()) {
+                        for (const auto& entry : snapshot) {
+                            if (!entry.sink->ShouldLog(rec.level)) continue;
+                            // Sink registered AFTER this record was materialized
+                            // is invisible to it — skip rather than fall through
+                            // to items[0] (wrong format).
+                            if (entry.format_idx >= rec.items.size()) continue;
+                            auto* text = static_cast<impl::formatters::TextLogItem*>(rec.items[entry.format_idx].get());
+                            if (!text) continue;  // OOM upstream — drop sink write
+                            try { entry.sink->Write(text->payload.view()); }
+                            catch (...) {}
+                        }
+                        rec.items.clear();
                     }
-                    rec.items.clear();
+                    // Structured sink fan-out — independent of text path; a
+                    // sink added AFTER the producer built the record is
+                    // invisible to this record (same semantics as the text
+                    // side's out-of-range skip).
+                    if (rec.structured) {
+                        for (const auto& sink : ss_snapshot) {
+                            if (!sink || !sink->ShouldLog(rec.level)) continue;
+                            try { sink->Write(*rec.structured); }
+                            catch (...) {}
+                        }
+                        rec.structured.reset();
+                    }
                 }
                 pending.fetch_sub(n, std::memory_order_release);
                 total_logged.fetch_add(n, std::memory_order_relaxed);
@@ -211,12 +236,21 @@ struct AsyncLogger::State {
             ReopenRequest req{};
             while (reopens.try_dequeue(req)) {
                 std::vector<SinkEntry> snapshot;
+                std::vector<sinks::StructuredSinkPtr> ss_snapshot;
                 {
                     std::lock_guard lk(sinks_mu);
                     snapshot = sinks;
                 }
+                {
+                    std::lock_guard lk(struct_sinks_mu);
+                    ss_snapshot = struct_sinks;
+                }
                 for (const auto& entry : snapshot) {
                     try { entry.sink->Reopen(req.mode); }
+                    catch (...) {}
+                }
+                for (const auto& sink : ss_snapshot) {
+                    try { if (sink) sink->Reopen(req.mode); }
                     catch (...) {}
                 }
             }
@@ -226,12 +260,21 @@ struct AsyncLogger::State {
             FlushRequest req{};
             while (flushes.try_dequeue(req)) {
                 std::vector<SinkEntry> snapshot;
+                std::vector<sinks::StructuredSinkPtr> ss_snapshot;
                 {
                     std::lock_guard lk(sinks_mu);
                     snapshot = sinks;
                 }
+                {
+                    std::lock_guard lk(struct_sinks_mu);
+                    ss_snapshot = struct_sinks;
+                }
                 for (const auto& entry : snapshot) {
                     try { entry.sink->Flush(); }
+                    catch (...) {}
+                }
+                for (const auto& sink : ss_snapshot) {
+                    try { if (sink) sink->Flush(); }
                     catch (...) {}
                 }
                 if (req.promise) req.promise->set_value();
@@ -286,6 +329,22 @@ void AsyncLogger::AddSink(sinks::SinkPtr sink, Format format_override) {
     state_->sinks.push_back({std::move(sink), idx});
 }
 
+void AsyncLogger::AddStructuredSink(sinks::StructuredSinkPtr sink) {
+    if (!sink) return;
+    std::lock_guard lk(state_->struct_sinks_mu);
+    state_->struct_sinks.push_back(std::move(sink));
+}
+
+bool AsyncLogger::HasTextSinks() const noexcept {
+    std::lock_guard lk(state_->sinks_mu);
+    return !state_->sinks.empty();
+}
+
+bool AsyncLogger::HasStructuredSinks() const noexcept {
+    std::lock_guard lk(state_->struct_sinks_mu);
+    return !state_->struct_sinks.empty();
+}
+
 void AsyncLogger::RequestReopen(sinks::ReopenMode mode) {
     state_->reopens.enqueue({mode});
     state_->WakeForControl();
@@ -293,17 +352,28 @@ void AsyncLogger::RequestReopen(sinks::ReopenMode mode) {
 
 void AsyncLogger::Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) {
     if (!item) return;
-    LogRecord rec;
+    QueueRecord rec;
     rec.level = level;
     rec.items.push_back(std::move(item));
     state_->TryEnqueueRecord(std::move(rec));
 }
 
-void AsyncLogger::LogMulti(Level level, impl::LogItemList items) {
-    if (items.empty()) return;
-    LogRecord rec;
+void AsyncLogger::LogMulti(Level level,
+                           impl::LogItemList items,
+                           std::unique_ptr<sinks::LogRecord> structured) {
+    if (items.empty() && !structured) return;
+    QueueRecord rec;
     rec.level = level;
     rec.items = std::move(items);
+    rec.structured = std::move(structured);
+    state_->TryEnqueueRecord(std::move(rec));
+}
+
+void AsyncLogger::LogStructured(Level level, std::unique_ptr<sinks::LogRecord> record) {
+    if (!record) return;
+    QueueRecord rec;
+    rec.level = level;
+    rec.structured = std::move(record);
     state_->TryEnqueueRecord(std::move(rec));
 }
 

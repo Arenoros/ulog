@@ -16,6 +16,7 @@
 #include <ulog/impl/formatters/text_item.hpp>
 #include <ulog/impl/logger_base.hpp>
 #include <ulog/sinks/base_sink.hpp>
+#include <ulog/sinks/structured_sink.hpp>
 
 namespace ulog {
 
@@ -60,6 +61,11 @@ public:
     /// matching payload.
     void AddSink(sinks::SinkPtr sink, Format format_override);
 
+    /// Attach a structured sink — receives the raw record on the worker
+    /// thread. Adding at least one enables the structured path in
+    /// LogHelper (record accumulation) for every subsequent log call.
+    void AddStructuredSink(sinks::StructuredSinkPtr sink);
+
     /// Requests the worker to reopen every sink (log-rotation entry point).
     void RequestReopen(sinks::ReopenMode mode = sinks::ReopenMode::kAppend);
 
@@ -74,8 +80,14 @@ public:
 
     // LoggerBase
     void Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) override;
-    void LogMulti(Level level, impl::LogItemList items) override;
+    void LogMulti(Level level,
+                  impl::LogItemList items,
+                  std::unique_ptr<sinks::LogRecord> structured = nullptr) override;
+    void LogStructured(Level level, std::unique_ptr<sinks::LogRecord> record) override;
     void Flush() override;
+
+    bool HasTextSinks() const noexcept override;
+    bool HasStructuredSinks() const noexcept override;
 
 private:
     struct State;

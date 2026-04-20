@@ -13,6 +13,7 @@
 #include <ulog/impl/formatters/text_item.hpp>
 #include <ulog/impl/logger_base.hpp>
 #include <ulog/sinks/base_sink.hpp>
+#include <ulog/sinks/structured_sink.hpp>
 
 namespace ulog {
 
@@ -33,9 +34,21 @@ public:
     /// payload rendered in its chosen format.
     void AddSink(sinks::SinkPtr sink, Format format_override);
 
+    /// Attach a structured sink — receives the raw record instead of a
+    /// formatted string. Adding at least one enables the structured
+    /// path in LogHelper (record accumulation), so text-only loggers
+    /// pay nothing until a structured sink is attached.
+    void AddStructuredSink(sinks::StructuredSinkPtr sink);
+
     void Log(Level level, std::unique_ptr<impl::LoggerItemBase> item) override;
-    void LogMulti(Level level, impl::LogItemList items) override;
+    void LogMulti(Level level,
+                  impl::LogItemList items,
+                  std::unique_ptr<sinks::LogRecord> structured = nullptr) override;
+    void LogStructured(Level level, std::unique_ptr<sinks::LogRecord> record) override;
     void Flush() override;
+
+    bool HasTextSinks() const noexcept override;
+    bool HasStructuredSinks() const noexcept override;
 
 private:
     struct SinkEntry {
@@ -43,8 +56,12 @@ private:
         std::size_t format_idx;  ///< Index into TextLoggerBase::GetActiveFormats().
     };
 
-    std::mutex sinks_mu_;
+    // Mutable so the const `Has*Sinks()` queries can lock — the state
+    // they peek at is shared across threads and must be read under lock.
+    mutable std::mutex sinks_mu_;
     std::vector<SinkEntry> sinks_;
+    mutable std::mutex struct_sinks_mu_;
+    std::vector<sinks::StructuredSinkPtr> struct_sinks_;
 };
 
 }  // namespace ulog

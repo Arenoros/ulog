@@ -14,6 +14,7 @@
 #include <ulog/impl/tag_writer.hpp>
 #include <ulog/log.hpp>
 #include <ulog/record_enricher.hpp>
+#include <ulog/sinks/structured_sink.hpp>
 #include <ulog/tracing_hook.hpp>
 
 namespace ulog {
@@ -35,6 +36,55 @@ public:
     }
 private:
     impl::formatters::Base* f_;
+};
+
+/// Accumulator that captures tags + trace context into a
+/// `sinks::LogRecord` owned internally. Plugged into the fan-out when the
+/// logger reports at least one structured sink — so the same `<< tag`
+/// call that streams into a text formatter also populates the structured
+/// record.
+///
+/// Typed `AddTag*` overrides are kept so native tag types (int, bool,
+/// double, JSON) reach the sink without going through a string form.
+class TagRecorder final : public impl::formatters::Base {
+public:
+    TagRecorder() : record_(std::make_unique<sinks::LogRecord>()) {}
+
+    sinks::LogRecord* mutable_record() noexcept { return record_.get(); }
+    std::unique_ptr<sinks::LogRecord> Release() noexcept { return std::move(record_); }
+
+    void AddTag(std::string_view key, std::string_view value) override {
+        record_->tags.push_back({std::string(key), std::string(value)});
+    }
+    void AddJsonTag(std::string_view key, const JsonString& value) override {
+        record_->tags.push_back({std::string(key), value});
+    }
+    void AddTagInt64(std::string_view key, std::int64_t value) override {
+        record_->tags.push_back({std::string(key), value});
+    }
+    void AddTagUInt64(std::string_view key, std::uint64_t value) override {
+        record_->tags.push_back({std::string(key), value});
+    }
+    void AddTagDouble(std::string_view key, double value) override {
+        record_->tags.push_back({std::string(key), value});
+    }
+    void AddTagBool(std::string_view key, bool value) override {
+        record_->tags.push_back({std::string(key), value});
+    }
+    void SetTraceContext(std::string_view trace_id_hex,
+                         std::string_view span_id_hex) override {
+        if (!trace_id_hex.empty()) record_->trace_id = std::string(trace_id_hex);
+        if (!span_id_hex.empty())  record_->span_id  = std::string(span_id_hex);
+    }
+    void SetText(std::string_view text) override {
+        record_->text = std::string(text);
+    }
+    std::unique_ptr<impl::formatters::LoggerItemBase> ExtractLoggerItem() override {
+        return nullptr;  // unused — LogHelper pulls the record via Release()
+    }
+
+private:
+    std::unique_ptr<sinks::LogRecord> record_;
 };
 
 /// Forwards every formatter call to each target. ExtractLoggerItem is
@@ -104,38 +154,83 @@ struct LogHelper::Impl {
         const auto func_sv = location.function ? std::string_view(location.function) : std::string_view{};
         const auto file_sv = location.file ? std::string_view(location.file) : std::string_view{};
 
-        // Primary formatter — inline scratch fast path, base format.
-        formatter = logger_ref.MakeFormatterInto(
-            &formatter_scratch,
-            sizeof(formatter_scratch),
-            level, func_sv, file_sv, location.line);
+        const bool want_text = logger_ref.HasTextSinks();
+        const bool want_structured = logger_ref.HasStructuredSinks();
 
-        // Detect multi-format: only TextLoggerBase participates.
-        // Snapshot the full list once — the registry is append-only but a
-        // concurrent AddSink could otherwise run between GetActiveFormatCount
-        // and GetActiveFormats, leaving LogHelper materialized with fewer
-        // formatters than the sink vector later expects (every in-flight
-        // record MUST carry an item for every format visible at construction
-        // time; a sink added afterwards is invisible to this record and its
-        // format_idx may overshoot items.size() — LogMulti handles that via
-        // the out-of-range check).
-        auto* text_base = dynamic_cast<impl::TextLoggerBase*>(&logger_ref);
-        if (text_base) {
-            const auto formats = text_base->GetActiveFormats();
-            if (formats.size() > 1) {
-                extras.reserve(formats.size() - 1);
-                for (std::size_t i = 1; i < formats.size(); ++i) {
-                    extras.push_back(text_base->MakeFormatterForFormat(
-                        formats[i], level, func_sv, file_sv, location.line));
+        // Materialize the primary text formatter only when at least one
+        // text sink is attached. Logger with only structured sinks skips
+        // the formatter path entirely — zero bytes allocated for text
+        // rendering on that path.
+        if (want_text) {
+            formatter = logger_ref.MakeFormatterInto(
+                &formatter_scratch,
+                sizeof(formatter_scratch),
+                level, func_sv, file_sv, location.line);
+
+            // Multi-format: only TextLoggerBase participates. Snapshot the
+            // full list once — the registry is append-only but a concurrent
+            // AddSink could otherwise run between GetActiveFormatCount and
+            // GetActiveFormats, leaving LogHelper materialized with fewer
+            // formatters than the sink vector later expects (every in-flight
+            // record MUST carry an item for every format visible at
+            // construction time; a sink added afterwards is invisible to
+            // this record and its format_idx may overshoot items.size() —
+            // LogMulti handles that via the out-of-range check).
+            auto* text_base = dynamic_cast<impl::TextLoggerBase*>(&logger_ref);
+            if (text_base) {
+                const auto formats = text_base->GetActiveFormats();
+                if (formats.size() > 1) {
+                    extras.reserve(formats.size() - 1);
+                    for (std::size_t i = 1; i < formats.size(); ++i) {
+                        extras.push_back(text_base->MakeFormatterForFormat(
+                            formats[i], level, func_sv, file_sv, location.line));
+                    }
                 }
-                fanout.emplace();
-                fanout->Add(formatter.get());
-                for (auto& e : extras) fanout->Add(e.get());
-                writer.Reset(&*fanout);
-                return;
             }
         }
-        writer.Reset(formatter.get());
+
+        // Prime the structured recorder when any structured sink is present.
+        // The record is seeded with level / timestamp / call-site metadata;
+        // tags and text land later through the fanout / SetText path.
+        //
+        // Respect `TextLoggerBase::GetEmitLocation()` symmetrically with
+        // the text formatter — a logger configured with
+        // `emit_location = false` wants the location suppressed *everywhere*,
+        // not only in the text `module` field.
+        if (want_structured) {
+            recorder.emplace();
+            auto* rec = recorder->mutable_record();
+            rec->level = level;
+            rec->timestamp = std::chrono::system_clock::now();
+            auto* text_base_for_loc = dynamic_cast<impl::TextLoggerBase*>(&logger_ref);
+            const bool emit_loc = text_base_for_loc ? text_base_for_loc->GetEmitLocation() : true;
+            if (emit_loc) {
+                if (location.function) rec->module_function = location.function;
+                if (location.file)     rec->module_file     = location.file;
+                rec->module_line = location.line;
+            }
+        }
+
+        // Pick the writer target. Fanout engages whenever more than one
+        // broadcast destination exists (primary + extras, or primary +
+        // recorder, or any combination thereof). A single target
+        // bypasses fanout entirely — that's the common LOG_* hot path.
+        const std::size_t target_count =
+            (formatter ? 1u : 0u) + extras.size() + (recorder ? 1u : 0u);
+        if (target_count >= 2) {
+            fanout.emplace();
+            if (formatter) fanout->Add(formatter.get());
+            for (auto& e : extras) fanout->Add(e.get());
+            if (recorder)  fanout->Add(&*recorder);
+            writer.Reset(&*fanout);
+        } else if (formatter) {
+            writer.Reset(formatter.get());
+        } else if (recorder) {
+            writer.Reset(&*recorder);
+        }
+        // target_count == 0: logger has no sinks at all. writer stays
+        // null; tag / trace-hook calls are no-ops on a null formatter
+        // pointer inside TagWriter.
     }
 
     impl::LoggerBase& logger_ref;
@@ -152,9 +247,14 @@ struct LogHelper::Impl {
     /// Extras — one per additional active format beyond the primary.
     /// Always heap-allocated; empty on the common single-format path.
     std::vector<impl::formatters::BasePtr> extras;
-    /// Engaged only when extras is non-empty; aggregates tag/trace calls
-    /// and broadcasts them to every formatter. Primary + extras outlive
-    /// the fanout (same frame) — the non-owning pointers are safe.
+    /// Engaged only when the logger has at least one structured sink.
+    /// Accumulates tags / text / trace context into a sinks::LogRecord
+    /// that is handed off to LogMulti alongside the text items.
+    std::optional<TagRecorder> recorder;
+    /// Engaged only when target_count >= 2; aggregates tag/trace calls
+    /// and broadcasts them to every formatter (and recorder). Targets
+    /// outlive the fanout (same frame) — the non-owning pointers are
+    /// safe.
     std::optional<FanoutFormatter> fanout;
     detail::SmallString<1024> text;
     impl::TagWriter writer;
@@ -182,29 +282,40 @@ LogHelper::LogHelper(LoggerPtr logger, Level level, LogRecordLocation location) 
 LogHelper::~LogHelper() {
     if (!impl_ || !impl_->active) return;
     try {
-        // Dispatch the tracing hook through whichever target TagWriter
-        // currently points to — primary alone for single-format, fanout
-        // for multi-format. Both satisfy the TagSink contract.
-        impl::formatters::Base* hook_target = impl_->fanout
-            ? static_cast<impl::formatters::Base*>(&*impl_->fanout)
-            : impl_->formatter.get();
-        FormatterTagSink sink(hook_target);
-        impl::DispatchTracingHook(sink);
-        impl::DispatchRecordEnrichers(sink);
+        // Dispatch the tracing hook + record enrichers through whichever
+        // target TagWriter currently points to — the fanout when multiple
+        // destinations are active, otherwise the sole target (formatter
+        // OR recorder). Both satisfy the TagSink / Base contract.
+        impl::formatters::Base* hook_target = nullptr;
+        if (impl_->fanout)         hook_target = &*impl_->fanout;
+        else if (impl_->formatter) hook_target = impl_->formatter.get();
+        else if (impl_->recorder)  hook_target = &*impl_->recorder;
+        if (hook_target) {
+            FormatterTagSink sink(hook_target);
+            impl::DispatchTracingHook(sink);
+            impl::DispatchRecordEnrichers(sink);
+        }
 
-        // SetText mirrors to every formatter (primary + extras) so each
-        // produced item carries the same text body.
-        impl_->formatter->SetText(impl_->text.view());
-        for (auto& e : impl_->extras) if (e) e->SetText(impl_->text.view());
+        // SetText mirrors to every destination so each produced item /
+        // record carries the same text body.
+        const auto text_view = impl_->text.view();
+        if (impl_->formatter) impl_->formatter->SetText(text_view);
+        for (auto& e : impl_->extras) if (e) e->SetText(text_view);
+        if (impl_->recorder)  impl_->recorder->SetText(text_view);
 
         impl::LogItemList items;
-        items.reserve(1 + impl_->extras.size());
-        items.push_back(impl_->formatter->ExtractLoggerItem());
-        for (auto& e : impl_->extras) {
-            if (e) items.push_back(e->ExtractLoggerItem());
+        if (impl_->formatter) {
+            items.reserve(1 + impl_->extras.size());
+            items.push_back(impl_->formatter->ExtractLoggerItem());
+            for (auto& e : impl_->extras) {
+                if (e) items.push_back(e->ExtractLoggerItem());
+            }
         }
+        std::unique_ptr<sinks::LogRecord> structured =
+            impl_->recorder ? impl_->recorder->Release() : nullptr;
+
         const bool want_flush = impl_->level >= impl_->logger_ref.GetFlushOn();
-        impl_->logger_ref.LogMulti(impl_->level, std::move(items));
+        impl_->logger_ref.LogMulti(impl_->level, std::move(items), std::move(structured));
         if (want_flush) impl_->logger_ref.Flush();
     } catch (...) {
         // Never throw from a logger destructor.
