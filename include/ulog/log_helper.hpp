@@ -207,12 +207,14 @@ public:
     /// hex-address rendering. `const char*` is routed back to the
     /// built-in `Put(const char*)` path through the concrete overload
     /// below so string literals and C-strings keep rendering as text.
-    template <typename T, std::enable_if_t<!std::is_pointer_v<T>, int> = 0>
+    template <typename T, std::enable_if_t<!std::is_pointer_v<T> &&
+                                            !std::is_array_v<T>, int> = 0>
     LogHelper& operator<<(const T& value) & noexcept {
         try { Put(value); } catch (...) { InternalLoggingError("operator<< threw"); }
         return *this;
     }
-    template <typename T, std::enable_if_t<!std::is_pointer_v<T>, int> = 0>
+    template <typename T, std::enable_if_t<!std::is_pointer_v<T> &&
+                                            !std::is_array_v<T>, int> = 0>
     LogHelper&& operator<<(const T& value) && noexcept {
         try { Put(value); } catch (...) { InternalLoggingError("operator<< threw"); }
         return std::move(*this);

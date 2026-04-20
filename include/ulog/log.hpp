@@ -20,6 +20,7 @@
 #include <ulog/level.hpp>
 #include <ulog/log_helper.hpp>
 #include <ulog/log_helper_extras.hpp>
+#include <ulog/log_helper_range.hpp>
 
 namespace ulog {
 

@@ -195,7 +195,8 @@ Phase как единый sprint (~1 день) из low-effort high-value overlo
 
 ---
 
-## LogHelper container streaming (`PutRange`)
+## LogHelper container streaming (`PutRange`) ✅ DONE (Phase 48)
+**Review:** `docs/review/38-phase-48.md` — 206/206 tests pass (+14). 14 overload'ов: vector/array/set/C-array/nested sequences, ordered/unordered map (with quoted string keys), string-not-as-range preserved, truncation=true tag authoritative.
 
 **Что:** `operator<<(LogHelper&, const T&)` для any range-satisfying тип — walk через `begin`/`end`, вывод `[a, b, c]`. Специализация `PutMapElement` для `std::pair<const K, V>` (map/unordered_map) → формат `"key": value`. string-like elements → `Quoted{}`. Respect `IsLimitReached()` — остаток печатается как `...N more`. `static_assert` против `char`-диапазонов (иначе каждая строка станет "[h, e, l, l, o]").
 

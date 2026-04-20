@@ -156,34 +156,26 @@ inline void StreamPointer(LogHelper& lh, const void* p) noexcept {
 
 }  // namespace detail
 
-/// Generic `T*` streaming — nullptr-guard + hex address via `ulog::Hex`.
+/// Generic pointer streaming — nullptr-guard + hex address via
+/// `ulog::Hex`. `const char*` stays on the text path through the
+/// concrete `LogHelper::operator<<(const char*)`; `void*` / `T*`
+/// types convert implicitly to `const void*` here.
 ///
-/// Deliberately excludes:
-/// - `char*` / `const char*` — the built-in `LogHelper::operator<<` path
-///   renders them as NUL-terminated strings.
-/// - Function pointers — streaming address of code is almost certainly a
-///   bug (or a `std::endl`-style manipulator mistake). Blocked by
-///   `static_assert`; cast to `void*` explicitly if you really want the
-///   address.
-template <typename T,
-          typename = std::enable_if_t<
-              !std::is_same_v<std::remove_cv_t<T>, char> &&
-              !std::is_same_v<std::remove_cv_t<T>, signed char> &&
-              !std::is_same_v<std::remove_cv_t<T>, unsigned char>>>
-inline LogHelper& operator<<(LogHelper& lh, const T* p) noexcept {
-    static_assert(!std::is_function_v<T>,
-                  "streaming function pointers via LogHelper is ambiguous; "
-                  "cast to void* if you really want the code address");
-    detail::StreamPointer(lh, static_cast<const void*>(p));
+/// Signature is deliberately non-template so partial ordering with
+/// the array overload in `log_helper_range.hpp` stays unambiguous —
+/// `const T(&)[N]` (array template) wins cleanly over `const void*`
+/// (non-template with implicit decay+qualification) so arrays render
+/// as `[a, b, c]` instead of a hex address.
+///
+/// Function pointers do not implicitly convert to `const void*` under
+/// the standard — they need an explicit `reinterpret_cast<void*>(fn)`
+/// to be streamed. That is intentional: streaming code addresses is
+/// almost always a bug or a `std::endl`-style manipulator mistake.
+inline LogHelper& operator<<(LogHelper& lh, const void* p) noexcept {
+    detail::StreamPointer(lh, p);
     return lh;
 }
-
-template <typename T,
-          typename = std::enable_if_t<
-              !std::is_same_v<std::remove_cv_t<T>, char> &&
-              !std::is_same_v<std::remove_cv_t<T>, signed char> &&
-              !std::is_same_v<std::remove_cv_t<T>, unsigned char>>>
-inline LogHelper&& operator<<(LogHelper&& lh, const T* p) noexcept {
+inline LogHelper&& operator<<(LogHelper&& lh, const void* p) noexcept {
     lh << p;
     return std::move(lh);
 }
