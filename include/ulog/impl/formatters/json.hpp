@@ -12,6 +12,7 @@
 #include <ulog/impl/formatters/base.hpp>
 #include <ulog/impl/formatters/text_item.hpp>
 #include <ulog/level.hpp>
+#include <ulog/log_helper.hpp>
 
 namespace ulog::impl::formatters {
 
@@ -25,9 +26,7 @@ public:
     enum class Variant { kStandard, kYaDeploy };
 
     JsonFormatter(Level level,
-                  std::string_view module_function,
-                  std::string_view module_file,
-                  int module_line,
+                  const LogRecordLocation& location,
                   std::chrono::system_clock::time_point tp,
                   Variant variant = Variant::kStandard,
                   TimestampFormat ts_fmt = TimestampFormat::kIso8601Micro);

@@ -70,9 +70,7 @@ void JsonFormatter::EmitField(std::string_view key, std::string_view value, bool
 }
 
 JsonFormatter::JsonFormatter(Level level,
-                             std::string_view module_function,
-                             std::string_view module_file,
-                             int module_line,
+                             const LogRecordLocation& location,
                              std::chrono::system_clock::time_point tp,
                              Variant variant,
                              TimestampFormat ts_fmt)
@@ -100,10 +98,15 @@ JsonFormatter::JsonFormatter(Level level,
 
     EmitField("level", ToUpperCaseString(level), /*is_json=*/false);
 
-    if (!module_function.empty() || !module_file.empty()) {
-        const auto module_value = fmt::format("{} ( {}:{} )",
-                                              module_function, module_file, module_line);
-        EmitField("module", module_value, /*is_json=*/false);
+    if (location.has_value()) {
+        detail::SmallString<128> module_buf;
+        module_buf += location.function_name();
+        module_buf += " ( ";
+        module_buf += location.file_name();
+        module_buf += ':';
+        module_buf += location.line_string();
+        module_buf += " )";
+        EmitField("module", module_buf.view(), /*is_json=*/false);
     }
 }
 

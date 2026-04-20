@@ -141,7 +141,7 @@ struct LogHelper::Impl {
     Impl(impl::LoggerBase& logger_ref,
          LoggerPtr logger_owner,
          Level level,
-         LogRecordLocation location,
+         const LogRecordLocation& location,
          bool active)
         : logger_ref(logger_ref),
           logger_owner(std::move(logger_owner)),
@@ -150,9 +150,6 @@ struct LogHelper::Impl {
           active(active),
           writer(nullptr) {
         if (!active) return;
-
-        const auto func_sv = location.function ? std::string_view(location.function) : std::string_view{};
-        const auto file_sv = location.file ? std::string_view(location.file) : std::string_view{};
 
         const bool want_text = logger_ref.HasTextSinks();
         const bool want_structured = logger_ref.HasStructuredSinks();
@@ -165,7 +162,7 @@ struct LogHelper::Impl {
             formatter = logger_ref.MakeFormatterInto(
                 &formatter_scratch,
                 sizeof(formatter_scratch),
-                level, func_sv, file_sv, location.line);
+                level, location);
 
             // Multi-format: only TextLoggerBase participates. Snapshot the
             // full list once — the registry is append-only but a concurrent
@@ -183,7 +180,7 @@ struct LogHelper::Impl {
                     extras.reserve(formats.size() - 1);
                     for (std::size_t i = 1; i < formats.size(); ++i) {
                         extras.push_back(text_base->MakeFormatterForFormat(
-                            formats[i], level, func_sv, file_sv, location.line));
+                            formats[i], level, location));
                     }
                 }
             }
@@ -205,9 +202,9 @@ struct LogHelper::Impl {
             auto* text_base_for_loc = dynamic_cast<impl::TextLoggerBase*>(&logger_ref);
             const bool emit_loc = text_base_for_loc ? text_base_for_loc->GetEmitLocation() : true;
             if (emit_loc) {
-                if (location.function) rec->module_function = location.function;
-                if (location.file)     rec->module_file     = location.file;
-                rec->module_line = location.line;
+                if (const auto* fn = location.function_name(); fn && *fn) rec->module_function = fn;
+                if (const auto* fl = location.file_name();     fl && *fl) rec->module_file     = fl;
+                rec->module_line = static_cast<int>(location.line());
             }
         }
 
@@ -262,13 +259,13 @@ struct LogHelper::Impl {
 
 // ---------------- LogHelper ----------------
 
-LogHelper::LogHelper(LoggerRef logger, Level level, LogRecordLocation location) noexcept
+LogHelper::LogHelper(LoggerRef logger, Level level, const LogRecordLocation& location) noexcept
     : impl_(std::make_unique<Impl>(logger, LoggerPtr{}, level, location, /*active=*/true)) {}
 
-LogHelper::LogHelper(LoggerRef logger, Level level, LogRecordLocation location, NoLog) noexcept
+LogHelper::LogHelper(LoggerRef logger, Level level, NoLog, const LogRecordLocation& location) noexcept
     : impl_(std::make_unique<Impl>(logger, LoggerPtr{}, level, location, /*active=*/false)) {}
 
-LogHelper::LogHelper(LoggerPtr logger, Level level, LogRecordLocation location) noexcept
+LogHelper::LogHelper(LoggerPtr logger, Level level, const LogRecordLocation& location) noexcept
     : impl_(nullptr) {
     if (!logger) {
         // Pathological case — caller passed null. Drop.

@@ -58,36 +58,34 @@ formatters::BasePtr MakeFormatterImpl(Format fmt,
                                       void* scratch,
                                       std::size_t scratch_size,
                                       Level level,
-                                      std::string_view module_function,
-                                      std::string_view module_file,
-                                      int module_line,
+                                      const LogRecordLocation& location,
                                       std::chrono::system_clock::time_point now) {
     switch (fmt) {
         case Format::kTskv:
             return PlaceFormatter<formatters::TskvFormatter>(
                 scratch, scratch_size,
-                level, module_function, module_file, module_line, now, ts_fmt);
+                level, location, now, ts_fmt);
         case Format::kLtsv:
             return PlaceFormatter<formatters::LtsvFormatter>(
                 scratch, scratch_size,
-                level, module_function, module_file, module_line, now, ts_fmt);
+                level, location, now, ts_fmt);
         case Format::kRaw:
             return PlaceFormatter<formatters::RawFormatter>(
                 scratch, scratch_size);
         case Format::kJson:
             return PlaceFormatter<formatters::JsonFormatter>(
                 scratch, scratch_size,
-                level, module_function, module_file, module_line, now,
+                level, location, now,
                 formatters::JsonFormatter::Variant::kStandard, ts_fmt);
         case Format::kJsonYaDeploy:
             return PlaceFormatter<formatters::JsonFormatter>(
                 scratch, scratch_size,
-                level, module_function, module_file, module_line, now,
+                level, location, now,
                 formatters::JsonFormatter::Variant::kYaDeploy, ts_fmt);
         case Format::kOtlpJson:
             return PlaceFormatter<formatters::OtlpJsonFormatter>(
                 scratch, scratch_size,
-                level, module_function, module_file, module_line, now);
+                level, location, now);
     }
     return formatters::BasePtr{};
 }
@@ -98,37 +96,25 @@ formatters::BasePtr TextLoggerBase::MakeFormatterInto(
         void* scratch,
         std::size_t scratch_size,
         Level level,
-        std::string_view module_function,
-        std::string_view module_file,
-        int module_line) {
+        const LogRecordLocation& location) {
     const auto now = std::chrono::system_clock::now();
-    // `emit_location_ == false` suppresses the `module` field by erasing the
-    // call-site inputs. Every text formatter already skips the field when both
-    // function and file are empty — a single check here covers all of them.
-    if (!emit_location_) {
-        module_function = {};
-        module_file = {};
-        module_line = 0;
-    }
+    // `emit_location_ == false` suppresses the `module` field. Pass a
+    // default-constructed LogRecordLocation (empty fields) — every text
+    // formatter already skips `module` when the location is empty.
+    static constexpr LogRecordLocation kEmptyLocation{};
     return MakeFormatterImpl(format_, ts_fmt_, scratch, scratch_size,
-                             level, module_function, module_file, module_line, now);
+                             level, emit_location_ ? location : kEmptyLocation, now);
 }
 
 formatters::BasePtr TextLoggerBase::MakeFormatterForFormat(
         Format fmt,
         Level level,
-        std::string_view module_function,
-        std::string_view module_file,
-        int module_line) {
+        const LogRecordLocation& location) {
     const auto now = std::chrono::system_clock::now();
-    if (!emit_location_) {
-        module_function = {};
-        module_file = {};
-        module_line = 0;
-    }
+    static constexpr LogRecordLocation kEmptyLocation{};
     // Force heap by passing null scratch.
     return MakeFormatterImpl(fmt, ts_fmt_, /*scratch=*/nullptr, /*size=*/0,
-                             level, module_function, module_file, module_line, now);
+                             level, emit_location_ ? location : kEmptyLocation, now);
 }
 
 std::size_t TextLoggerBase::RegisterSinkFormat(std::optional<Format> override) {

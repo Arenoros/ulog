@@ -288,7 +288,7 @@ TEST(FormatterInlineAlloc, PlacesFormatterIntoScratchWhenFits) {
     alignas(ulog::impl::LoggerBase::kInlineFormatterAlign)
         std::byte scratch[ulog::impl::LoggerBase::kInlineFormatterSize]{};
     auto fmt = logger.MakeFormatterInto(
-        scratch, sizeof(scratch), ulog::Level::kInfo, {}, {}, 0);
+        scratch, sizeof(scratch), ulog::Level::kInfo, ulog::LogRecordLocation{});
     ASSERT_NE(fmt, nullptr);
     const auto* raw = reinterpret_cast<const std::byte*>(fmt.get());
     EXPECT_GE(raw, scratch);
@@ -303,7 +303,7 @@ TEST(FormatterInlineAlloc, FallsBackToHeapWhenScratchTooSmall) {
     ulog::MemLogger logger(ulog::Format::kJson);
     std::byte scratch[1]{};
     auto fmt = logger.MakeFormatterInto(
-        scratch, 0, ulog::Level::kInfo, {}, {}, 0);
+        scratch, 0, ulog::Level::kInfo, ulog::LogRecordLocation{});
     ASSERT_NE(fmt, nullptr);
     const auto* raw = reinterpret_cast<const std::byte*>(fmt.get());
     EXPECT_TRUE(raw < scratch || raw >= scratch + sizeof(scratch));
@@ -316,7 +316,7 @@ TEST(FormatterJson, RepeatedSetTextKeepsLastValue) {
     // from LogHelper, but the contract on SetText is "set, not append".
     using ulog::impl::formatters::JsonFormatter;
     using ulog::impl::formatters::TextLogItem;
-    JsonFormatter f(ulog::Level::kInfo, {}, {}, 0,
+    JsonFormatter f(ulog::Level::kInfo, ulog::LogRecordLocation{},
                     std::chrono::system_clock::time_point{});
     f.SetText("first");
     f.SetText("second");

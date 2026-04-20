@@ -62,9 +62,7 @@ std::string TimeUnixNanoString(std::chrono::system_clock::time_point tp) {
 }  // namespace
 
 OtlpJsonFormatter::OtlpJsonFormatter(Level level,
-                                     std::string_view module_function,
-                                     std::string_view module_file,
-                                     int module_line,
+                                     const LogRecordLocation& location,
                                      std::chrono::system_clock::time_point tp) {
     auto& b = item_->payload;
     b += '{';
@@ -80,10 +78,15 @@ OtlpJsonFormatter::OtlpJsonFormatter(Level level,
     AppendJsonEscaped(b, ToUpperCaseString(level));
     b += '"';
 
-    if (!module_function.empty() || !module_file.empty()) {
-        const auto module_value = fmt::format("{} ( {}:{} )",
-                                              module_function, module_file, module_line);
-        EmitStringAttribute("module", module_value);
+    if (location.has_value()) {
+        detail::SmallString<128> module_buf;
+        module_buf += location.function_name();
+        module_buf += " ( ";
+        module_buf += location.file_name();
+        module_buf += ':';
+        module_buf += location.line_string();
+        module_buf += " )";
+        EmitStringAttribute("module", module_buf.view());
     }
 }
 

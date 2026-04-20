@@ -155,8 +155,8 @@ TEST(AsyncLogger, SingleThreadPublishesToMultipleLoggers) {
 
     constexpr int kN = 300;
     for (int i = 0; i < kN; ++i) {
-        ulog::LogHelper(*logger_a, ulog::Level::kInfo, {}) << "a " << i;
-        ulog::LogHelper(*logger_b, ulog::Level::kInfo, {}) << "b " << i;
+        ulog::LogHelper(*logger_a, ulog::Level::kInfo) << "a " << i;
+        ulog::LogHelper(*logger_b, ulog::Level::kInfo) << "b " << i;
     }
     logger_a->Flush();
     logger_b->Flush();

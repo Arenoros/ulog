@@ -231,11 +231,12 @@ struct EntryStorage final {
         return entry;                                                                        \
     }
 
-#define ULOG_IMPL_LOG_LOCATION() \
-    ::ulog::LogRecordLocation { ULOG_IMPL_TRIM_FILE(__FILE__), __LINE__, static_cast<const char*>(__func__) }
-
+// `LogHelper`'s ctor evaluates `LogRecordLocation::Current()` as a default
+// argument, so the caller's source position is captured through the
+// compiler builtins at the macro's expansion site. The macro below can
+// stay agnostic about `__FILE__` / `__LINE__` / `__func__`.
 #define ULOG_IMPL_LOG_TO(logger, level) \
-    ::ulog::LogHelper((logger), (level), ULOG_IMPL_LOG_LOCATION())
+    ::ulog::LogHelper((logger), (level))
 
 // Dynamic-debug aware, ShouldLog-guarded record builder.
 //
@@ -252,8 +253,7 @@ struct EntryStorage final {
         for (bool ulog_once__ = true; ulog_once__; ulog_once__ = false)                       \
             ::ulog::LogHelper(                                                                \
                 std::forward<decltype(ulog_logger__)>(ulog_logger__),                         \
-                (lvl),                                                                        \
-                ULOG_IMPL_LOG_LOCATION())
+                (lvl))
 
 // Default-logger macro snapshots the shared_ptr through the atomic slot, so
 // the record outlives any concurrent SetDefaultLogger() race.

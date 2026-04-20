@@ -16,6 +16,7 @@
 #include <ulog/fwd.hpp>
 #include <ulog/impl/formatters/base.hpp>
 #include <ulog/level.hpp>
+#include <ulog/log_helper.hpp>
 #include <ulog/sinks/structured_sink.hpp>
 
 namespace ulog::impl {
@@ -84,8 +85,8 @@ public:
     static constexpr std::size_t kInlineFormatterAlign = 16;
 
     /// Creates a formatter suited to this logger's text format.
-    /// `module_function`, `module_file`, `module_line` describe the call
-    /// site (from the LOG_* macro expansion). Implementations try to
+    /// `location` carries the call-site file / function / line (from
+    /// `LogRecordLocation::Current()`). Implementations try to
     /// placement-new the formatter into `scratch` (capacity/alignment
     /// guaranteed by `LogHelper` to meet the constants above) — when that
     /// works the returned `BasePtr` carries a destroy-only deleter so
@@ -97,9 +98,7 @@ public:
         void* scratch,
         std::size_t scratch_size,
         Level level,
-        std::string_view module_function,
-        std::string_view module_file,
-        int module_line) = 0;
+        const LogRecordLocation& location) = 0;
 
     void SetLevel(Level level) noexcept { level_.store(level, std::memory_order_relaxed); }
     Level GetLevel() const noexcept { return level_.load(std::memory_order_relaxed); }
@@ -144,18 +143,14 @@ public:
     formatters::BasePtr MakeFormatterInto(void* scratch,
                                           std::size_t scratch_size,
                                           Level level,
-                                          std::string_view module_function,
-                                          std::string_view module_file,
-                                          int module_line) override;
+                                          const LogRecordLocation& location) override;
 
     /// Creates a formatter for an explicit format (no scratch fast-path,
     /// always heap-allocates). Used by LogHelper for extra formats beyond
     /// the primary.
     formatters::BasePtr MakeFormatterForFormat(Format fmt,
                                                Level level,
-                                               std::string_view module_function,
-                                               std::string_view module_file,
-                                               int module_line);
+                                               const LogRecordLocation& location);
 
     /// Registers the format a sink wants. `override` unset → sink uses the
     /// logger's base format (index 0). If the format is already active its

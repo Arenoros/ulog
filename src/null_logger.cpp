@@ -16,8 +16,8 @@ public:
     void Log(Level, std::unique_ptr<impl::LoggerItemBase>) override {}
     void Flush() override {}
     impl::formatters::BasePtr MakeFormatterInto(void*, std::size_t,
-                                                Level, std::string_view,
-                                                std::string_view, int) override {
+                                                Level,
+                                                const LogRecordLocation&) override {
         return impl::formatters::BasePtr{};
     }
 };

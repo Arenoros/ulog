@@ -2,17 +2,14 @@
 
 #include <utility>
 
-#include <fmt/format.h>
-
+#include <ulog/detail/small_string.hpp>
 #include <ulog/detail/timestamp.hpp>
 #include <ulog/detail/tskv_escape.hpp>
 
 namespace ulog::impl::formatters {
 
 TskvFormatter::TskvFormatter(Level level,
-                             std::string_view module_function,
-                             std::string_view module_file,
-                             int module_line,
+                             const LogRecordLocation& location,
                              std::chrono::system_clock::time_point tp,
                              TimestampFormat ts_fmt) {
     auto& b = item_->payload;
@@ -26,13 +23,21 @@ TskvFormatter::TskvFormatter(Level level,
     b += detail::kTskvKeyValueSeparator;
     detail::EncodeTskv(b, ToUpperCaseString(level), detail::TskvMode::kValue);
 
-    if (!module_function.empty() || !module_file.empty()) {
+    if (location.has_value()) {
         b += detail::kTskvPairsSeparator;
         detail::EncodeTskv(b, "module", detail::TskvMode::kKey);
         b += detail::kTskvKeyValueSeparator;
-        const auto module_value = fmt::format("{} ( {}:{} )",
-                                              module_function, module_file, module_line);
-        detail::EncodeTskv(b, module_value, detail::TskvMode::kValue);
+        // Assemble `module` without fmt::format — precomputed line string
+        // comes from LogRecordLocation so the only per-record cost is the
+        // TSKV escaping of function+file.
+        detail::SmallString<128> module_buf;
+        module_buf += location.function_name();
+        module_buf += " ( ";
+        module_buf += location.file_name();
+        module_buf += ':';
+        module_buf += location.line_string();
+        module_buf += " )";
+        detail::EncodeTskv(b, module_buf.view(), detail::TskvMode::kValue);
     }
 }
 
