@@ -86,9 +86,6 @@ public:
     void LogStructured(Level level, std::unique_ptr<sinks::LogRecord> record) override;
     void Flush() override;
 
-    bool HasTextSinks() const noexcept override;
-    bool HasStructuredSinks() const noexcept override;
-
 private:
     struct State;
     std::unique_ptr<State> state_;

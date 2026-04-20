@@ -9,6 +9,9 @@
 #include <string>
 #include <vector>
 
+#include <boost/smart_ptr/atomic_shared_ptr.hpp>
+#include <boost/smart_ptr/shared_ptr.hpp>
+
 #include <ulog/format.hpp>
 #include <ulog/impl/formatters/text_item.hpp>
 #include <ulog/impl/logger_base.hpp>
@@ -24,7 +27,11 @@ public:
     explicit SyncLogger(Format format = Format::kTskv,
                         bool emit_location = true,
                         TimestampFormat ts_fmt = TimestampFormat::kIso8601Micro)
-        : impl::TextLoggerBase(format, emit_location, ts_fmt) {}
+        : impl::TextLoggerBase(format, emit_location, ts_fmt) {
+        // Logger starts with no sinks — LogHelper must see the accurate
+        // flag state so the formatter path is skipped until AddSink lands.
+        SetHasTextSinks(false);
+    }
 
     /// Attach a sink using the logger's base format.
     void AddSink(sinks::SinkPtr sink);
@@ -47,21 +54,24 @@ public:
     void LogStructured(Level level, std::unique_ptr<sinks::LogRecord> record) override;
     void Flush() override;
 
-    bool HasTextSinks() const noexcept override;
-    bool HasStructuredSinks() const noexcept override;
-
 private:
     struct SinkEntry {
         sinks::SinkPtr sink;
         std::size_t format_idx;  ///< Index into TextLoggerBase::GetActiveFormats().
     };
 
-    // Mutable so the const `Has*Sinks()` queries can lock — the state
-    // they peek at is shared across threads and must be read under lock.
+    using SinkVec = std::vector<SinkEntry>;
+    using StructSinkVec = std::vector<sinks::StructuredSinkPtr>;
+
+    // Copy-on-write sink lists. Readers (Log/LogMulti/Flush) take a
+    // lock-free atomic load of the shared_ptr — no mutex on the hot
+    // path. Writers (AddSink) serialize on the mutex, copy the current
+    // vector, push, and publish. Already-pinned snapshots remain valid
+    // until their reader releases them.
     mutable std::mutex sinks_mu_;
-    std::vector<SinkEntry> sinks_;
+    boost::atomic_shared_ptr<SinkVec const> sinks_;
     mutable std::mutex struct_sinks_mu_;
-    std::vector<sinks::StructuredSinkPtr> struct_sinks_;
+    boost::atomic_shared_ptr<StructSinkVec const> struct_sinks_;
 };
 
 }  // namespace ulog

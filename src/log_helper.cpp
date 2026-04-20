@@ -153,6 +153,10 @@ struct LogHelper::Impl {
 
         const bool want_text = logger_ref.HasTextSinks();
         const bool want_structured = logger_ref.HasStructuredSinks();
+        // Single vtable slot — cheaper than dynamic_cast; null for non-text
+        // loggers. Cached once for both the extras branch and the
+        // structured emit_location lookup below.
+        impl::TextLoggerBase* text_base = logger_ref.AsTextLoggerBase();
 
         // Materialize the primary text formatter only when at least one
         // text sink is attached. Logger with only structured sinks skips
@@ -164,23 +168,22 @@ struct LogHelper::Impl {
                 sizeof(formatter_scratch),
                 level, location);
 
-            // Multi-format: only TextLoggerBase participates. Snapshot the
-            // full list once — the registry is append-only but a concurrent
-            // AddSink could otherwise run between GetActiveFormatCount and
-            // GetActiveFormats, leaving LogHelper materialized with fewer
-            // formatters than the sink vector later expects (every in-flight
-            // record MUST carry an item for every format visible at
-            // construction time; a sink added afterwards is invisible to
-            // this record and its format_idx may overshoot items.size() —
-            // LogMulti handles that via the out-of-range check).
-            auto* text_base = dynamic_cast<impl::TextLoggerBase*>(&logger_ref);
-            if (text_base) {
-                const auto formats = text_base->GetActiveFormats();
-                if (formats.size() > 1) {
-                    extras.reserve(formats.size() - 1);
-                    for (std::size_t i = 1; i < formats.size(); ++i) {
+            // Extras engage only when the logger has registered more than
+            // the primary format. Atomic count check short-circuits the
+            // snapshot pin for the single-format hot path. The snapshot,
+            // once taken, is immutable (COW registry) — a concurrent
+            // AddSink publishes a new vector; already-pinned vectors
+            // stay valid for the LogHelper's lifetime. Sinks appended
+            // after we pinned are invisible to this record; their
+            // format_idx may overshoot items.size() and LogMulti skips
+            // them via the out-of-range check.
+            if (text_base && text_base->GetActiveFormatCount() > 1) {
+                auto snap = text_base->GetActiveFormatsSnapshot();
+                if (snap && snap->size() > 1) {
+                    extras.reserve(snap->size() - 1);
+                    for (std::size_t i = 1; i < snap->size(); ++i) {
                         extras.push_back(text_base->MakeFormatterForFormat(
-                            formats[i], level, location));
+                            (*snap)[i], level, location));
                     }
                 }
             }
@@ -199,8 +202,7 @@ struct LogHelper::Impl {
             auto* rec = recorder->mutable_record();
             rec->level = level;
             rec->timestamp = std::chrono::system_clock::now();
-            auto* text_base_for_loc = dynamic_cast<impl::TextLoggerBase*>(&logger_ref);
-            const bool emit_loc = text_base_for_loc ? text_base_for_loc->GetEmitLocation() : true;
+            const bool emit_loc = text_base ? text_base->GetEmitLocation() : true;
             if (emit_loc) {
                 const auto fn = location.function_name();
                 const auto fl = location.file_name();
@@ -302,6 +304,20 @@ LogHelper::~LogHelper() {
         for (auto& e : impl_->extras) if (e) e->SetText(text_view);
         if (impl_->recorder)  impl_->recorder->SetText(text_view);
 
+        const bool want_flush = impl_->level >= impl_->logger_ref.GetFlushOn();
+
+        // Single-format text-only hot path: no extras, no structured.
+        // Route straight to Log(level, item) — skips the LogItemList
+        // wrap and the LogMulti vector snapshot. This is the LOG_* path
+        // for the overwhelming common case (one format, no structured
+        // sink).
+        if (impl_->formatter && impl_->extras.empty() && !impl_->recorder) {
+            auto item = impl_->formatter->ExtractLoggerItem();
+            impl_->logger_ref.Log(impl_->level, std::move(item));
+            if (want_flush) impl_->logger_ref.Flush();
+            return;
+        }
+
         impl::LogItemList items;
         if (impl_->formatter) {
             items.reserve(1 + impl_->extras.size());
@@ -313,7 +329,6 @@ LogHelper::~LogHelper() {
         std::unique_ptr<sinks::LogRecord> structured =
             impl_->recorder ? impl_->recorder->Release() : nullptr;
 
-        const bool want_flush = impl_->level >= impl_->logger_ref.GetFlushOn();
         impl_->logger_ref.LogMulti(impl_->level, std::move(items), std::move(structured));
         if (want_flush) impl_->logger_ref.Flush();
     } catch (...) {

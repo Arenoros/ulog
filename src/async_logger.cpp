@@ -11,6 +11,10 @@
 #include <utility>
 #include <vector>
 
+#include <boost/make_shared.hpp>
+#include <boost/smart_ptr/atomic_shared_ptr.hpp>
+#include <boost/smart_ptr/shared_ptr.hpp>
+
 #include <concurrentqueue.h>
 
 #include <ulog/impl/formatters/text_item.hpp>
@@ -86,10 +90,18 @@ struct AsyncLogger::State {
     moodycamel::ConcurrentQueue<ReopenRequest> reopens;
     moodycamel::ConcurrentQueue<FlushRequest> flushes;
 
+    using SinkVec = std::vector<SinkEntry>;
+    using StructSinkVec = std::vector<sinks::StructuredSinkPtr>;
+
+    /// COW sink registries. The worker loads the atomic shared_ptr once
+    /// per batch — no mutex acquired on the drain path. Writers
+    /// (AddSink / AddStructuredSink) serialize on the mutex and publish
+    /// a fresh vector; the worker's already-pinned snapshot remains
+    /// valid for the rest of the batch.
     std::mutex sinks_mu;
-    std::vector<SinkEntry> sinks;
+    boost::atomic_shared_ptr<SinkVec const> sinks;
     std::mutex struct_sinks_mu;
-    std::vector<sinks::StructuredSinkPtr> struct_sinks;
+    boost::atomic_shared_ptr<StructSinkVec const> struct_sinks;
 
     std::mutex wait_mu;
     std::condition_variable cv;
@@ -185,21 +197,13 @@ struct AsyncLogger::State {
             while (true) {
                 const std::size_t n = records.try_dequeue_bulk(batch.begin(), kBatch);
                 if (n == 0) return;
-                std::vector<SinkEntry> snapshot;
-                std::vector<sinks::StructuredSinkPtr> ss_snapshot;
-                {
-                    std::lock_guard lk(sinks_mu);
-                    snapshot = sinks;
-                }
-                {
-                    std::lock_guard lk(struct_sinks_mu);
-                    ss_snapshot = struct_sinks;
-                }
+                auto snap = sinks.load();
+                auto ss_snap = struct_sinks.load();
                 for (std::size_t i = 0; i < n; ++i) {
                     auto& rec = batch[i];
                     // Text sink fan-out.
-                    if (!rec.items.empty()) {
-                        for (const auto& entry : snapshot) {
+                    if (!rec.items.empty() && snap) {
+                        for (const auto& entry : *snap) {
                             if (!entry.sink->ShouldLog(rec.level)) continue;
                             // Sink registered AFTER this record was materialized
                             // is invisible to it — skip rather than fall through
@@ -216,8 +220,8 @@ struct AsyncLogger::State {
                     // sink added AFTER the producer built the record is
                     // invisible to this record (same semantics as the text
                     // side's out-of-range skip).
-                    if (rec.structured) {
-                        for (const auto& sink : ss_snapshot) {
+                    if (rec.structured && ss_snap) {
+                        for (const auto& sink : *ss_snap) {
                             if (!sink || !sink->ShouldLog(rec.level)) continue;
                             try { sink->Write(*rec.structured); }
                             catch (...) {}
@@ -235,23 +239,19 @@ struct AsyncLogger::State {
         auto drain_reopens = [&]() {
             ReopenRequest req{};
             while (reopens.try_dequeue(req)) {
-                std::vector<SinkEntry> snapshot;
-                std::vector<sinks::StructuredSinkPtr> ss_snapshot;
-                {
-                    std::lock_guard lk(sinks_mu);
-                    snapshot = sinks;
+                auto snap = sinks.load();
+                auto ss_snap = struct_sinks.load();
+                if (snap) {
+                    for (const auto& entry : *snap) {
+                        try { entry.sink->Reopen(req.mode); }
+                        catch (...) {}
+                    }
                 }
-                {
-                    std::lock_guard lk(struct_sinks_mu);
-                    ss_snapshot = struct_sinks;
-                }
-                for (const auto& entry : snapshot) {
-                    try { entry.sink->Reopen(req.mode); }
-                    catch (...) {}
-                }
-                for (const auto& sink : ss_snapshot) {
-                    try { if (sink) sink->Reopen(req.mode); }
-                    catch (...) {}
+                if (ss_snap) {
+                    for (const auto& sink : *ss_snap) {
+                        try { if (sink) sink->Reopen(req.mode); }
+                        catch (...) {}
+                    }
                 }
             }
         };
@@ -259,23 +259,19 @@ struct AsyncLogger::State {
         auto drain_flushes = [&]() {
             FlushRequest req{};
             while (flushes.try_dequeue(req)) {
-                std::vector<SinkEntry> snapshot;
-                std::vector<sinks::StructuredSinkPtr> ss_snapshot;
-                {
-                    std::lock_guard lk(sinks_mu);
-                    snapshot = sinks;
+                auto snap = sinks.load();
+                auto ss_snap = struct_sinks.load();
+                if (snap) {
+                    for (const auto& entry : *snap) {
+                        try { entry.sink->Flush(); }
+                        catch (...) {}
+                    }
                 }
-                {
-                    std::lock_guard lk(struct_sinks_mu);
-                    ss_snapshot = struct_sinks;
-                }
-                for (const auto& entry : snapshot) {
-                    try { entry.sink->Flush(); }
-                    catch (...) {}
-                }
-                for (const auto& sink : ss_snapshot) {
-                    try { if (sink) sink->Flush(); }
-                    catch (...) {}
+                if (ss_snap) {
+                    for (const auto& sink : *ss_snap) {
+                        try { if (sink) sink->Flush(); }
+                        catch (...) {}
+                    }
                 }
                 if (req.promise) req.promise->set_value();
             }
@@ -305,6 +301,9 @@ AsyncLogger::AsyncLogger() : AsyncLogger(Config{}) {}
 
 AsyncLogger::AsyncLogger(const Config& cfg)
     : impl::TextLoggerBase(cfg.format, cfg.emit_location, cfg.timestamp_format) {
+    // Start with no sinks — LogHelper must see the accurate flag until
+    // AddSink / AddStructuredSink flips it.
+    SetHasTextSinks(false);
     state_ = std::make_unique<State>(cfg);
     state_->worker = std::thread([this] { state_->WorkerLoop(); });
 }
@@ -315,34 +314,53 @@ AsyncLogger::~AsyncLogger() {
     if (state_->worker.joinable()) state_->worker.join();
 }
 
+namespace {
+
+/// Publishes a copy of `current` with `entry` appended. Writers hold
+/// the list's serializing mutex; readers load the atomic shared_ptr
+/// lock-free.
+template <typename Vec, typename Entry>
+boost::shared_ptr<Vec const> AppendCow(
+        const boost::shared_ptr<Vec const>& current,
+        Entry&& entry) {
+    auto next = boost::make_shared<Vec>();
+    if (current) {
+        next->reserve(current->size() + 1);
+        *next = *current;
+    }
+    next->push_back(std::forward<Entry>(entry));
+    return boost::shared_ptr<Vec const>(std::move(next));
+}
+
+}  // namespace
+
 void AsyncLogger::AddSink(sinks::SinkPtr sink) {
     if (!sink) return;
     const auto idx = RegisterSinkFormat(std::nullopt);
     std::lock_guard lk(state_->sinks_mu);
-    state_->sinks.push_back({std::move(sink), idx});
+    auto next = AppendCow<State::SinkVec>(state_->sinks.load(),
+                                          SinkEntry{std::move(sink), idx});
+    state_->sinks.store(std::move(next));
+    SetHasTextSinks(true);
 }
 
 void AsyncLogger::AddSink(sinks::SinkPtr sink, Format format_override) {
     if (!sink) return;
     const auto idx = RegisterSinkFormat(format_override);
     std::lock_guard lk(state_->sinks_mu);
-    state_->sinks.push_back({std::move(sink), idx});
+    auto next = AppendCow<State::SinkVec>(state_->sinks.load(),
+                                          SinkEntry{std::move(sink), idx});
+    state_->sinks.store(std::move(next));
+    SetHasTextSinks(true);
 }
 
 void AsyncLogger::AddStructuredSink(sinks::StructuredSinkPtr sink) {
     if (!sink) return;
     std::lock_guard lk(state_->struct_sinks_mu);
-    state_->struct_sinks.push_back(std::move(sink));
-}
-
-bool AsyncLogger::HasTextSinks() const noexcept {
-    std::lock_guard lk(state_->sinks_mu);
-    return !state_->sinks.empty();
-}
-
-bool AsyncLogger::HasStructuredSinks() const noexcept {
-    std::lock_guard lk(state_->struct_sinks_mu);
-    return !state_->struct_sinks.empty();
+    auto next = AppendCow<State::StructSinkVec>(state_->struct_sinks.load(),
+                                                std::move(sink));
+    state_->struct_sinks.store(std::move(next));
+    SetHasStructuredSinks(true);
 }
 
 void AsyncLogger::RequestReopen(sinks::ReopenMode mode) {

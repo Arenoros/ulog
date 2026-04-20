@@ -6,6 +6,8 @@
 #include <new>
 #include <utility>
 
+#include <boost/make_shared.hpp>
+
 #include <ulog/impl/formatters/json.hpp>
 #include <ulog/impl/formatters/ltsv.hpp>
 #include <ulog/impl/formatters/otlp_json.hpp>
@@ -103,6 +105,17 @@ constexpr LogRecordLocation kEmptyLocation{};
 
 }  // namespace
 
+TextLoggerBase::TextLoggerBase(Format format,
+                               bool emit_location,
+                               TimestampFormat ts_fmt)
+    : format_(format), emit_location_(emit_location), ts_fmt_(ts_fmt) {
+    auto initial = boost::make_shared<std::vector<Format>>();
+    initial->push_back(format_);  // base format is always index 0
+    active_formats_.store(
+        boost::shared_ptr<std::vector<Format> const>(std::move(initial)));
+    active_format_count_.store(1, std::memory_order_release);
+}
+
 formatters::BasePtr TextLoggerBase::MakeFormatterInto(
         void* scratch,
         std::size_t scratch_size,
@@ -124,23 +137,38 @@ formatters::BasePtr TextLoggerBase::MakeFormatterForFormat(
 }
 
 std::size_t TextLoggerBase::RegisterSinkFormat(std::optional<Format> override) {
+    // Serialize writers; readers load the atomic shared_ptr below.
     std::lock_guard lk(formats_mu_);
+    auto current = active_formats_.load();
     const Format want = override.value_or(format_);
-    for (std::size_t i = 0; i < active_formats_.size(); ++i) {
-        if (active_formats_[i] == want) return i;
+    if (current) {
+        for (std::size_t i = 0; i < current->size(); ++i) {
+            if ((*current)[i] == want) return i;
+        }
     }
-    active_formats_.push_back(want);
-    return active_formats_.size() - 1;
+    // Copy-on-write: build a fresh vector that includes the new format
+    // and publish it. Already-held snapshots keep referencing the old
+    // vector until their pin is released — immutable after publish.
+    auto next = boost::make_shared<std::vector<Format>>();
+    if (current) next->reserve(current->size() + 1);
+    if (current) *next = *current;
+    next->push_back(want);
+    const std::size_t idx = next->size() - 1;
+    active_format_count_.store(next->size(), std::memory_order_release);
+    active_formats_.store(
+        boost::shared_ptr<std::vector<Format> const>(std::move(next)));
+    return idx;
 }
 
 std::vector<Format> TextLoggerBase::GetActiveFormats() const {
-    std::lock_guard lk(formats_mu_);
-    return active_formats_;
+    auto snap = active_formats_.load();
+    if (!snap) return {};
+    return *snap;
 }
 
-std::size_t TextLoggerBase::GetActiveFormatCount() const noexcept {
-    std::lock_guard lk(formats_mu_);
-    return active_formats_.size();
+boost::shared_ptr<std::vector<Format> const>
+TextLoggerBase::GetActiveFormatsSnapshot() const noexcept {
+    return active_formats_.load();
 }
 
 }  // namespace ulog::impl

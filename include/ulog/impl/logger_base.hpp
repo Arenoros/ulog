@@ -11,6 +11,8 @@
 #include <vector>
 
 #include <boost/container/small_vector.hpp>
+#include <boost/smart_ptr/atomic_shared_ptr.hpp>
+#include <boost/smart_ptr/shared_ptr.hpp>
 
 #include <ulog/format.hpp>
 #include <ulog/fwd.hpp>
@@ -20,6 +22,8 @@
 #include <ulog/sinks/structured_sink.hpp>
 
 namespace ulog::impl {
+
+class TextLoggerBase;  // defined below
 
 using formatters::LoggerItemBase;
 using formatters::LoggerItemRef;
@@ -66,13 +70,28 @@ public:
     /// Reports whether this logger owns any text sinks (sinks::BaseSink).
     /// LogHelper consults this to decide whether to materialize a
     /// formatter at all — a logger with only structured sinks skips the
-    /// formatter path entirely. Default true preserves legacy behaviour.
-    virtual bool HasTextSinks() const noexcept { return true; }
+    /// formatter path entirely. Default true preserves legacy behaviour
+    /// (Mem/Null loggers leave the flag as-is).
+    ///
+    /// Non-virtual fast-path read — atomic acquire load, no lock. Sync
+    /// and AsyncLogger update the flag under AddSink.
+    bool HasTextSinks() const noexcept {
+        return has_text_sinks_.load(std::memory_order_acquire);
+    }
 
     /// Reports whether this logger owns any structured sinks. LogHelper
     /// consults this to decide whether to build a `sinks::LogRecord`.
-    /// Default false — only Sync/AsyncLogger opt in.
-    virtual bool HasStructuredSinks() const noexcept { return false; }
+    /// Default false — Sync/AsyncLogger flip it on `AddStructuredSink`.
+    bool HasStructuredSinks() const noexcept {
+        return has_structured_sinks_.load(std::memory_order_acquire);
+    }
+
+    /// Downcast accessor — returns `this` cast to `TextLoggerBase*` for
+    /// loggers that derive from it, nullptr otherwise. LogHelper uses
+    /// this to reach multi-format / emit_location state without paying
+    /// for RTTI (`dynamic_cast`) on every record. Single vtable slot.
+    virtual TextLoggerBase* AsTextLoggerBase() noexcept { return nullptr; }
+    virtual const TextLoggerBase* AsTextLoggerBase() const noexcept { return nullptr; }
 
     /// Flushes pending output (if any).
     virtual void Flush() = 0;
@@ -113,9 +132,25 @@ public:
 protected:
     LoggerBase() = default;
 
+    /// Concrete loggers publish whether they currently own any text sinks.
+    /// Bumped by AddSink (true) and surfaced to LogHelper via
+    /// HasTextSinks(). Release on write, acquire on read.
+    void SetHasTextSinks(bool v) noexcept {
+        has_text_sinks_.store(v, std::memory_order_release);
+    }
+
+    /// Mirror of SetHasTextSinks for structured sinks. Default flag
+    /// value is false — only loggers that actually support structured
+    /// sinks ever flip it.
+    void SetHasStructuredSinks(bool v) noexcept {
+        has_structured_sinks_.store(v, std::memory_order_release);
+    }
+
 private:
     std::atomic<Level> level_{Level::kInfo};
     std::atomic<Level> flush_on_{Level::kWarning};
+    std::atomic<bool> has_text_sinks_{true};
+    std::atomic<bool> has_structured_sinks_{false};
 };
 
 /// Logger that produces textual output via one of the built-in formatters
@@ -131,10 +166,11 @@ class TextLoggerBase : public LoggerBase {
 public:
     explicit TextLoggerBase(Format format,
                             bool emit_location = true,
-                            TimestampFormat ts_fmt = TimestampFormat::kIso8601Micro)
-        : format_(format), emit_location_(emit_location), ts_fmt_(ts_fmt) {
-        active_formats_.push_back(format_);  // base format is always index 0
-    }
+                            TimestampFormat ts_fmt = TimestampFormat::kIso8601Micro);
+
+    TextLoggerBase* AsTextLoggerBase() noexcept override { return this; }
+    const TextLoggerBase* AsTextLoggerBase() const noexcept override { return this; }
+
     Format GetFormat() const noexcept { return format_; }
     bool GetEmitLocation() const noexcept { return emit_location_; }
     TimestampFormat GetTimestampFormat() const noexcept { return ts_fmt_; }
@@ -162,18 +198,36 @@ public:
 
     /// Snapshot copy of the active formats. Index 0 is always the base
     /// format; subsequent entries are the distinct overrides in
-    /// registration order.
+    /// registration order. Heap-allocates a fresh vector; prefer
+    /// `GetActiveFormatsSnapshot()` on hot paths.
     std::vector<Format> GetActiveFormats() const;
 
-    /// Number of active formats without allocating a snapshot.
-    std::size_t GetActiveFormatCount() const noexcept;
+    /// Immutable pinned snapshot — lock-free atomic load, returns a
+    /// shared_ptr to the currently active format list. The list itself
+    /// never mutates (registry is copy-on-write); subsequent
+    /// RegisterSinkFormat calls publish a fresh vector without
+    /// invalidating already-held snapshots. Hot path on LogHelper.
+    boost::shared_ptr<std::vector<Format> const> GetActiveFormatsSnapshot() const noexcept;
+
+    /// Number of active formats. Atomic load; no allocation.
+    std::size_t GetActiveFormatCount() const noexcept {
+        return active_format_count_.load(std::memory_order_acquire);
+    }
 
 private:
     Format format_;
     bool emit_location_;
     TimestampFormat ts_fmt_;
+    /// Serializes RegisterSinkFormat publishes. Readers do not lock —
+    /// they load the atomic shared_ptr below.
     mutable std::mutex formats_mu_;
-    std::vector<Format> active_formats_;
+    /// Copy-on-write snapshot of the active format list. RegisterSinkFormat
+    /// publishes a fresh vector under `formats_mu_`; readers take an
+    /// atomic load (no lock, no copy).
+    boost::atomic_shared_ptr<std::vector<Format> const> active_formats_;
+    /// Fast-path count mirror — published together with active_formats_
+    /// so callers that only need the size don't have to pin the shared_ptr.
+    std::atomic<std::size_t> active_format_count_{1};
 };
 
 }  // namespace ulog::impl
