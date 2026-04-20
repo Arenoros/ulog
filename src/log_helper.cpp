@@ -202,8 +202,10 @@ struct LogHelper::Impl {
             auto* text_base_for_loc = dynamic_cast<impl::TextLoggerBase*>(&logger_ref);
             const bool emit_loc = text_base_for_loc ? text_base_for_loc->GetEmitLocation() : true;
             if (emit_loc) {
-                if (const auto* fn = location.function_name(); fn && *fn) rec->module_function = fn;
-                if (const auto* fl = location.file_name();     fl && *fl) rec->module_file     = fl;
+                const auto fn = location.function_name();
+                const auto fl = location.file_name();
+                if (!fn.empty()) rec->module_function.assign(fn);
+                if (!fl.empty()) rec->module_file.assign(fl);
                 rec->module_line = static_cast<int>(location.line());
             }
         }

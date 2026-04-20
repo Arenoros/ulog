@@ -52,9 +52,15 @@ class LogRecordLocation {
 public:
     /// Backward-compatible direct construction. Preferable to use
     /// `Current()` in new code.
+    ///
+    /// `file` / `function` are converted to `std::string_view` up front
+    /// so the `char_traits::length` (i.e. `strlen`) call happens exactly
+    /// once — on string literals the compiler folds it at compile time.
+    /// Downstream formatters consume views directly, avoiding a runtime
+    /// strlen on every record.
     constexpr LogRecordLocation(const char* file, int line, const char* function) noexcept
-        : file_(file ? file : ""),
-          function_(function ? function : ""),
+        : file_(file ? std::string_view(file) : std::string_view{}),
+          function_(function ? std::string_view(function) : std::string_view{}),
           line_(static_cast<std::uint_least32_t>(line < 0 ? 0 : line)) {
         RenderLineDigits();
     }
@@ -83,8 +89,8 @@ public:
         return LogRecordLocation(file, function, line);
     }
 
-    constexpr const char* file_name() const noexcept { return file_; }
-    constexpr const char* function_name() const noexcept { return function_; }
+    constexpr std::string_view file_name() const noexcept { return file_; }
+    constexpr std::string_view function_name() const noexcept { return function_; }
     constexpr std::uint_least32_t line() const noexcept { return line_; }
 
     /// Decimal string representation of `line()`. Precomputed once at
@@ -97,14 +103,14 @@ public:
     /// (non-empty file OR function). Used by formatters to decide
     /// whether to emit the `module` field.
     constexpr bool has_value() const noexcept {
-        return (file_ && *file_) || (function_ && *function_);
+        return !file_.empty() || !function_.empty();
     }
 
 private:
     constexpr LogRecordLocation(const char* file, const char* function,
                                 std::uint_least32_t line) noexcept
-        : file_(file ? file : ""),
-          function_(function ? function : ""),
+        : file_(file ? std::string_view(file) : std::string_view{}),
+          function_(function ? std::string_view(function) : std::string_view{}),
           line_(line) {
         RenderLineDigits();
     }
@@ -129,8 +135,8 @@ private:
         line_digits_ = out;
     }
 
-    const char* file_{""};
-    const char* function_{""};
+    std::string_view file_;
+    std::string_view function_;
     std::uint_least32_t line_{0};
     std::uint_least32_t line_digits_{0};
     char line_string_[8]{};
