@@ -142,3 +142,85 @@ Thread-safe by TLS. На thread exit residual slabs leak-freed через `threa
 ### Summary benchmark target
 
 Цель фазы: `BM_SyncLoggerThroughput` 711 ns → **≤ 600 ns** (userver parity), `BM_AsyncLoggerThroughput` 806 → **≤ 700 ns** producer-side. Bench before/after обязателен; если Priority 1 даёт <5% — пересмотр подхода (возможно Impl слишком heavy для pool).
+
+---
+
+## OTLP tracing integration via `LogClass::kTrace`
+
+Дополняет Phase 22 (OTLP logs). Userver пропускает spans через ту же `LogHelper` машинерию что и логи — различает их tag'ом `LogClass`. Даёт unified emission path: logs → OTLP `/v1/logs`, spans → OTLP `/v1/traces`, один sink batch'ит оба.
+
+**Как в userver:** `logging::LogClass { kLog, kTrace }`. Constructor `LogHelper(logger, level, LogClass, location)`. `tracing::Span::~Impl` эмитит запись со `kTrace` + accumulated span tags (trace_id/span_id/start_time/duration/parent_link). `Struct` formatter хранит `log_class` в LogItem — structured sink маршрутизирует.
+
+**Зачем:** без этого span emission через logging pipeline невозможен — пользователю приходится городить parallel tracing SDK. Для OTLP-first deployments (Grafana Tempo / Honeycomb / Jaeger) каждая корутина = span, spans должны эмититься автоматически на scope exit без ручного `LOG_INFO << "span done"`.
+
+### Scope фазы
+
+#### Step 1: `enum class LogClass { kLog, kTrace }`
+- В `include/ulog/log_helper.hpp` добавить enum + default parameter `LogClass::kLog`.
+- `LogHelper` ctor принимает optional 4-й аргумент — обратно совместимо с существующими LOG_* макросами.
+
+#### Step 2: pipeline carries log_class
+- `formatters::Base::Base(Level, LogClass, const LogRecordLocation&)` — передача через MakeFormatter.
+- `LoggerBase::MakeFormatter(Level, LogClass, const LogRecordLocation&)` — extend signature.
+- `sinks::LogRecord` (structured) добавить поле `LogClass log_class{LogClass::kLog};`.
+
+#### Step 3: `tracing::Span`-like helper (optional)
+- Минимальная реализация `ulog::SpanScope` / `tracing::Span` — RAII helper с dtor'ом, эмитящим LogHelper kTrace. Не обязательно в ulog core — может быть отдельный `ulog-tracing` target с dep на pattern, позволяющий пользователю писать:
+```cpp
+{
+    ulog::SpanScope sp("db_query");
+    sp.AddTag("query_id", qid);
+    // work...
+} // dtor emits kTrace record
+```
+- Собирает trace_id/span_id (через user's tracing system или внутренний randomID), duration, link.
+
+#### Step 4: OTLP формттер routes по `LogClass`
+- `OtlpJsonFormatter` смотрит `log_class` в ctor, выбирает schema:
+  - `kLog` → `opentelemetry.proto.logs.v1.LogRecord` (текущий output).
+  - `kTrace` → `opentelemetry.proto.trace.v1.Span` (новый):
+    ```json
+    {
+      "traceId": "...",
+      "spanId": "...",
+      "parentSpanId": "...",
+      "name": "db_query",
+      "startTimeUnixNano": "...",
+      "endTimeUnixNano": "...",
+      "attributes": [...],
+      "status": {"code": "STATUS_CODE_OK"}
+    }
+    ```
+- Один format emits либо LogRecord либо Span per line. Или отдельные формттеры `OtlpLogsJsonFormatter` / `OtlpTracesJsonFormatter` + dispatcher по LogClass.
+
+#### Step 5: OTLP batch/HTTP sink splits по класс
+- `OtlpBatchSink` (из BACKLOG) при HTTP POST разделяет accumulated records:
+  - `{kLog}` batch → `POST /v1/logs` с `ExportLogsServiceRequest` envelope.
+  - `{kTrace}` batch → `POST /v1/traces` с `ExportTraceServiceRequest` envelope.
+- Без OtlpBatchSink: filelog-collector читает JSONL с mixed kLog/kTrace, receiver'ы различают по schema shape.
+
+### Coverage
+- Test: emit span запись через `SpanScope` → assert правильный Span JSON в mem_logger.
+- Test: Log + Span через один sync logger → оба корректные, разные schema.
+- Test: `tracing::Span` nested (parent/child) — parent_span_id корректно заполнен.
+
+### Без чего можно
+
+- SpanScope helper — опционально. Без него пользователь вручную: `LogHelper lh(logger, lvl, kTrace, loc); lh << ulog::LogExtra{{"trace_id", ...}, {"span_id", ...}, {"duration_ns", ...}};`. Ugly но работает.
+- LogClass пропуск через pipeline без SpanScope также даёт value — tracing SDK третьей стороны может эмитить spans через LogHelper напрямую.
+
+### Effort / Impact
+
+**Effort:** большой (3-4 дня).
+- Step 1-2 (signature extension через pipeline): 1 день, рефактор + обновление 4 формттеров + 4 loggers.
+- Step 4 (OTLP Span schema): 1 день, Span JSON отличается от LogRecord в нескольких полях + nested attributes / events.
+- Step 3 (SpanScope): 0.5 дня, если минимальный (без parent context propagation).
+- Step 5 (OtlpBatchSink split): зависит от OtlpBatchSink из BACKLOG — вместе 2 дня.
+
+**Impact:** высокий для OTLP-first deployments. Без span emission ulog = "только logs" в OpenTelemetry экосистеме; со Step 1-4 — полный logs+traces.
+
+### Связано
+
+- Phase 22 (OTLP logs) — прошлая фаза, эта достраивает tracing половину.
+- `SetTracingHook` — текущий механизм инъекции trace_id в обычные логи. **Не заменяется** — по-прежнему нужен для logs↔traces correlation в kLog записях. SpanScope — ортогональный путь для explicit span emission.
+- BACKLOG "`trace_id` / `span_id` → top-level в OTLP LogRecord" (review 12) — будет использован когда ulog эмитит kLog ассоциированные со span scope (hook видит active span в TLS).
