@@ -358,3 +358,55 @@ TEST(FormatterJson, EscapesQuotesInValue) {
     EXPECT_TRUE(Contains(r, expected));
     ulog::SetDefaultLogger(nullptr);
 }
+
+// --------- emit_location knob ---------
+
+TEST(EmitLocation, DefaultTrueEmitsModuleField) {
+    auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "hi";
+    const auto rec = logger->GetRecords().front();
+    EXPECT_TRUE(Contains(rec, "module="));
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(EmitLocation, FalseSuppressesModuleTskv) {
+    auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv, /*emit_location=*/false);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "hi";
+    const auto rec = logger->GetRecords().front();
+    EXPECT_EQ(rec.find("module="), std::string::npos) << rec;
+    // Other standard fields still present.
+    EXPECT_TRUE(Contains(rec, "timestamp="));
+    EXPECT_TRUE(Contains(rec, "level="));
+    EXPECT_TRUE(Contains(rec, "text=hi"));
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(EmitLocation, FalseSuppressesModuleJson) {
+    auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kJson, /*emit_location=*/false);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "hi";
+    const auto rec = logger->GetRecords().front();
+    EXPECT_EQ(rec.find("\"module\":"), std::string::npos) << rec;
+    EXPECT_TRUE(Contains(rec, "\"text\":\"hi\""));
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(EmitLocation, FalseSuppressesModuleLtsv) {
+    auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kLtsv, /*emit_location=*/false);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "hi";
+    const auto rec = logger->GetRecords().front();
+    EXPECT_EQ(rec.find("module:"), std::string::npos) << rec;
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(EmitLocation, FalseSuppressesModuleOtlpJson) {
+    auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kOtlpJson, /*emit_location=*/false);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "hi";
+    const auto rec = logger->GetRecords().front();
+    EXPECT_EQ(rec.find("\"module\""), std::string::npos) << rec;
+    ulog::SetDefaultLogger(nullptr);
+}

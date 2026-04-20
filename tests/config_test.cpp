@@ -73,6 +73,35 @@ TEST(Config, MakeSyncLoggerFromConfig) {
     RemoveQuiet(tmp);
 }
 
+TEST(Config, EmitLocationFalsePropagatesToSync) {
+    auto tmp = fs::temp_directory_path() / "ulog_cfg_no_loc.log";
+    RemoveQuiet(tmp);
+
+    {
+        ulog::LoggerConfig cfg;
+        cfg.file_path = tmp.string();
+        cfg.format = ulog::Format::kTskv;
+        cfg.level = ulog::Level::kTrace;
+        cfg.truncate_on_start = true;
+        cfg.emit_location = false;
+
+        auto logger = ulog::MakeSyncLogger(cfg);
+        ulog::SetDefaultLogger(logger);
+        LOG_INFO() << "no-loc";
+        ulog::LogFlush();
+        ulog::SetDefaultLogger(nullptr);
+    }
+
+    std::ifstream f(tmp, std::ios::binary);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const auto out = ss.str();
+    EXPECT_NE(out.find("text=no-loc"), std::string::npos);
+    EXPECT_EQ(out.find("module="), std::string::npos) << out;
+
+    RemoveQuiet(tmp);
+}
+
 TEST(Config, InitDefaultLoggerAsync) {
     auto tmp = fs::temp_directory_path() / "ulog_cfg_async.log";
     RemoveQuiet(tmp);

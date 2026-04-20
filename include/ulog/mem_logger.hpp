@@ -16,7 +16,8 @@ namespace ulog {
 /// Captures every record it receives as a string. Thread-safe.
 class MemLogger final : public impl::TextLoggerBase {
 public:
-    explicit MemLogger(Format format = Format::kTskv) : impl::TextLoggerBase(format) {
+    explicit MemLogger(Format format = Format::kTskv, bool emit_location = true)
+        : impl::TextLoggerBase(format, emit_location) {
         SetLevel(Level::kTrace);
         SetFlushOn(Level::kNone);
     }

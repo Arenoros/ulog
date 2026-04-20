@@ -36,6 +36,11 @@ public:
         Format format = Format::kTskv;
         std::size_t queue_capacity = 65536;
         OverflowBehavior overflow = OverflowBehavior::kDiscard;
+        /// When false, the formatter drops the `module` field (function,
+        /// file:line call-site). Useful for minimal log shapes where the
+        /// caller attaches its own semantic tags instead of source
+        /// locations.
+        bool emit_location = true;
     };
 
     AsyncLogger();

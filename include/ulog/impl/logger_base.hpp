@@ -77,8 +77,10 @@ private:
 /// (TSKV/LTSV/RAW/JSON). Dispatches `MakeFormatter` by format.
 class TextLoggerBase : public LoggerBase {
 public:
-    explicit TextLoggerBase(Format format) noexcept : format_(format) {}
+    explicit TextLoggerBase(Format format, bool emit_location = true) noexcept
+        : format_(format), emit_location_(emit_location) {}
     Format GetFormat() const noexcept { return format_; }
+    bool GetEmitLocation() const noexcept { return emit_location_; }
     formatters::BasePtr MakeFormatterInto(void* scratch,
                                           std::size_t scratch_size,
                                           Level level,
@@ -88,6 +90,7 @@ public:
 
 private:
     Format format_;
+    bool emit_location_;
 };
 
 }  // namespace ulog::impl

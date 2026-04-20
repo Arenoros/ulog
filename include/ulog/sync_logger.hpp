@@ -18,7 +18,8 @@ namespace ulog {
 /// sinks on the calling thread. Thread-safe.
 class SyncLogger final : public impl::TextLoggerBase {
 public:
-    explicit SyncLogger(Format format = Format::kTskv) : impl::TextLoggerBase(format) {}
+    explicit SyncLogger(Format format = Format::kTskv, bool emit_location = true)
+        : impl::TextLoggerBase(format, emit_location) {}
 
     void AddSink(sinks::SinkPtr sink);
 

@@ -59,6 +59,14 @@ formatters::BasePtr TextLoggerBase::MakeFormatterInto(
         std::string_view module_file,
         int module_line) {
     const auto now = std::chrono::system_clock::now();
+    // `emit_location_ == false` suppresses the `module` field by erasing the
+    // call-site inputs. Every text formatter already skips the field when both
+    // function and file are empty — a single check here covers all of them.
+    if (!emit_location_) {
+        module_function = {};
+        module_file = {};
+        module_line = 0;
+    }
     switch (format_) {
         case Format::kTskv:
             return PlaceFormatter<formatters::TskvFormatter>(

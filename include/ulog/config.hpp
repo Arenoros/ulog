@@ -31,6 +31,12 @@ struct LoggerConfig {
     Level flush_level = Level::kWarning;
     bool truncate_on_start = false;
 
+    /// When false, the `module` field (call-site function + file:line) is
+    /// suppressed from every emitted record. The LOG_* macros still
+    /// capture the location — it is simply not rendered. Default true
+    /// preserves existing behaviour.
+    bool emit_location = true;
+
     /// Only consulted by `MakeAsyncLogger`.
     std::size_t queue_capacity = 65536;
     OverflowBehavior overflow = OverflowBehavior::kDiscard;

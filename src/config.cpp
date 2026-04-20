@@ -75,7 +75,7 @@ sinks::SinkPtr MakeSinkFromSpec(const std::string& spec, bool truncate_on_start)
 }
 
 std::shared_ptr<SyncLogger> MakeSyncLogger(const LoggerConfig& cfg) {
-    auto logger = std::make_shared<SyncLogger>(cfg.format);
+    auto logger = std::make_shared<SyncLogger>(cfg.format, cfg.emit_location);
     logger->SetLevel(cfg.level);
     logger->SetFlushOn(cfg.flush_level);
     logger->AddSink(MakeSinkFromSpec(cfg.file_path, cfg.truncate_on_start));
@@ -87,6 +87,7 @@ std::shared_ptr<AsyncLogger> MakeAsyncLogger(const LoggerConfig& cfg) {
     async_cfg.format = cfg.format;
     async_cfg.queue_capacity = cfg.queue_capacity;
     async_cfg.overflow = cfg.overflow;
+    async_cfg.emit_location = cfg.emit_location;
     auto logger = std::make_shared<AsyncLogger>(async_cfg);
     logger->SetLevel(cfg.level);
     logger->SetFlushOn(cfg.flush_level);
