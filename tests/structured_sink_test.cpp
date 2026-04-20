@@ -80,8 +80,8 @@ TEST(StructuredSink, SyncReceivesLevelAndText) {
     ASSERT_EQ(recs.size(), 1u);
     EXPECT_EQ(recs.front().level, ulog::Level::kWarning);
     EXPECT_EQ(recs.front().text, "hello");
-    EXPECT_FALSE(recs.front().module_file.empty());
-    EXPECT_GT(recs.front().module_line, 0);
+    EXPECT_FALSE(recs.front().location.file_name().empty());
+    EXPECT_GT(recs.front().location.line(), 0u);
 }
 
 TEST(StructuredSink, TagsPreserveNativeTypes) {
@@ -243,9 +243,9 @@ TEST(StructuredSink, AsyncMixedTextAndStructuredOneEnqueue) {
 
 TEST(StructuredSink, EmitLocationFalseSuppressesModuleFields) {
     // Logger configured with emit_location=false must propagate the
-    // suppression to the structured record — module_function / module_file
-    // empty, module_line zero. Mirrors the text formatter's behaviour so
-    // callers can rely on a single config knob.
+    // suppression to the structured record — `location` stays
+    // default-constructed (!has_value()). Mirrors the text formatter's
+    // behaviour so callers can rely on a single config knob.
     auto logger = std::make_shared<ulog::SyncLogger>(
         ulog::Format::kTskv, /*emit_location=*/false);
     logger->SetLevel(ulog::Level::kTrace);
@@ -258,9 +258,10 @@ TEST(StructuredSink, EmitLocationFalseSuppressesModuleFields) {
 
     const auto recs = s_sink->Records();
     ASSERT_EQ(recs.size(), 1u);
-    EXPECT_TRUE(recs.front().module_function.empty());
-    EXPECT_TRUE(recs.front().module_file.empty());
-    EXPECT_EQ(recs.front().module_line, 0);
+    EXPECT_FALSE(recs.front().location.has_value());
+    EXPECT_TRUE(recs.front().location.function_name().empty());
+    EXPECT_TRUE(recs.front().location.file_name().empty());
+    EXPECT_EQ(recs.front().location.line(), 0u);
     EXPECT_EQ(recs.front().text, "x");
 }
 
@@ -277,8 +278,9 @@ TEST(StructuredSink, EmitLocationTrueKeepsModuleFields) {
 
     const auto recs = s_sink->Records();
     ASSERT_EQ(recs.size(), 1u);
-    EXPECT_FALSE(recs.front().module_file.empty());
-    EXPECT_GT(recs.front().module_line, 0);
+    EXPECT_TRUE(recs.front().location.has_value());
+    EXPECT_FALSE(recs.front().location.file_name().empty());
+    EXPECT_GT(recs.front().location.line(), 0u);
 }
 
 TEST(StructuredSink, MultipleStructuredSinksAllReceive) {

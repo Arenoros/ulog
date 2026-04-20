@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include <boost/container/small_vector.hpp>
+
 #include <fmt/format.h>
 
 #include <ulog/detail/small_string.hpp>
@@ -299,12 +301,7 @@ constexpr std::size_t kSizeLimit = 10000;
         rec->level = level;
         rec->timestamp = std::chrono::system_clock::now();
         const bool emit_loc = text_base ? text_base->GetEmitLocation() : true;
-        if (!emit_loc) return;
-        const auto fn = location.function_name();
-        const auto fl = location.file_name();
-        if (!fn.empty()) rec->module_function.assign(fn);
-        if (!fl.empty()) rec->module_file.assign(fl);
-        rec->module_line = static_cast<int>(location.line());
+        if (emit_loc) rec->location = location;
     }
 
     /// Pick the writer target. Fanout engages whenever more than one
@@ -513,7 +510,7 @@ constexpr std::size_t kSizeLimit = 10000;
     impl::formatters::BasePtr formatter;
     /// Extras — one per additional active format beyond the primary.
     /// Always heap-allocated; empty on the common single-format path.
-    std::vector<impl::formatters::BasePtr> extras;
+    boost::container::small_vector<impl::formatters::BasePtr, 1> extras;
     /// Engaged only when the logger has at least one structured sink.
     /// Accumulates tags / text / trace context into a sinks::LogRecord
     /// that is handed off to LogMulti alongside the text items.
@@ -523,7 +520,7 @@ constexpr std::size_t kSizeLimit = 10000;
     /// outlive the fanout (same frame) — the non-owning pointers are
     /// safe.
     std::optional<FanoutFormatter> fanout;
-    detail::SmallString<1024> text;
+    detail::SmallString<512> text;
     impl::TagWriter writer;
 };
 

@@ -27,6 +27,7 @@
 
 #include <ulog/json_string.hpp>
 #include <ulog/level.hpp>
+#include <ulog/log_record_location.hpp>
 #include <ulog/sinks/base_sink.hpp>
 
 namespace ulog::sinks {
@@ -59,12 +60,14 @@ struct Tag {
 struct LogRecord {
     Level level{Level::kInfo};
     std::chrono::system_clock::time_point timestamp{};
-    /// Call-site function + file/line. Empty when the logger was created
-    /// with `emit_location = false`; otherwise mirrors what the text
-    /// formatters emit in the `module` field.
-    std::string module_function;
-    std::string module_file;
-    int module_line{0};
+    /// Call-site function / file / line. Default-constructed
+    /// (`!has_value()`) when the logger was created with
+    /// `emit_location = false`; otherwise mirrors what the text
+    /// formatters emit in the `module` field. Stored by value —
+    /// `LogRecordLocation` holds `string_view`s into compiler-provided
+    /// static string literals (safe across async queue hops) plus an
+    /// inline decimal buffer for the line number.
+    LogRecordLocation location{};
     /// The free-form message body — everything the caller streamed via
     /// `operator<<` after the LOG_* macro.
     std::string text;
