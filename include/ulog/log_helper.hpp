@@ -200,14 +200,35 @@ public:
     /// destructor skips emission. This lets callers use `LOG_*` from
     /// `noexcept` contexts (dtors, signal-safe paths, async
     /// work-guards) without risking `std::terminate`.
-    template <typename T>
+    ///
+    /// Pointer types are deliberately excluded via SFINAE so the free
+    /// function `operator<<(LogHelper&, const T*)` in
+    /// `ulog/log_helper_extras.hpp` can kick in with the null-guard /
+    /// hex-address rendering. `const char*` is routed back to the
+    /// built-in `Put(const char*)` path through the concrete overload
+    /// below so string literals and C-strings keep rendering as text.
+    template <typename T, std::enable_if_t<!std::is_pointer_v<T>, int> = 0>
     LogHelper& operator<<(const T& value) & noexcept {
         try { Put(value); } catch (...) { InternalLoggingError("operator<< threw"); }
         return *this;
     }
-    template <typename T>
+    template <typename T, std::enable_if_t<!std::is_pointer_v<T>, int> = 0>
     LogHelper&& operator<<(const T& value) && noexcept {
         try { Put(value); } catch (...) { InternalLoggingError("operator<< threw"); }
+        return std::move(*this);
+    }
+
+    /// Concrete `const char*` overload — keeps NUL-terminated strings
+    /// (string literals, C-strings) on the text path. Lives on the
+    /// class so the non-template match beats the free-function pointer
+    /// template in `log_helper_extras.hpp` without relying on partial
+    /// ordering.
+    LogHelper& operator<<(const char* s) & noexcept {
+        try { Put(s); } catch (...) { InternalLoggingError("operator<< threw"); }
+        return *this;
+    }
+    LogHelper&& operator<<(const char* s) && noexcept {
+        *this << s;
         return std::move(*this);
     }
 

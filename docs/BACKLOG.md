@@ -147,7 +147,8 @@ Thread-safe by TLS. На thread exit residual slabs leak-freed через `threa
 
 ---
 
-## LogHelper streaming parity (userver operator<< gaps)
+## LogHelper streaming parity (userver operator<< gaps) ✅ DONE (Phase 47)
+**Review:** `docs/review/37-phase-47.md` — 192/192 tests pass (+12), bench neutral (sync 581→576 ns в шуме). Все 5 Pri overload'ов в `include/ulog/log_helper_extras.hpp`, auto-include через `ulog/log.hpp`.
 
 Наш `LogHelper::operator<<` tplate ограничен string/integral/float/enum/bool/char + `Hex`/`HexShort`/`Quoted`/`LogExtra`/`RateLimiter`. userver покрывает существенно больше типов — код, portировавшийся с userver, часто валится на compile error из-за отсутствия overload'а. Inventory проведён в phase-serie 42-46.
 

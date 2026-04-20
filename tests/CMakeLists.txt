@@ -25,6 +25,7 @@ add_executable(ulog-tests
     log_helper_noexcept_test.cpp
     log_helper_truncation_test.cpp
     per_logger_common_tags_test.cpp
+    log_helper_streaming_parity_test.cpp
 )
 if(NOT WIN32)
     target_sources(ulog-tests PRIVATE unix_sink_test.cpp)

@@ -19,6 +19,7 @@
 #include <ulog/fwd.hpp>
 #include <ulog/level.hpp>
 #include <ulog/log_helper.hpp>
+#include <ulog/log_helper_extras.hpp>
 
 namespace ulog {
 
