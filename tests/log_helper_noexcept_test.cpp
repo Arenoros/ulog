@@ -21,17 +21,23 @@ void StaticNoexceptChecks() {
     (void)p;
 
     // Template operator<< must propagate noexcept from the public contract.
+    // We use `std::declval<T>()` for construct-involving types — libc++
+    // (C++17) does not mark `std::string_view(const char*)` `noexcept`,
+    // so a literal `Quoted{"q"}` or `std::string_view{"v"}` here would
+    // fold construction non-noexcept into the checked expression and
+    // make the test assert a property of `string_view`'s ctor rather
+    // than `operator<<` itself.
     static_assert(noexcept(std::declval<LH&>() << 42));
     static_assert(noexcept(std::declval<LH&>() << 3.14));
     static_assert(noexcept(std::declval<LH&>() << 'c'));
     static_assert(noexcept(std::declval<LH&>() << true));
     static_assert(noexcept(std::declval<LH&>() << "lit"));
-    static_assert(noexcept(std::declval<LH&>() << std::string_view{"v"}));
+    static_assert(noexcept(std::declval<LH&>() << std::declval<std::string_view>()));
 
     // Typed overloads.
     static_assert(noexcept(std::declval<LH&>() << ulog::Hex{0}));
     static_assert(noexcept(std::declval<LH&>() << ulog::HexShort{0}));
-    static_assert(noexcept(std::declval<LH&>() << ulog::Quoted{"q"}));
+    static_assert(noexcept(std::declval<LH&>() << std::declval<ulog::Quoted>()));
     static_assert(noexcept(std::declval<LH&>() << std::declval<const ulog::LogExtra&>()));
 
     // WithException and rvalue variants.
