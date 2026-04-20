@@ -239,6 +239,13 @@ public:
     /// True if the helper will emit when destroyed.
     bool IsActive() const noexcept;
 
+    /// True once the accumulated text exceeds the 10 KB per-record
+    /// budget. Further streaming writes are no-ops, and the emitted
+    /// record gains a `truncated=true` tag. Callers doing expensive
+    /// formatting (stack traces, serialised blobs) can short-circuit
+    /// via this predicate rather than feeding bytes into the void.
+    bool IsLimitReached() const noexcept;
+
 private:
     /// Streaming methods below are private implementation detail; they
     /// may throw `std::bad_alloc` / format exceptions. Public `<<`

@@ -83,7 +83,7 @@
 
 Реализовать одной фазой (1 день).
 
-### Priority 1: `ThreadLocalMemPool<LogHelper::Impl>`
+### Priority 1: `ThreadLocalMemPool<LogHelper::Impl>` ✅ DONE (Phase 42)
 **Что:** TLS кеш на 16 slabs объектов `LogHelper::Impl`. Pop-placement-new в ctor, dtor-then-Push в `~LogHelper`. Первые 16 logs в thread аллоцируют, дальше — zero heap alloc для Impl.
 **Зачем:** `make_unique<Impl>` + dtor = ~60-100 ns + malloc contention. На 1.3M rec/s bench = ~13% producer-side cost.
 **Как:** см. userver `universal/src/logging/log_helper.cpp:60-107`. Реализация:
@@ -104,7 +104,7 @@ Thread-safe by TLS. На thread exit residual slabs leak-freed через `threa
 **Effort:** средний (1 день с тестами).
 **Impact:** высокий (~13% producer throughput).
 
-### Priority 2: `noexcept operator<<` + `InternalLoggingError`
+### Priority 2: `noexcept operator<<` + `InternalLoggingError` ✅ DONE (Phase 43)
 **Что:** все `operator<<` и `Put/PutFormatted` mark `noexcept`, внутри try/catch, при exception → fputs на stderr + mark Impl broken.
 **Зачем:**
 - Caller может вызывать `LOG_INFO()` из `noexcept` контекста (dtor, signal handler) без абортa программы.
@@ -113,14 +113,15 @@ Thread-safe by TLS. На thread exit residual slabs leak-freed через `threa
 **Effort:** маленький (2-3 часа).
 **Impact:** высокий для reliability (не регресс на perf — try/catch zero-cost при no-throw).
 
-### Priority 3: `kSizeLimit = 10000` truncation
+### Priority 3: `kSizeLimit = 10000` truncation ✅ DONE (Phase 44)
 **Что:** после 10KB текста в Impl — `<<` становится no-op, эмитится `truncated=true` tag.
 **Зачем:** защита от runaway `<<` loops; злонамеренный / багованный caller не может исчерпать память.
 **Как:** `LogHelper::IsLimitReached()` → `pimpl_->GetTextSize() >= kSizeLimit`. Put'ы проверяют перед append'ом.
 **Effort:** маленький (1 час).
 **Impact:** низкий в обычном случае, высокий в edge case.
+**Review:** `docs/review/34-phase-44.md` — 173/173 tests pass (+3), bench neutral (+1.9% sync в шуме).
 
-### Priority 4: `DoLog()` как explicit finalization point
+### Priority 4: `DoLog()` как explicit finalization point ✅ DONE (Phase 42, embedded)
 **Что:** вынести финализацию (SetText → ExtractLoggerItem → logger.Log → Flush) в отдельный `void DoLog() noexcept` метод. `~LogHelper` вызывает `DoLog()` then `Push(Impl)` в pool.
 **Зачем:** enables Priority 1 (без explicit finalize point pool Push не знает когда Impl готов к переиспользованию). Также — явная точка для unit-testing finalization без dtor ceremony.
 **Effort:** рефактор, embedded в Priority 1. Без Priority 1 не даёт value.

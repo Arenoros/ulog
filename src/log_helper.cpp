@@ -224,6 +224,12 @@ private:
     }
 };
 
+/// Hard per-record text cap. Matches userver's `kSizeLimit` so services
+/// ported across the stacks cannot produce silently diverging log sizes.
+/// Exceeding this causes subsequent streaming writes to be dropped and
+/// the emitted record to carry `truncated=true`.
+constexpr std::size_t kSizeLimit = 10000;
+
 }  // namespace
 
 // ---------------- LogHelper::Impl ----------------
@@ -348,6 +354,12 @@ struct LogHelper::Impl {
                 impl::DispatchRecordEnrichers(sink);
             }
 
+            // Surface the size-limit signal through the same writer the
+            // hooks used. Guaranteed to go to every active target via the
+            // fanout (or the single target when only one is engaged).
+            // Null writer target (no sinks) silently drops — harmless.
+            if (truncated) writer.PutTag("truncated", "true");
+
             // SetText mirrors to every destination so each produced item /
             // record carries the same text body.
             const auto text_view = text.view();
@@ -393,6 +405,17 @@ struct LogHelper::Impl {
     /// in the Put helpers.
     void MarkAsBroken() noexcept { broken = true; }
 
+    /// Current size of the text buffer. `Put*` consult this against
+    /// `kSizeLimit` before each append.
+    std::size_t GetTextSize() const noexcept { return text.size(); }
+
+    /// True when the record has already hit (or passed) the size cap.
+    /// Used by `Put*` to short-circuit and by callers via
+    /// `LogHelper::IsLimitReached`.
+    bool IsLimitReached() const noexcept {
+        return truncated || text.size() >= kSizeLimit;
+    }
+
     impl::LoggerBase& logger_ref;
     LoggerPtr logger_owner;                     ///< Keeps the logger alive; may be null for ref path.
     Level level;
@@ -401,6 +424,11 @@ struct LogHelper::Impl {
     /// True after a streaming op caught an exception. Guards DoLog
     /// against emitting a half-rendered record.
     bool broken{false};
+    /// True once a `Put*` call dropped bytes because the buffer reached
+    /// `kSizeLimit`. DoLog emits a `truncated=true` tag when set so
+    /// downstream consumers can distinguish a clean record from one
+    /// that silently lost its tail.
+    bool truncated{false};
     /// Inline scratch for the primary formatter. Destructor runs via
     /// the `formatter` deleter — no heap alloc for the formatter itself
     /// on the hot path (formerly one `new` per record).
@@ -498,15 +526,27 @@ void LogHelper::InternalLoggingError(const char* msg) noexcept {
 
 void LogHelper::Put(std::string_view sv) {
     if (!impl_ || !impl_->active || impl_->broken) return;
+    if (impl_->text.size() >= kSizeLimit) {
+        impl_->truncated = true;
+        return;
+    }
     impl_->text += sv;
 }
 void LogHelper::Put(const char* s) { Put(std::string_view(s ? s : "")); }
 void LogHelper::Put(bool v) { Put(std::string_view(v ? "true" : "false")); }
 void LogHelper::Put(char v) {
     if (!impl_ || !impl_->active || impl_->broken) return;
+    if (impl_->text.size() >= kSizeLimit) {
+        impl_->truncated = true;
+        return;
+    }
     impl_->text += v;
 }
 void LogHelper::PutFormatted(std::string s) { Put(std::string_view(s)); }
+
+bool LogHelper::IsLimitReached() const noexcept {
+    return !impl_ || impl_->IsLimitReached();
+}
 
 LogHelper& LogHelper::operator<<(const LogExtra& extra) & noexcept {
     if (impl_ && impl_->active && !impl_->broken) {
@@ -545,10 +585,12 @@ LogHelper& LogHelper::operator<<(HexShort v) & noexcept {
 }
 LogHelper& LogHelper::operator<<(Quoted v) & noexcept {
     if (impl_ && impl_->active && !impl_->broken) {
+        // Route through `Put` so the kSizeLimit gate applies uniformly —
+        // otherwise a gigantic quoted payload would bypass truncation.
         try {
-            impl_->text += '"';
-            impl_->text += v.value;
-            impl_->text += '"';
+            Put('"');
+            Put(v.value);
+            Put('"');
         } catch (...) {
             InternalLoggingError("operator<<(Quoted) threw");
         }
