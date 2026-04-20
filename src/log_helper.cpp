@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdio>
 #include <memory>
 #include <optional>
 #include <string>
@@ -329,7 +330,9 @@ struct LogHelper::Impl {
     /// level warrants it. Never throws — any exception is swallowed so
     /// the dtor path stays `noexcept`-safe. No-op when `!active`.
     void DoLog() noexcept {
-        if (!active) return;
+        // `broken` is set when any streaming call caught an exception; we
+        // bail before SetText to avoid emitting a half-rendered record.
+        if (!active || broken) return;
         try {
             // Dispatch the tracing hook + record enrichers through whichever
             // target TagWriter currently points to — the fanout when multiple
@@ -384,11 +387,20 @@ struct LogHelper::Impl {
         }
     }
 
+    /// Called from `LogHelper::InternalLoggingError` when a streaming
+    /// op throws: mark the record as broken so `DoLog` skips emit, and
+    /// subsequent `<<` calls short-circuit via `broken` early-return
+    /// in the Put helpers.
+    void MarkAsBroken() noexcept { broken = true; }
+
     impl::LoggerBase& logger_ref;
     LoggerPtr logger_owner;                     ///< Keeps the logger alive; may be null for ref path.
     Level level;
     LogRecordLocation location;
     bool active;
+    /// True after a streaming op caught an exception. Guards DoLog
+    /// against emitting a half-rendered record.
+    bool broken{false};
     /// Inline scratch for the primary formatter. Destructor runs via
     /// the `formatter` deleter — no heap alloc for the formatter itself
     /// on the hot path (formerly one `new` per record).
@@ -452,61 +464,117 @@ LogHelper::~LogHelper() {
     ThreadLocalMemPool<Impl>::Push(std::move(impl_));
 }
 
-bool LogHelper::IsActive() const noexcept { return impl_ && impl_->active; }
+bool LogHelper::IsActive() const noexcept {
+    return impl_ && impl_->active && !impl_->broken;
+}
 
-impl::TagWriter& LogHelper::GetTagWriter() noexcept { return impl_->writer; }
+impl::TagWriter& LogHelper::GetTagWriter() noexcept {
+    if (impl_) return impl_->writer;
+    // Pool Pop threw — caller gets a dummy writer with a null target;
+    // `PutTag` / `PutLogExtra` are no-ops against a null formatter.
+    // thread_local keeps the fallback per-thread so concurrent callers
+    // don't race on the same dummy's future-proofed mutable state.
+    thread_local impl::TagWriter dummy{nullptr};
+    return dummy;
+}
+
+void LogHelper::InternalLoggingError(const char* msg) noexcept {
+    // Write a short diagnostic line to stderr. Use fputs + \n — no
+    // fmt::format (that was the thing that just threw), no iostream
+    // (pulls locale, sync overhead). Failures from fputs are ignored:
+    // if stderr is closed we can't do anything about it anyway.
+    std::fputs("ulog::LogHelper: ", stderr);
+    std::fputs(msg ? msg : "internal error", stderr);
+    std::fputc('\n', stderr);
+    if (impl_) impl_->MarkAsBroken();
+}
 
 // ---- text stream appenders ----
+//
+// These may throw from `SmallString::operator+=` on OOM; public `<<`
+// overloads wrap them in try/catch so the user-facing noexcept contract
+// holds. `broken` short-circuit makes further writes to a broken record
+// no-ops so a failed format doesn't keep retrying.
 
 void LogHelper::Put(std::string_view sv) {
-    if (!impl_ || !impl_->active) return;
+    if (!impl_ || !impl_->active || impl_->broken) return;
     impl_->text += sv;
 }
 void LogHelper::Put(const char* s) { Put(std::string_view(s ? s : "")); }
 void LogHelper::Put(bool v) { Put(std::string_view(v ? "true" : "false")); }
 void LogHelper::Put(char v) {
-    if (!impl_ || !impl_->active) return;
+    if (!impl_ || !impl_->active || impl_->broken) return;
     impl_->text += v;
 }
 void LogHelper::PutFormatted(std::string s) { Put(std::string_view(s)); }
 
-LogHelper& LogHelper::operator<<(const LogExtra& extra) & {
-    if (impl_ && impl_->active) impl_->writer.PutLogExtra(extra);
+LogHelper& LogHelper::operator<<(const LogExtra& extra) & noexcept {
+    if (impl_ && impl_->active && !impl_->broken) {
+        try {
+            impl_->writer.PutLogExtra(extra);
+        } catch (...) {
+            InternalLoggingError("operator<<(LogExtra) threw");
+        }
+    }
     return *this;
 }
-LogHelper&& LogHelper::operator<<(const LogExtra& extra) && {
+LogHelper&& LogHelper::operator<<(const LogExtra& extra) && noexcept {
     *this << extra;
     return std::move(*this);
 }
 
-LogHelper& LogHelper::operator<<(Hex v) & {
-    if (impl_ && impl_->active) PutFormatted(fmt::format("0x{:016X}", v.value));
+LogHelper& LogHelper::operator<<(Hex v) & noexcept {
+    if (impl_ && impl_->active && !impl_->broken) {
+        try {
+            PutFormatted(fmt::format("0x{:016X}", v.value));
+        } catch (...) {
+            InternalLoggingError("operator<<(Hex) threw");
+        }
+    }
     return *this;
 }
-LogHelper& LogHelper::operator<<(HexShort v) & {
-    if (impl_ && impl_->active) PutFormatted(fmt::format("{:X}", v.value));
+LogHelper& LogHelper::operator<<(HexShort v) & noexcept {
+    if (impl_ && impl_->active && !impl_->broken) {
+        try {
+            PutFormatted(fmt::format("{:X}", v.value));
+        } catch (...) {
+            InternalLoggingError("operator<<(HexShort) threw");
+        }
+    }
     return *this;
 }
-LogHelper& LogHelper::operator<<(Quoted v) & {
-    if (impl_ && impl_->active) {
-        impl_->text += '"';
-        impl_->text += v.value;
-        impl_->text += '"';
+LogHelper& LogHelper::operator<<(Quoted v) & noexcept {
+    if (impl_ && impl_->active && !impl_->broken) {
+        try {
+            impl_->text += '"';
+            impl_->text += v.value;
+            impl_->text += '"';
+        } catch (...) {
+            InternalLoggingError("operator<<(Quoted) threw");
+        }
     }
     return *this;
 }
 
-LogHelper& LogHelper::WithException(const std::exception& ex) & {
-    if (impl_ && impl_->active) {
-        impl_->writer.PutTag("exception_type", typeid(ex).name());
-        impl_->writer.PutTag("exception_msg", ex.what());
+LogHelper& LogHelper::WithException(const std::exception& ex) & noexcept {
+    if (impl_ && impl_->active && !impl_->broken) {
+        try {
+            impl_->writer.PutTag("exception_type", typeid(ex).name());
+            impl_->writer.PutTag("exception_msg", ex.what());
+        } catch (...) {
+            InternalLoggingError("WithException threw");
+        }
     }
     return *this;
 }
 
-LogHelper& LogHelper::operator<<(const impl::RateLimiter& rl) & {
-    if (impl_ && impl_->active && rl.GetDroppedCount() > 0) {
-        PutFormatted(fmt::format(" [dropped={}]", rl.GetDroppedCount()));
+LogHelper& LogHelper::operator<<(const impl::RateLimiter& rl) & noexcept {
+    if (impl_ && impl_->active && !impl_->broken && rl.GetDroppedCount() > 0) {
+        try {
+            PutFormatted(fmt::format(" [dropped={}]", rl.GetDroppedCount()));
+        } catch (...) {
+            InternalLoggingError("operator<<(RateLimiter) threw");
+        }
     }
     return *this;
 }

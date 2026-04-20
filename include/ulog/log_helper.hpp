@@ -192,44 +192,58 @@ public:
     LogHelper& operator=(LogHelper&&) = delete;
 
     /// Stream operator for arbitrary types. Primary entry point for LOG_* macros.
+    ///
+    /// All `operator<<` overloads are `noexcept` — any exception thrown
+    /// by `fmt::format` (OOM on the format buffer, bad format spec, …)
+    /// or by user `<<` conversion is swallowed, logged to `stderr` via
+    /// `InternalLoggingError`, and the record is marked broken so the
+    /// destructor skips emission. This lets callers use `LOG_*` from
+    /// `noexcept` contexts (dtors, signal-safe paths, async
+    /// work-guards) without risking `std::terminate`.
     template <typename T>
-    LogHelper& operator<<(const T& value) & {
-        Put(value);
+    LogHelper& operator<<(const T& value) & noexcept {
+        try { Put(value); } catch (...) { InternalLoggingError("operator<< threw"); }
         return *this;
     }
     template <typename T>
-    LogHelper&& operator<<(const T& value) && {
-        Put(value);
+    LogHelper&& operator<<(const T& value) && noexcept {
+        try { Put(value); } catch (...) { InternalLoggingError("operator<< threw"); }
         return std::move(*this);
     }
 
     /// Stream LogExtra: merges its fields into the record.
-    LogHelper& operator<<(const LogExtra& extra) &;
-    LogHelper&& operator<<(const LogExtra& extra) &&;
+    LogHelper& operator<<(const LogExtra& extra) & noexcept;
+    LogHelper&& operator<<(const LogExtra& extra) && noexcept;
 
     /// Stream helpers.
-    LogHelper& operator<<(Hex v) &;
-    LogHelper&& operator<<(Hex v) && { return std::move(*this << v); }
-    LogHelper& operator<<(HexShort v) &;
-    LogHelper&& operator<<(HexShort v) && { return std::move(*this << v); }
-    LogHelper& operator<<(Quoted v) &;
-    LogHelper&& operator<<(Quoted v) && { return std::move(*this << v); }
+    LogHelper& operator<<(Hex v) & noexcept;
+    LogHelper&& operator<<(Hex v) && noexcept { return std::move(*this << v); }
+    LogHelper& operator<<(HexShort v) & noexcept;
+    LogHelper&& operator<<(HexShort v) && noexcept { return std::move(*this << v); }
+    LogHelper& operator<<(Quoted v) & noexcept;
+    LogHelper&& operator<<(Quoted v) && noexcept { return std::move(*this << v); }
 
     /// Stream for the rate limiter used by LOG_LIMITED_*.
-    LogHelper& operator<<(const impl::RateLimiter& rl) &;
-    LogHelper&& operator<<(const impl::RateLimiter& rl) && { return std::move(*this << rl); }
+    LogHelper& operator<<(const impl::RateLimiter& rl) & noexcept;
+    LogHelper&& operator<<(const impl::RateLimiter& rl) && noexcept { return std::move(*this << rl); }
 
     /// Captures an exception (message + type) into the record.
-    LogHelper& WithException(const std::exception& ex) &;
-    LogHelper&& WithException(const std::exception& ex) && { return std::move(WithException(ex)); }
+    LogHelper& WithException(const std::exception& ex) & noexcept;
+    LogHelper&& WithException(const std::exception& ex) && noexcept { return std::move(WithException(ex)); }
 
-    /// Access low-level tag writer.
+    /// Access low-level tag writer. Returns a per-thread dummy writer
+    /// when the helper failed to construct (e.g. pool Pop threw); the
+    /// caller's tag writes become no-ops rather than null-dereferences.
     impl::TagWriter& GetTagWriter() noexcept;
 
     /// True if the helper will emit when destroyed.
     bool IsActive() const noexcept;
 
 private:
+    /// Streaming methods below are private implementation detail; they
+    /// may throw `std::bad_alloc` / format exceptions. Public `<<`
+    /// overloads wrap them in try/catch so the user-facing contract
+    /// stays `noexcept`.
     void Put(std::string_view sv);
     void Put(const char* s);
     void Put(const std::string& s) { Put(std::string_view(s)); }
@@ -245,6 +259,13 @@ private:
     void Put(bool v);
     void Put(char v);
     void PutFormatted(std::string s);
+
+    /// Handle an internal failure (exception in a streaming method).
+    /// Writes a diagnostic line to `stderr` and marks the record
+    /// broken so the destructor skips `DoLog`. Never throws. `msg`
+    /// should be a static string literal — not formatted at call site
+    /// — so this path itself cannot fail.
+    void InternalLoggingError(const char* msg) noexcept;
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

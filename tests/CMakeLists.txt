@@ -22,6 +22,7 @@ add_executable(ulog-tests
     record_enricher_test.cpp
     structured_sink_test.cpp
     log_record_location_test.cpp
+    log_helper_noexcept_test.cpp
 )
 if(NOT WIN32)
     target_sources(ulog-tests PRIVATE unix_sink_test.cpp)
