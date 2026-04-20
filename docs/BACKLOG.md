@@ -181,16 +181,7 @@ Phase как единый sprint (~1 день) из low-effort high-value overlo
 **Effort:** маленький (30 мин).
 **Impact:** средний — safety + ergonomics.
 
-### Deferred (отдельный sprint)
-
-- **`PutRange` для контейнеров** (vector/map/set/array/ranges) с respect'ом к `IsLimitReached()`. Самая заметная gap ежедневно, но — mid effort: нужен map-specialization, `PutMapElement`, quoted strings для string-like elements. Отдельная фаза.
-- **`LogHelper::Format(fmt_str, args...)`** — helper без `fmt::format` в caller'е. Mid-value, mid-effort.
-- **Callable `operator<<(Fun)`** — deferred formatting lambda. Low value.
-- **`std::atomic<T>` overload** — load + дорисовать. Low value.
-- **`LogExtra&&` rvalue overload** — move оптимизация. Low value.
-- **Ostream adapter** (`meta::kIsOstreamWritable`) — legacy `std::ostream&` bridge. High effort, mid value — отдельный sprint если реальный legacy-tail найдётся.
-
-### Coverage
+### Coverage для Pri 1-5
 
 Каждый overload — unit test на формат:
 - `chrono`: `1000ms` → строка `"1000ms"` в TSKV.
@@ -200,6 +191,67 @@ Phase как единый sprint (~1 день) из low-effort high-value overlo
 - pointer: nullptr → `(null)`, valid T* → `0x…`, char* → plain string.
 
 Один файл `tests/log_helper_streaming_parity_test.cpp`.
+
+---
+
+## LogHelper container streaming (`PutRange`)
+
+**Что:** `operator<<(LogHelper&, const T&)` для any range-satisfying тип — walk через `begin`/`end`, вывод `[a, b, c]`. Специализация `PutMapElement` для `std::pair<const K, V>` (map/unordered_map) → формат `"key": value`. string-like elements → `Quoted{}`. Respect `IsLimitReached()` — остаток печатается как `...N more`. `static_assert` против `char`-диапазонов (иначе каждая строка станет "[h, e, l, l, o]").
+
+**Зачем:** userver hot pattern `LOG_INFO() << "keys=" << map` работает out of the box. У нас любой контейнер → compile error (fmt::format на `std::vector<int>` без `fmt/ranges.h` не собирается). Самая заметная gap в ежедневном использовании после streaming parity sprint.
+
+**Как:** userver referent — `universal/src/logging/log_helper.cpp` методы `PutRange` / `PutRangeElement` / `PutMapElement`. Detector — `concept Range = requires(T t) { std::begin(t); std::end(t); }` (или C++20 `ranges::range`). Шаблонный `operator<<` gated на `Range && !integral && !String` + исключение `char`-ranges.
+
+**Осторожно:** ADL коллизия с existing template `operator<<(const T&)` — нужен SFINAE/concept partitioning, иначе ambiguity на `std::string` / `std::string_view` (они satisfy Range).
+
+**Effort:** средний (полный день с unit test'ами на vector/map/set/nested).
+**Impact:** высокий — одна из наиболее missed userver features.
+
+---
+
+## LogHelper::Format + nice-to-have overloads
+
+Группа мелких улучшений — объединить в один sprint (~2-3 часа).
+
+### `LogHelper::Format(fmt_str, args...)`
+**Что:** публичный `template <typename... Args> LogHelper& Format(fmt::format_string<Args...>, Args&&...)`. Форматирует через fmt + `Put(string_view)`.
+**Зачем:** caller'у не нужно писать `<< fmt::format("...", a, b)` — save одного временного `std::string`. userver эквивалент — `LogHelper::Format(...)`.
+**Effort:** очень маленький (30 мин).
+**Impact:** средний — эргономика, не perf.
+
+### `operator<<(LogExtra&&)` rvalue
+**Что:** дополнительный overload к existing `const LogExtra&` — `std::move` elements внутрь.
+**Зачем:** `LOG_INFO() << ulog::LogExtra{{"k", "v"}}` строит временный — сейчас копируется. Move отдаёт string'и без дубля.
+**Effort:** очень маленький (15 мин).
+**Impact:** низкий — microopt на rare path.
+
+### `std::atomic<T>` overload
+**Что:** `operator<<(LogHelper&, const std::atomic<T>&)` → `lh << a.load()`.
+**Effort:** очень маленький.
+**Impact:** низкий — convenience.
+
+### Callable `operator<<(Fun)`
+**Что:** `template <typename Fun> operator<<(Fun&&) requires std::is_invocable_r_v<void, Fun, LogHelper&>` — вызывает `fun(*this)`. Позволяет `LOG_INFO() << [&](auto& lh){ if (debug) lh << expensive_repr; }` — deferred formatting пока `IsLimitReached` не на boundary.
+**Блок:** может коллидировать с implicit conversions / unrelated functor'ами. userver защищает `static_assert` против function-pointer'ов (ostream `std::endl`-style trap).
+**Effort:** маленький (1 час с тестами).
+**Impact:** низкий в ежедневке, high в edge cases (conditional log body).
+
+---
+
+## LogHelper ostream adapter (`std::ostream` bridge)
+
+**Что:** если тип имеет классический `std::ostream& operator<<(std::ostream&, const T&)`, LogHelper autopick'ает его через internal `std::ostream` адаптер поверх `Impl::text` buffer. userver реализация — `LogHelper::Stream()` + `FlushStream()` с SFINAE на `meta::kIsOstreamWritable`.
+
+**Зачем:** legacy компатибельность. В C++ экосистеме огромный tail of types (boost, GMP, ICU, OpenCV, user-defined MyStruct с `operator<<(ostream&, ...)`) имеет ostream-only сериализацию. Без адаптера пользователь либо пишет wrapper'ы, либо получает compile error.
+
+**Блок:** `std::ostream` имеет locale / format flags state — correctness требует изоляции. Buffer-to-string pipe через `std::ostringstream` / custom `std::streambuf` (дешевле, но более code). RAII flush на каждый `<<` call.
+
+**Effort:** большой (1-2 дня — custom streambuf, locale-safe init, test coverage on exotic types).
+**Impact:** средний — обширный, но нишевый. Open'ить только если в production встретился real legacy tail.
+
+---
+
+## OTLP tracing integration via `LogClass::kTrace`
 
 Дополняет Phase 22 (OTLP logs). Userver пропускает spans через ту же `LogHelper` машинерию что и логи — различает их tag'ом `LogClass`. Даёт unified emission path: logs → OTLP `/v1/logs`, spans → OTLP `/v1/traces`, один sink batch'ит оба.
 
