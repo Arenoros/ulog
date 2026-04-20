@@ -92,16 +92,23 @@ formatters::BasePtr MakeFormatterImpl(Format fmt,
 
 }  // namespace
 
+namespace {
+
+// Shared fallback used when `emit_location_ == false` — every text
+// formatter already skips `module` when the location is empty.
+// One definition reused by both `MakeFormatterInto` and
+// `MakeFormatterForFormat`; `static constexpr` gives it internal
+// linkage + program-lifetime storage, safe to return via const&.
+constexpr LogRecordLocation kEmptyLocation{};
+
+}  // namespace
+
 formatters::BasePtr TextLoggerBase::MakeFormatterInto(
         void* scratch,
         std::size_t scratch_size,
         Level level,
         const LogRecordLocation& location) {
     const auto now = std::chrono::system_clock::now();
-    // `emit_location_ == false` suppresses the `module` field. Pass a
-    // default-constructed LogRecordLocation (empty fields) — every text
-    // formatter already skips `module` when the location is empty.
-    static constexpr LogRecordLocation kEmptyLocation{};
     return MakeFormatterImpl(format_, ts_fmt_, scratch, scratch_size,
                              level, emit_location_ ? location : kEmptyLocation, now);
 }
@@ -111,7 +118,6 @@ formatters::BasePtr TextLoggerBase::MakeFormatterForFormat(
         Level level,
         const LogRecordLocation& location) {
     const auto now = std::chrono::system_clock::now();
-    static constexpr LogRecordLocation kEmptyLocation{};
     // Force heap by passing null scratch.
     return MakeFormatterImpl(fmt, ts_fmt_, /*scratch=*/nullptr, /*size=*/0,
                              level, emit_location_ ? location : kEmptyLocation, now);

@@ -142,6 +142,10 @@ private:
     char line_string_[8]{};
 };
 
+// Scope-less macros leak across the TU — undo here so headers including
+// ulog/log_helper.hpp cannot clobber user definitions of the same name.
+#undef ULOG_IMPL_BUILTIN_FILE
+
 /// Hex-formatted value helper.
 struct Hex {
     std::uintptr_t value;
