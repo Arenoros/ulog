@@ -5,6 +5,8 @@ set(BENCH_SOURCES
     sync_throughput_bench.cpp
     async_throughput_bench.cpp
     multi_producer_bench.cpp
+    latency_bench.cpp
+    payload_bench.cpp
     slow_sink_bench.cpp
     formatter_bench.cpp
     bench_main.cpp
