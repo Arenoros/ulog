@@ -234,7 +234,7 @@ struct EntryStorage final {
 #define ULOG_IMPL_LOG_LOCATION() \
     ::ulog::LogRecordLocation { ULOG_IMPL_TRIM_FILE(__FILE__), __LINE__, static_cast<const char*>(__func__) }
 
-#define ULOG_IMPL_LOG_TO(logger, level, ...) \
+#define ULOG_IMPL_LOG_TO(logger, level) \
     ::ulog::LogHelper((logger), (level), ULOG_IMPL_LOG_LOCATION())
 
 // Dynamic-debug aware, ShouldLog-guarded record builder.
@@ -245,7 +245,7 @@ struct EntryStorage final {
 // This keeps a shared_ptr alive for the full duration of the helper.
 // Expands to a for-statement that runs exactly once iff logging is enabled;
 // chaining `<< value` attaches to the LogHelper in the loop body.
-#define ULOG_LOG_TO(logger, lvl, ...)                                                         \
+#define ULOG_LOG_TO(logger, lvl)                                                              \
     if (auto&& ulog_logger__ = (logger);                                                      \
         ULOG_IMPL_DYNAMIC_DEBUG_ENTRY().ShouldNotLog(ulog_logger__, (lvl))) {}                \
     else                                                                                      \
@@ -257,66 +257,97 @@ struct EntryStorage final {
 
 // Default-logger macro snapshots the shared_ptr through the atomic slot, so
 // the record outlives any concurrent SetDefaultLogger() race.
-#define ULOG_LOG(lvl, ...) ULOG_LOG_TO(::ulog::GetDefaultLoggerPtr(), (lvl), __VA_ARGS__)
+#define ULOG_LOG(lvl) ULOG_LOG_TO(::ulog::GetDefaultLoggerPtr(), (lvl))
 
 // ---- Compile-time erase by level (ULOG_ERASE_LOG_WITH_LEVEL=N) ----
+//
+// Two eraser families, split by whether the caller forwards variadic
+// arguments:
+//
+//  * `ULOG_IMPL_LOG_<L>_ERASER(MACRO, LOGGER)` — no `...`. Feeds
+//    the LOG_* / LOG_LIMITED_* family, which never needs to forward a
+//    payload through the macro chain (the payload hangs off `<<` after
+//    the expansion). Keeps leaf calls like `LOG_INFO()` free of empty
+//    variadic args that `-Wpedantic` complains about in C++17 mode.
+//  * `ULOG_IMPL_LFMT_<L>_ERASER(MACRO, LOGGER, ...)` — with `...`.
+//    Feeds the LFMT_* / LPRINT_* family, whose payload (format string +
+//    args) rides the variadic through to the underlying `MACRO`.
 #if defined(ULOG_ERASE_LOG_WITH_LEVEL)
-#define ULOG_IMPL_ERASE(level_int, logger, ...)                                  \
-    for (bool ulog_once__ = false; ulog_once__; ulog_once__ = false)             \
-        ULOG_IMPL_LOG_TO((logger), ::ulog::Level::kTrace, __VA_ARGS__)
-#define ULOG_IMPL_LOGS_TRACE_ERASER(MACRO, LOGGER, ...)                          \
-    ULOG_IMPL_ERASE(0, LOGGER, __VA_ARGS__)
+#define ULOG_IMPL_ERASE_NOVA(logger)                                              \
+    for (bool ulog_once__ = false; ulog_once__; ulog_once__ = false)              \
+        ULOG_IMPL_LOG_TO((logger), ::ulog::Level::kTrace)
+#define ULOG_IMPL_ERASE_VA(logger, ...)                                           \
+    for (bool ulog_once__ = false; ulog_once__; ulog_once__ = false)              \
+        ULOG_IMPL_LOG_TO((logger), ::ulog::Level::kTrace)
+#define ULOG_IMPL_LOG_TRACE_ERASER(MACRO, LOGGER)        ULOG_IMPL_ERASE_NOVA(LOGGER)
+#define ULOG_IMPL_LFMT_TRACE_ERASER(MACRO, LOGGER, ...)  ULOG_IMPL_ERASE_VA(LOGGER, __VA_ARGS__)
 #if ULOG_ERASE_LOG_WITH_LEVEL > 0
-#define ULOG_IMPL_LOGS_DEBUG_ERASER(MACRO, LOGGER, ...)                          \
-    ULOG_IMPL_ERASE(1, LOGGER, __VA_ARGS__)
+#define ULOG_IMPL_LOG_DEBUG_ERASER(MACRO, LOGGER)        ULOG_IMPL_ERASE_NOVA(LOGGER)
+#define ULOG_IMPL_LFMT_DEBUG_ERASER(MACRO, LOGGER, ...)  ULOG_IMPL_ERASE_VA(LOGGER, __VA_ARGS__)
 #endif
 #if ULOG_ERASE_LOG_WITH_LEVEL > 1
-#define ULOG_IMPL_LOGS_INFO_ERASER(MACRO, LOGGER, ...)                           \
-    ULOG_IMPL_ERASE(2, LOGGER, __VA_ARGS__)
+#define ULOG_IMPL_LOG_INFO_ERASER(MACRO, LOGGER)         ULOG_IMPL_ERASE_NOVA(LOGGER)
+#define ULOG_IMPL_LFMT_INFO_ERASER(MACRO, LOGGER, ...)   ULOG_IMPL_ERASE_VA(LOGGER, __VA_ARGS__)
 #endif
 #if ULOG_ERASE_LOG_WITH_LEVEL > 2
-#define ULOG_IMPL_LOGS_WARNING_ERASER(MACRO, LOGGER, ...)                        \
-    ULOG_IMPL_ERASE(3, LOGGER, __VA_ARGS__)
+#define ULOG_IMPL_LOG_WARNING_ERASER(MACRO, LOGGER)      ULOG_IMPL_ERASE_NOVA(LOGGER)
+#define ULOG_IMPL_LFMT_WARNING_ERASER(MACRO, LOGGER, ...) ULOG_IMPL_ERASE_VA(LOGGER, __VA_ARGS__)
 #endif
 #if ULOG_ERASE_LOG_WITH_LEVEL > 3
-#define ULOG_IMPL_LOGS_ERROR_ERASER(MACRO, LOGGER, ...)                          \
-    ULOG_IMPL_ERASE(4, LOGGER, __VA_ARGS__)
+#define ULOG_IMPL_LOG_ERROR_ERASER(MACRO, LOGGER)        ULOG_IMPL_ERASE_NOVA(LOGGER)
+#define ULOG_IMPL_LFMT_ERROR_ERASER(MACRO, LOGGER, ...)  ULOG_IMPL_ERASE_VA(LOGGER, __VA_ARGS__)
 #endif
 #endif  // ULOG_ERASE_LOG_WITH_LEVEL
 
-#ifndef ULOG_IMPL_LOGS_TRACE_ERASER
-#define ULOG_IMPL_LOGS_TRACE_ERASER(MACRO, LOGGER, ...) MACRO(LOGGER, ::ulog::Level::kTrace, __VA_ARGS__)
+#ifndef ULOG_IMPL_LOG_TRACE_ERASER
+#define ULOG_IMPL_LOG_TRACE_ERASER(MACRO, LOGGER)        MACRO(LOGGER, ::ulog::Level::kTrace)
 #endif
-#ifndef ULOG_IMPL_LOGS_DEBUG_ERASER
-#define ULOG_IMPL_LOGS_DEBUG_ERASER(MACRO, LOGGER, ...) MACRO(LOGGER, ::ulog::Level::kDebug, __VA_ARGS__)
+#ifndef ULOG_IMPL_LOG_DEBUG_ERASER
+#define ULOG_IMPL_LOG_DEBUG_ERASER(MACRO, LOGGER)        MACRO(LOGGER, ::ulog::Level::kDebug)
 #endif
-#ifndef ULOG_IMPL_LOGS_INFO_ERASER
-#define ULOG_IMPL_LOGS_INFO_ERASER(MACRO, LOGGER, ...) MACRO(LOGGER, ::ulog::Level::kInfo, __VA_ARGS__)
+#ifndef ULOG_IMPL_LOG_INFO_ERASER
+#define ULOG_IMPL_LOG_INFO_ERASER(MACRO, LOGGER)         MACRO(LOGGER, ::ulog::Level::kInfo)
 #endif
-#ifndef ULOG_IMPL_LOGS_WARNING_ERASER
-#define ULOG_IMPL_LOGS_WARNING_ERASER(MACRO, LOGGER, ...) MACRO(LOGGER, ::ulog::Level::kWarning, __VA_ARGS__)
+#ifndef ULOG_IMPL_LOG_WARNING_ERASER
+#define ULOG_IMPL_LOG_WARNING_ERASER(MACRO, LOGGER)      MACRO(LOGGER, ::ulog::Level::kWarning)
 #endif
-#ifndef ULOG_IMPL_LOGS_ERROR_ERASER
-#define ULOG_IMPL_LOGS_ERROR_ERASER(MACRO, LOGGER, ...) MACRO(LOGGER, ::ulog::Level::kError, __VA_ARGS__)
+#ifndef ULOG_IMPL_LOG_ERROR_ERASER
+#define ULOG_IMPL_LOG_ERROR_ERASER(MACRO, LOGGER)        MACRO(LOGGER, ::ulog::Level::kError)
+#endif
+
+#ifndef ULOG_IMPL_LFMT_TRACE_ERASER
+#define ULOG_IMPL_LFMT_TRACE_ERASER(MACRO, LOGGER, ...)    MACRO(LOGGER, ::ulog::Level::kTrace, __VA_ARGS__)
+#endif
+#ifndef ULOG_IMPL_LFMT_DEBUG_ERASER
+#define ULOG_IMPL_LFMT_DEBUG_ERASER(MACRO, LOGGER, ...)    MACRO(LOGGER, ::ulog::Level::kDebug, __VA_ARGS__)
+#endif
+#ifndef ULOG_IMPL_LFMT_INFO_ERASER
+#define ULOG_IMPL_LFMT_INFO_ERASER(MACRO, LOGGER, ...)     MACRO(LOGGER, ::ulog::Level::kInfo, __VA_ARGS__)
+#endif
+#ifndef ULOG_IMPL_LFMT_WARNING_ERASER
+#define ULOG_IMPL_LFMT_WARNING_ERASER(MACRO, LOGGER, ...)  MACRO(LOGGER, ::ulog::Level::kWarning, __VA_ARGS__)
+#endif
+#ifndef ULOG_IMPL_LFMT_ERROR_ERASER
+#define ULOG_IMPL_LFMT_ERROR_ERASER(MACRO, LOGGER, ...)    MACRO(LOGGER, ::ulog::Level::kError, __VA_ARGS__)
 #endif
 
 // -------- Long-named (always-available) macros --------
-#define ULOG_LOG_TRACE(...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LOG_DEBUG(...)    ULOG_IMPL_LOGS_DEBUG_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LOG_INFO(...)     ULOG_IMPL_LOGS_INFO_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LOG_WARNING(...)  ULOG_IMPL_LOGS_WARNING_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LOG_ERROR(...)    ULOG_IMPL_LOGS_ERROR_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LOG_CRITICAL(...) ULOG_LOG(::ulog::Level::kCritical, __VA_ARGS__)
+#define ULOG_LOG_TRACE()    ULOG_IMPL_LOG_TRACE_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr())
+#define ULOG_LOG_DEBUG()    ULOG_IMPL_LOG_DEBUG_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr())
+#define ULOG_LOG_INFO()     ULOG_IMPL_LOG_INFO_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr())
+#define ULOG_LOG_WARNING()  ULOG_IMPL_LOG_WARNING_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr())
+#define ULOG_LOG_ERROR()    ULOG_IMPL_LOG_ERROR_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr())
+#define ULOG_LOG_CRITICAL() ULOG_LOG(::ulog::Level::kCritical)
 
-#define ULOG_LOG_TRACE_TO(logger, ...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LOG_TO, logger, __VA_ARGS__)
-#define ULOG_LOG_DEBUG_TO(logger, ...)    ULOG_IMPL_LOGS_DEBUG_ERASER(ULOG_LOG_TO, logger, __VA_ARGS__)
-#define ULOG_LOG_INFO_TO(logger, ...)     ULOG_IMPL_LOGS_INFO_ERASER(ULOG_LOG_TO, logger, __VA_ARGS__)
-#define ULOG_LOG_WARNING_TO(logger, ...)  ULOG_IMPL_LOGS_WARNING_ERASER(ULOG_LOG_TO, logger, __VA_ARGS__)
-#define ULOG_LOG_ERROR_TO(logger, ...)    ULOG_IMPL_LOGS_ERROR_ERASER(ULOG_LOG_TO, logger, __VA_ARGS__)
-#define ULOG_LOG_CRITICAL_TO(logger, ...) ULOG_LOG_TO(logger, ::ulog::Level::kCritical, __VA_ARGS__)
+#define ULOG_LOG_TRACE_TO(logger)    ULOG_IMPL_LOG_TRACE_ERASER(ULOG_LOG_TO, logger)
+#define ULOG_LOG_DEBUG_TO(logger)    ULOG_IMPL_LOG_DEBUG_ERASER(ULOG_LOG_TO, logger)
+#define ULOG_LOG_INFO_TO(logger)     ULOG_IMPL_LOG_INFO_ERASER(ULOG_LOG_TO, logger)
+#define ULOG_LOG_WARNING_TO(logger)  ULOG_IMPL_LOG_WARNING_ERASER(ULOG_LOG_TO, logger)
+#define ULOG_LOG_ERROR_TO(logger)    ULOG_IMPL_LOG_ERROR_ERASER(ULOG_LOG_TO, logger)
+#define ULOG_LOG_CRITICAL_TO(logger) ULOG_LOG_TO(logger, ::ulog::Level::kCritical)
 
 // -------- Rate-limited variants --------
-#define ULOG_LOG_LIMITED_TO(logger, lvl, ...)                                                                \
+#define ULOG_LOG_LIMITED_TO(logger, lvl)                                                                     \
     if (const ::ulog::impl::RateLimiter ulog_rl__ {                                                          \
         []() -> ::ulog::impl::RateLimitData& {                                                               \
             thread_local ::ulog::impl::RateLimitData d;                                                      \
@@ -326,23 +357,23 @@ struct EntryStorage final {
         __LINE__                                                                                             \
     }; !ulog_rl__.ShouldLog()) {                                                                             \
     } else                                                                                                   \
-        ULOG_LOG_TO((logger), (lvl), __VA_ARGS__) << ulog_rl__
+        ULOG_LOG_TO((logger), (lvl)) << ulog_rl__
 
-#define ULOG_LOG_LIMITED(lvl, ...)          ULOG_LOG_LIMITED_TO(::ulog::GetDefaultLoggerPtr(), (lvl), __VA_ARGS__)
+#define ULOG_LOG_LIMITED(lvl)          ULOG_LOG_LIMITED_TO(::ulog::GetDefaultLoggerPtr(), (lvl))
 
-#define ULOG_LOG_LIMITED_TRACE(...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LOG_LIMITED_DEBUG(...)    ULOG_IMPL_LOGS_DEBUG_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LOG_LIMITED_INFO(...)     ULOG_IMPL_LOGS_INFO_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LOG_LIMITED_WARNING(...)  ULOG_IMPL_LOGS_WARNING_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LOG_LIMITED_ERROR(...)    ULOG_IMPL_LOGS_ERROR_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LOG_LIMITED_CRITICAL(...) ULOG_LOG_LIMITED(::ulog::Level::kCritical, __VA_ARGS__)
+#define ULOG_LOG_LIMITED_TRACE()    ULOG_IMPL_LOG_TRACE_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr())
+#define ULOG_LOG_LIMITED_DEBUG()    ULOG_IMPL_LOG_DEBUG_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr())
+#define ULOG_LOG_LIMITED_INFO()     ULOG_IMPL_LOG_INFO_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr())
+#define ULOG_LOG_LIMITED_WARNING()  ULOG_IMPL_LOG_WARNING_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr())
+#define ULOG_LOG_LIMITED_ERROR()    ULOG_IMPL_LOG_ERROR_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr())
+#define ULOG_LOG_LIMITED_CRITICAL() ULOG_LOG_LIMITED(::ulog::Level::kCritical)
 
-#define ULOG_LOG_LIMITED_TRACE_TO(logger, ...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LOG_LIMITED_TO, logger, __VA_ARGS__)
-#define ULOG_LOG_LIMITED_DEBUG_TO(logger, ...)    ULOG_IMPL_LOGS_DEBUG_ERASER(ULOG_LOG_LIMITED_TO, logger, __VA_ARGS__)
-#define ULOG_LOG_LIMITED_INFO_TO(logger, ...)     ULOG_IMPL_LOGS_INFO_ERASER(ULOG_LOG_LIMITED_TO, logger, __VA_ARGS__)
-#define ULOG_LOG_LIMITED_WARNING_TO(logger, ...)  ULOG_IMPL_LOGS_WARNING_ERASER(ULOG_LOG_LIMITED_TO, logger, __VA_ARGS__)
-#define ULOG_LOG_LIMITED_ERROR_TO(logger, ...)    ULOG_IMPL_LOGS_ERROR_ERASER(ULOG_LOG_LIMITED_TO, logger, __VA_ARGS__)
-#define ULOG_LOG_LIMITED_CRITICAL_TO(logger, ...) ULOG_LOG_LIMITED_TO(logger, ::ulog::Level::kCritical, __VA_ARGS__)
+#define ULOG_LOG_LIMITED_TRACE_TO(logger)    ULOG_IMPL_LOG_TRACE_ERASER(ULOG_LOG_LIMITED_TO, logger)
+#define ULOG_LOG_LIMITED_DEBUG_TO(logger)    ULOG_IMPL_LOG_DEBUG_ERASER(ULOG_LOG_LIMITED_TO, logger)
+#define ULOG_LOG_LIMITED_INFO_TO(logger)     ULOG_IMPL_LOG_INFO_ERASER(ULOG_LOG_LIMITED_TO, logger)
+#define ULOG_LOG_LIMITED_WARNING_TO(logger)  ULOG_IMPL_LOG_WARNING_ERASER(ULOG_LOG_LIMITED_TO, logger)
+#define ULOG_LOG_LIMITED_ERROR_TO(logger)    ULOG_IMPL_LOG_ERROR_ERASER(ULOG_LOG_LIMITED_TO, logger)
+#define ULOG_LOG_LIMITED_CRITICAL_TO(logger) ULOG_LOG_LIMITED_TO(logger, ::ulog::Level::kCritical)
 
 // -------- fmt-style variants (LFMT_*) --------
 //
@@ -357,18 +388,18 @@ struct EntryStorage final {
     ULOG_LOG_TO(logger, lvl) << ::fmt::format(__VA_ARGS__)
 #define ULOG_LFMT(lvl, ...)            ULOG_LFMT_TO(::ulog::GetDefaultLoggerPtr(), lvl, __VA_ARGS__)
 
-#define ULOG_LFMT_TRACE(...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LFMT_DEBUG(...)    ULOG_IMPL_LOGS_DEBUG_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LFMT_INFO(...)     ULOG_IMPL_LOGS_INFO_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LFMT_WARNING(...)  ULOG_IMPL_LOGS_WARNING_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LFMT_ERROR(...)    ULOG_IMPL_LOGS_ERROR_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LFMT_TRACE(...)    ULOG_IMPL_LFMT_TRACE_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LFMT_DEBUG(...)    ULOG_IMPL_LFMT_DEBUG_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LFMT_INFO(...)     ULOG_IMPL_LFMT_INFO_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LFMT_WARNING(...)  ULOG_IMPL_LFMT_WARNING_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LFMT_ERROR(...)    ULOG_IMPL_LFMT_ERROR_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
 #define ULOG_LFMT_CRITICAL(...) ULOG_LFMT(::ulog::Level::kCritical, __VA_ARGS__)
 
-#define ULOG_LFMT_TRACE_TO(logger, ...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LFMT_TO, logger, __VA_ARGS__)
-#define ULOG_LFMT_DEBUG_TO(logger, ...)    ULOG_IMPL_LOGS_DEBUG_ERASER(ULOG_LFMT_TO, logger, __VA_ARGS__)
-#define ULOG_LFMT_INFO_TO(logger, ...)     ULOG_IMPL_LOGS_INFO_ERASER(ULOG_LFMT_TO, logger, __VA_ARGS__)
-#define ULOG_LFMT_WARNING_TO(logger, ...)  ULOG_IMPL_LOGS_WARNING_ERASER(ULOG_LFMT_TO, logger, __VA_ARGS__)
-#define ULOG_LFMT_ERROR_TO(logger, ...)    ULOG_IMPL_LOGS_ERROR_ERASER(ULOG_LFMT_TO, logger, __VA_ARGS__)
+#define ULOG_LFMT_TRACE_TO(logger, ...)    ULOG_IMPL_LFMT_TRACE_ERASER(ULOG_LFMT_TO, logger, __VA_ARGS__)
+#define ULOG_LFMT_DEBUG_TO(logger, ...)    ULOG_IMPL_LFMT_DEBUG_ERASER(ULOG_LFMT_TO, logger, __VA_ARGS__)
+#define ULOG_LFMT_INFO_TO(logger, ...)     ULOG_IMPL_LFMT_INFO_ERASER(ULOG_LFMT_TO, logger, __VA_ARGS__)
+#define ULOG_LFMT_WARNING_TO(logger, ...)  ULOG_IMPL_LFMT_WARNING_ERASER(ULOG_LFMT_TO, logger, __VA_ARGS__)
+#define ULOG_LFMT_ERROR_TO(logger, ...)    ULOG_IMPL_LFMT_ERROR_ERASER(ULOG_LFMT_TO, logger, __VA_ARGS__)
 #define ULOG_LFMT_CRITICAL_TO(logger, ...) ULOG_LFMT_TO(logger, ::ulog::Level::kCritical, __VA_ARGS__)
 
 // -------- printf-style variants (LPRINT_*) --------
@@ -381,56 +412,56 @@ struct EntryStorage final {
     ULOG_LOG_TO(logger, lvl) << ::fmt::sprintf(__VA_ARGS__)
 #define ULOG_LPRINT(lvl, ...)            ULOG_LPRINT_TO(::ulog::GetDefaultLoggerPtr(), lvl, __VA_ARGS__)
 
-#define ULOG_LPRINT_TRACE(...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LPRINT_DEBUG(...)    ULOG_IMPL_LOGS_DEBUG_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LPRINT_INFO(...)     ULOG_IMPL_LOGS_INFO_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LPRINT_WARNING(...)  ULOG_IMPL_LOGS_WARNING_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LPRINT_ERROR(...)    ULOG_IMPL_LOGS_ERROR_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LPRINT_TRACE(...)    ULOG_IMPL_LFMT_TRACE_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LPRINT_DEBUG(...)    ULOG_IMPL_LFMT_DEBUG_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LPRINT_INFO(...)     ULOG_IMPL_LFMT_INFO_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LPRINT_WARNING(...)  ULOG_IMPL_LFMT_WARNING_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LPRINT_ERROR(...)    ULOG_IMPL_LFMT_ERROR_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
 #define ULOG_LPRINT_CRITICAL(...) ULOG_LPRINT(::ulog::Level::kCritical, __VA_ARGS__)
 
-#define ULOG_LPRINT_TRACE_TO(logger, ...)    ULOG_IMPL_LOGS_TRACE_ERASER(ULOG_LPRINT_TO, logger, __VA_ARGS__)
-#define ULOG_LPRINT_DEBUG_TO(logger, ...)    ULOG_IMPL_LOGS_DEBUG_ERASER(ULOG_LPRINT_TO, logger, __VA_ARGS__)
-#define ULOG_LPRINT_INFO_TO(logger, ...)     ULOG_IMPL_LOGS_INFO_ERASER(ULOG_LPRINT_TO, logger, __VA_ARGS__)
-#define ULOG_LPRINT_WARNING_TO(logger, ...)  ULOG_IMPL_LOGS_WARNING_ERASER(ULOG_LPRINT_TO, logger, __VA_ARGS__)
-#define ULOG_LPRINT_ERROR_TO(logger, ...)    ULOG_IMPL_LOGS_ERROR_ERASER(ULOG_LPRINT_TO, logger, __VA_ARGS__)
+#define ULOG_LPRINT_TRACE_TO(logger, ...)    ULOG_IMPL_LFMT_TRACE_ERASER(ULOG_LPRINT_TO, logger, __VA_ARGS__)
+#define ULOG_LPRINT_DEBUG_TO(logger, ...)    ULOG_IMPL_LFMT_DEBUG_ERASER(ULOG_LPRINT_TO, logger, __VA_ARGS__)
+#define ULOG_LPRINT_INFO_TO(logger, ...)     ULOG_IMPL_LFMT_INFO_ERASER(ULOG_LPRINT_TO, logger, __VA_ARGS__)
+#define ULOG_LPRINT_WARNING_TO(logger, ...)  ULOG_IMPL_LFMT_WARNING_ERASER(ULOG_LPRINT_TO, logger, __VA_ARGS__)
+#define ULOG_LPRINT_ERROR_TO(logger, ...)    ULOG_IMPL_LFMT_ERROR_ERASER(ULOG_LPRINT_TO, logger, __VA_ARGS__)
 #define ULOG_LPRINT_CRITICAL_TO(logger, ...) ULOG_LPRINT_TO(logger, ::ulog::Level::kCritical, __VA_ARGS__)
 
 // -------- Short (default) macro aliases — preserved from userver --------
 #ifndef ULOG_NO_SHORT_MACROS
 
-#define LOG_TO(logger, lvl, ...)           ULOG_LOG_TO(logger, lvl, __VA_ARGS__)
-#define LOG(lvl, ...)                      ULOG_LOG(lvl, __VA_ARGS__)
+#define LOG_TO(logger, lvl)                ULOG_LOG_TO(logger, lvl)
+#define LOG(lvl)                           ULOG_LOG(lvl)
 
-#define LOG_TRACE(...)                     ULOG_LOG_TRACE(__VA_ARGS__)
-#define LOG_DEBUG(...)                     ULOG_LOG_DEBUG(__VA_ARGS__)
-#define LOG_INFO(...)                      ULOG_LOG_INFO(__VA_ARGS__)
-#define LOG_WARNING(...)                   ULOG_LOG_WARNING(__VA_ARGS__)
-#define LOG_ERROR(...)                     ULOG_LOG_ERROR(__VA_ARGS__)
-#define LOG_CRITICAL(...)                  ULOG_LOG_CRITICAL(__VA_ARGS__)
+#define LOG_TRACE()                        ULOG_LOG_TRACE()
+#define LOG_DEBUG()                        ULOG_LOG_DEBUG()
+#define LOG_INFO()                         ULOG_LOG_INFO()
+#define LOG_WARNING()                      ULOG_LOG_WARNING()
+#define LOG_ERROR()                        ULOG_LOG_ERROR()
+#define LOG_CRITICAL()                     ULOG_LOG_CRITICAL()
 
-#define LOG_TRACE_TO(logger, ...)          ULOG_LOG_TRACE_TO(logger, __VA_ARGS__)
-#define LOG_DEBUG_TO(logger, ...)          ULOG_LOG_DEBUG_TO(logger, __VA_ARGS__)
-#define LOG_INFO_TO(logger, ...)           ULOG_LOG_INFO_TO(logger, __VA_ARGS__)
-#define LOG_WARNING_TO(logger, ...)        ULOG_LOG_WARNING_TO(logger, __VA_ARGS__)
-#define LOG_ERROR_TO(logger, ...)          ULOG_LOG_ERROR_TO(logger, __VA_ARGS__)
-#define LOG_CRITICAL_TO(logger, ...)       ULOG_LOG_CRITICAL_TO(logger, __VA_ARGS__)
+#define LOG_TRACE_TO(logger)               ULOG_LOG_TRACE_TO(logger)
+#define LOG_DEBUG_TO(logger)               ULOG_LOG_DEBUG_TO(logger)
+#define LOG_INFO_TO(logger)                ULOG_LOG_INFO_TO(logger)
+#define LOG_WARNING_TO(logger)             ULOG_LOG_WARNING_TO(logger)
+#define LOG_ERROR_TO(logger)               ULOG_LOG_ERROR_TO(logger)
+#define LOG_CRITICAL_TO(logger)            ULOG_LOG_CRITICAL_TO(logger)
 
-#define LOG_LIMITED_TO(logger, lvl, ...)   ULOG_LOG_LIMITED_TO(logger, lvl, __VA_ARGS__)
-#define LOG_LIMITED(lvl, ...)              ULOG_LOG_LIMITED(lvl, __VA_ARGS__)
+#define LOG_LIMITED_TO(logger, lvl)        ULOG_LOG_LIMITED_TO(logger, lvl)
+#define LOG_LIMITED(lvl)                   ULOG_LOG_LIMITED(lvl)
 
-#define LOG_LIMITED_TRACE(...)             ULOG_LOG_LIMITED_TRACE(__VA_ARGS__)
-#define LOG_LIMITED_DEBUG(...)             ULOG_LOG_LIMITED_DEBUG(__VA_ARGS__)
-#define LOG_LIMITED_INFO(...)              ULOG_LOG_LIMITED_INFO(__VA_ARGS__)
-#define LOG_LIMITED_WARNING(...)           ULOG_LOG_LIMITED_WARNING(__VA_ARGS__)
-#define LOG_LIMITED_ERROR(...)             ULOG_LOG_LIMITED_ERROR(__VA_ARGS__)
-#define LOG_LIMITED_CRITICAL(...)          ULOG_LOG_LIMITED_CRITICAL(__VA_ARGS__)
+#define LOG_LIMITED_TRACE()                ULOG_LOG_LIMITED_TRACE()
+#define LOG_LIMITED_DEBUG()                ULOG_LOG_LIMITED_DEBUG()
+#define LOG_LIMITED_INFO()                 ULOG_LOG_LIMITED_INFO()
+#define LOG_LIMITED_WARNING()              ULOG_LOG_LIMITED_WARNING()
+#define LOG_LIMITED_ERROR()                ULOG_LOG_LIMITED_ERROR()
+#define LOG_LIMITED_CRITICAL()             ULOG_LOG_LIMITED_CRITICAL()
 
-#define LOG_LIMITED_TRACE_TO(logger, ...)    ULOG_LOG_LIMITED_TRACE_TO(logger, __VA_ARGS__)
-#define LOG_LIMITED_DEBUG_TO(logger, ...)    ULOG_LOG_LIMITED_DEBUG_TO(logger, __VA_ARGS__)
-#define LOG_LIMITED_INFO_TO(logger, ...)     ULOG_LOG_LIMITED_INFO_TO(logger, __VA_ARGS__)
-#define LOG_LIMITED_WARNING_TO(logger, ...)  ULOG_LOG_LIMITED_WARNING_TO(logger, __VA_ARGS__)
-#define LOG_LIMITED_ERROR_TO(logger, ...)    ULOG_LOG_LIMITED_ERROR_TO(logger, __VA_ARGS__)
-#define LOG_LIMITED_CRITICAL_TO(logger, ...) ULOG_LOG_LIMITED_CRITICAL_TO(logger, __VA_ARGS__)
+#define LOG_LIMITED_TRACE_TO(logger)       ULOG_LOG_LIMITED_TRACE_TO(logger)
+#define LOG_LIMITED_DEBUG_TO(logger)       ULOG_LOG_LIMITED_DEBUG_TO(logger)
+#define LOG_LIMITED_INFO_TO(logger)        ULOG_LOG_LIMITED_INFO_TO(logger)
+#define LOG_LIMITED_WARNING_TO(logger)     ULOG_LOG_LIMITED_WARNING_TO(logger)
+#define LOG_LIMITED_ERROR_TO(logger)       ULOG_LOG_LIMITED_ERROR_TO(logger)
+#define LOG_LIMITED_CRITICAL_TO(logger)    ULOG_LOG_LIMITED_CRITICAL_TO(logger)
 
 // fmt-style short aliases. `LFMT_INFO("user={} id={}", name, id)`.
 #define LFMT(lvl, ...)                     ULOG_LFMT(lvl, __VA_ARGS__)
