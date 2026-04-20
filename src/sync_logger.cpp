@@ -40,9 +40,16 @@ void SyncLogger::LogMulti(Level level, impl::LogItemList items) {
         if (!entry.sink->ShouldLog(level)) continue;
         // `items[format_idx]` is the payload rendered for this sink's
         // registered format. On the single-format hot path `format_idx`
-        // is 0 for every sink and we touch items[0] only.
-        const std::size_t idx = entry.format_idx < items.size() ? entry.format_idx : 0;
-        auto* text = static_cast<impl::formatters::TextLogItem*>(items[idx].get());
+        // is 0 for every sink and only items[0] is touched.
+        //
+        // A sink whose format_idx exceeds items.size() was registered after
+        // this record's LogHelper materialized its formatters — the sink is
+        // invisible to in-flight records. Skip silently rather than writing
+        // items[0] (wrong format) which would hide the race from callers.
+        if (entry.format_idx >= items.size()) continue;
+        auto* text = static_cast<impl::formatters::TextLogItem*>(items[entry.format_idx].get());
+        // nullptr item means ExtractLoggerItem failed upstream (e.g. OOM);
+        // drop the write for this sink rather than emit an empty record.
         if (!text) continue;
         try {
             entry.sink->Write(text->payload.view());

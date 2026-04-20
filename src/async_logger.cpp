@@ -189,10 +189,12 @@ struct AsyncLogger::State {
                     if (rec.items.empty()) continue;
                     for (const auto& entry : snapshot) {
                         if (!entry.sink->ShouldLog(rec.level)) continue;
-                        const std::size_t idx = entry.format_idx < rec.items.size()
-                            ? entry.format_idx : 0;
-                        auto* text = static_cast<impl::formatters::TextLogItem*>(rec.items[idx].get());
-                        if (!text) continue;
+                        // Sink registered AFTER this record was materialized
+                        // is invisible to it — skip rather than fall through
+                        // to items[0] (wrong format).
+                        if (entry.format_idx >= rec.items.size()) continue;
+                        auto* text = static_cast<impl::formatters::TextLogItem*>(rec.items[entry.format_idx].get());
+                        if (!text) continue;  // OOM upstream — drop sink write
                         try { entry.sink->Write(text->payload.view()); }
                         catch (...) {}
                     }

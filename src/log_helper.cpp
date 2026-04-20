@@ -110,21 +110,31 @@ struct LogHelper::Impl {
             level, func_sv, file_sv, location.line);
 
         // Detect multi-format: only TextLoggerBase participates.
+        // Snapshot the full list once — the registry is append-only but a
+        // concurrent AddSink could otherwise run between GetActiveFormatCount
+        // and GetActiveFormats, leaving LogHelper materialized with fewer
+        // formatters than the sink vector later expects (every in-flight
+        // record MUST carry an item for every format visible at construction
+        // time; a sink added afterwards is invisible to this record and its
+        // format_idx may overshoot items.size() — LogMulti handles that via
+        // the out-of-range check).
         auto* text_base = dynamic_cast<impl::TextLoggerBase*>(&logger_ref);
-        if (text_base && text_base->GetActiveFormatCount() > 1) {
+        if (text_base) {
             const auto formats = text_base->GetActiveFormats();
-            extras.reserve(formats.size() - 1);
-            for (std::size_t i = 1; i < formats.size(); ++i) {
-                extras.push_back(text_base->MakeFormatterForFormat(
-                    formats[i], level, func_sv, file_sv, location.line));
+            if (formats.size() > 1) {
+                extras.reserve(formats.size() - 1);
+                for (std::size_t i = 1; i < formats.size(); ++i) {
+                    extras.push_back(text_base->MakeFormatterForFormat(
+                        formats[i], level, func_sv, file_sv, location.line));
+                }
+                fanout.emplace();
+                fanout->Add(formatter.get());
+                for (auto& e : extras) fanout->Add(e.get());
+                writer.Reset(&*fanout);
+                return;
             }
-            fanout.emplace();
-            fanout->Add(formatter.get());
-            for (auto& e : extras) fanout->Add(e.get());
-            writer.Reset(&*fanout);
-        } else {
-            writer.Reset(formatter.get());
         }
+        writer.Reset(formatter.get());
     }
 
     impl::LoggerBase& logger_ref;

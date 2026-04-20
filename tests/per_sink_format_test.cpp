@@ -158,6 +158,137 @@ TEST(PerSinkFormat, AsyncDifferentFormatsOneRecord) {
     EXPECT_TRUE(Contains(json_sink->Records().front(), "\"text\":\"async-multi\""));
 }
 
+TEST(PerSinkFormat, SyncRawFormatOverride) {
+    auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
+    logger->SetLevel(ulog::Level::kTrace);
+
+    auto tskv = std::make_shared<CaptureSink>();
+    auto raw = std::make_shared<CaptureSink>();
+    logger->AddSink(tskv);
+    logger->AddSink(raw, ulog::Format::kRaw);
+
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "payload";
+    ulog::LogFlush();
+    ulog::SetDefaultLogger(nullptr);
+
+    const auto tskv_recs = tskv->Records();
+    const auto raw_recs = raw->Records();
+    ASSERT_EQ(tskv_recs.size(), 1u);
+    ASSERT_EQ(raw_recs.size(), 1u);
+
+    EXPECT_TRUE(Contains(tskv_recs.front(), "timestamp=")) << tskv_recs.front();
+    EXPECT_TRUE(Contains(tskv_recs.front(), "text=payload"));
+    // kRaw omits the default header fields (timestamp/level/module).
+    EXPECT_EQ(raw_recs.front().find("timestamp="), std::string::npos) << raw_recs.front();
+    EXPECT_EQ(raw_recs.front().find("level="), std::string::npos) << raw_recs.front();
+    EXPECT_TRUE(Contains(raw_recs.front(), "text=payload")) << raw_recs.front();
+}
+
+TEST(PerSinkFormat, AsyncThreeDistinctFormatsBatched) {
+    ulog::AsyncLogger::Config cfg;
+    cfg.format = ulog::Format::kTskv;
+    auto logger = std::make_shared<ulog::AsyncLogger>(cfg);
+    logger->SetLevel(ulog::Level::kTrace);
+
+    auto tskv = std::make_shared<CaptureSink>();
+    auto ltsv = std::make_shared<CaptureSink>();
+    auto json = std::make_shared<CaptureSink>();
+    logger->AddSink(tskv);
+    logger->AddSink(ltsv, ulog::Format::kLtsv);
+    logger->AddSink(json, ulog::Format::kJson);
+
+    ulog::SetDefaultLogger(logger);
+    for (int i = 0; i < 5; ++i) {
+        LOG_INFO() << "batch-" << i;
+    }
+    logger->Flush();
+    ulog::SetDefaultLogger(nullptr);
+
+    const auto tskv_recs = tskv->Records();
+    const auto ltsv_recs = ltsv->Records();
+    const auto json_recs = json->Records();
+    ASSERT_EQ(tskv_recs.size(), 5u);
+    ASSERT_EQ(ltsv_recs.size(), 5u);
+    ASSERT_EQ(json_recs.size(), 5u);
+    for (int i = 0; i < 5; ++i) {
+        const auto needle = "batch-" + std::to_string(i);
+        EXPECT_TRUE(Contains(tskv_recs[i], "text=" + needle)) << tskv_recs[i];
+        EXPECT_TRUE(Contains(ltsv_recs[i], "text:" + needle)) << ltsv_recs[i];
+        EXPECT_TRUE(Contains(json_recs[i], "\"text\":\"" + needle + "\"")) << json_recs[i];
+    }
+}
+
+TEST(PerSinkFormat, PerSinkLevelGateWithFormatOverride) {
+    auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
+    logger->SetLevel(ulog::Level::kTrace);
+
+    auto tskv = std::make_shared<CaptureSink>();
+    auto json = std::make_shared<CaptureSink>();
+    json->SetLevel(ulog::Level::kError);  // JSON sink drops INFO
+    logger->AddSink(tskv);
+    logger->AddSink(json, ulog::Format::kJson);
+
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "info-only";
+    LOG_ERROR() << "both";
+    ulog::LogFlush();
+    ulog::SetDefaultLogger(nullptr);
+
+    const auto tskv_recs = tskv->Records();
+    const auto json_recs = json->Records();
+    ASSERT_EQ(tskv_recs.size(), 2u);
+    ASSERT_EQ(json_recs.size(), 1u) << "JSON sink should have filtered INFO out";
+    EXPECT_TRUE(Contains(json_recs.front(), "\"text\":\"both\""));
+}
+
+TEST(PerSinkFormat, LoggerLevelFilterSkipsEntireRecord) {
+    auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
+    logger->SetLevel(ulog::Level::kError);  // logger drops everything below ERROR
+
+    auto tskv = std::make_shared<CaptureSink>();
+    auto json = std::make_shared<CaptureSink>();
+    logger->AddSink(tskv);
+    logger->AddSink(json, ulog::Format::kJson);
+
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "filtered-out";
+    LOG_ERROR() << "kept";
+    ulog::LogFlush();
+    ulog::SetDefaultLogger(nullptr);
+
+    const auto tskv_recs = tskv->Records();
+    const auto json_recs = json->Records();
+    EXPECT_EQ(tskv_recs.size(), 1u);
+    EXPECT_EQ(json_recs.size(), 1u);
+    EXPECT_TRUE(Contains(tskv_recs.front(), "text=kept"));
+    EXPECT_TRUE(Contains(json_recs.front(), "\"text\":\"kept\""));
+}
+
+TEST(PerSinkFormat, DuplicateOverrideFormatReusesIndex) {
+    // Two sinks with the SAME non-base format override must share the single
+    // extra formatter — their payloads must byte-equal.
+    auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
+    logger->SetLevel(ulog::Level::kTrace);
+
+    auto json_a = std::make_shared<CaptureSink>();
+    auto json_b = std::make_shared<CaptureSink>();
+    logger->AddSink(json_a, ulog::Format::kJson);
+    logger->AddSink(json_b, ulog::Format::kJson);
+
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "dup";
+    ulog::LogFlush();
+    ulog::SetDefaultLogger(nullptr);
+
+    const auto a = json_a->Records();
+    const auto b = json_b->Records();
+    ASSERT_EQ(a.size(), 1u);
+    ASSERT_EQ(b.size(), 1u);
+    EXPECT_EQ(a.front(), b.front());
+    EXPECT_TRUE(Contains(a.front(), "\"text\":\"dup\""));
+}
+
 TEST(PerSinkFormat, SyncEmptyRegistryLogsStillWork) {
     // No overrides — base format remains the single active format. The
     // multi-format code path must remain invisible on this hot path.
