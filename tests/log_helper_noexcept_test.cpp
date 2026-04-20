@@ -10,46 +10,47 @@
 #include <ulog/mem_logger.hpp>
 #include <ulog/null_logger.hpp>
 
-namespace {
-
 // Static verification that every user-facing streaming overload is
 // `noexcept`. Catches accidental removal of the try/catch guards added
-// in Phase 2. These checks are compile-time — no runtime cost.
-void StaticNoexceptChecks() {
-    using LH = ulog::LogHelper;
-    LH* p = nullptr;
-    (void)p;
+// in Phase 2. These checks are compile-time only — no runtime cost and
+// no wrapping function (which would trip `-Wunused-function` on GCC).
+//
+// We use `std::declval<T>()` for construct-involving types: libc++
+// (C++17) does not mark `std::basic_string_view(const char*)`
+// `noexcept`, so a literal `Quoted{"q"}` or `std::string_view{"v"}`
+// would fold that construction's non-noexcept into the checked
+// expression and assert a property of `string_view`'s ctor rather
+// than of `operator<<` itself. `declval<T>()` itself is `noexcept`
+// and yields an unevaluated rvalue reference.
+namespace {
 
-    // Template operator<< must propagate noexcept from the public contract.
-    // We use `std::declval<T>()` for construct-involving types — libc++
-    // (C++17) does not mark `std::string_view(const char*)` `noexcept`,
-    // so a literal `Quoted{"q"}` or `std::string_view{"v"}` here would
-    // fold construction non-noexcept into the checked expression and
-    // make the test assert a property of `string_view`'s ctor rather
-    // than `operator<<` itself.
-    static_assert(noexcept(std::declval<LH&>() << 42));
-    static_assert(noexcept(std::declval<LH&>() << 3.14));
-    static_assert(noexcept(std::declval<LH&>() << 'c'));
-    static_assert(noexcept(std::declval<LH&>() << true));
-    static_assert(noexcept(std::declval<LH&>() << "lit"));
-    static_assert(noexcept(std::declval<LH&>() << std::declval<std::string_view>()));
+using LH = ulog::LogHelper;
 
-    // Typed overloads.
-    static_assert(noexcept(std::declval<LH&>() << ulog::Hex{0}));
-    static_assert(noexcept(std::declval<LH&>() << ulog::HexShort{0}));
-    static_assert(noexcept(std::declval<LH&>() << std::declval<ulog::Quoted>()));
-    static_assert(noexcept(std::declval<LH&>() << std::declval<const ulog::LogExtra&>()));
+// Template operator<< must propagate noexcept from the public contract.
+static_assert(noexcept(std::declval<LH&>() << 42));
+static_assert(noexcept(std::declval<LH&>() << 3.14));
+static_assert(noexcept(std::declval<LH&>() << 'c'));
+static_assert(noexcept(std::declval<LH&>() << true));
+static_assert(noexcept(std::declval<LH&>() << "lit"));
+static_assert(noexcept(std::declval<LH&>() << std::declval<std::string_view>()));
 
-    // WithException and rvalue variants.
-    static_assert(noexcept(std::declval<LH&>().WithException(std::declval<std::exception&>())));
-    static_assert(noexcept(std::declval<LH&&>() << 42));
-}
+// Typed overloads.
+static_assert(noexcept(std::declval<LH&>() << ulog::Hex{0}));
+static_assert(noexcept(std::declval<LH&>() << ulog::HexShort{0}));
+static_assert(noexcept(std::declval<LH&>() << std::declval<ulog::Quoted>()));
+static_assert(noexcept(std::declval<LH&>() << std::declval<const ulog::LogExtra&>()));
+
+// WithException and rvalue variants.
+static_assert(noexcept(std::declval<LH&>().WithException(std::declval<std::exception&>())));
+static_assert(noexcept(std::declval<LH&&>() << 42));
 
 }  // namespace
 
-// Compile-time: if the above file compiles, noexcept contract holds.
+// Runtime-visible counterpart: SUCCEED() so gtest lists a passing test
+// for the noexcept contract; the real guarantees live in the static
+// asserts above.
 TEST(LogHelperNoexcept, StaticContractHolds) {
-    SUCCEED() << "Static checks compile-verified — see StaticNoexceptChecks.";
+    SUCCEED() << "noexcept contract verified at compile time.";
 }
 
 // A destructor that logs — only valid if LOG_* stays noexcept, otherwise
