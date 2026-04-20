@@ -12,6 +12,7 @@
 
 #include <fmt/format.h>
 
+#include <ulog/detail/range_traits.hpp>
 #include <ulog/detail/source_root.hpp>
 #include <ulog/fwd.hpp>
 #include <ulog/level.hpp>
@@ -210,7 +211,8 @@ public:
     template <typename T, std::enable_if_t<
         !std::is_pointer_v<T> &&
         !std::is_array_v<T> &&
-        !std::is_invocable_r_v<void, T&, LogHelper&>, int> = 0>
+        !std::is_invocable_r_v<void, T&, LogHelper&> &&
+        !detail::kIsLoggableRange<T>, int> = 0>
     LogHelper& operator<<(const T& value) & noexcept {
         try { Put(value); } catch (...) { InternalLoggingError("operator<< threw"); }
         return *this;
@@ -218,7 +220,8 @@ public:
     template <typename T, std::enable_if_t<
         !std::is_pointer_v<T> &&
         !std::is_array_v<T> &&
-        !std::is_invocable_r_v<void, T&, LogHelper&>, int> = 0>
+        !std::is_invocable_r_v<void, T&, LogHelper&> &&
+        !detail::kIsLoggableRange<T>, int> = 0>
     LogHelper&& operator<<(const T& value) && noexcept {
         try { Put(value); } catch (...) { InternalLoggingError("operator<< threw"); }
         return std::move(*this);

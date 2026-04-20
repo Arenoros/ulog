@@ -23,34 +23,13 @@
 #include <type_traits>
 #include <utility>
 
+#include <ulog/detail/range_traits.hpp>
 #include <ulog/log_helper.hpp>
 #include <ulog/log_helper_extras.hpp>
 
 namespace ulog {
 
 namespace detail {
-
-/// True iff `const T&` has `std::begin` / `std::end`.
-template <typename T, typename = void>
-struct HasBeginEndImpl : std::false_type {};
-
-template <typename T>
-struct HasBeginEndImpl<T, std::void_t<
-    decltype(std::begin(std::declval<const T&>())),
-    decltype(std::end(std::declval<const T&>()))>> : std::true_type {};
-
-/// True iff `T` is a range but NOT string-like (i.e. not convertible to
-/// `std::string_view`). The built-in `Put(const char*)` / `Put(string)`
-/// paths already handle string-like values — we exclude them here so
-/// the range overload doesn't hijack them. Arrays are routed through
-/// the dedicated `operator<<(LogHelper&, const T(&)[N])` overload below
-/// (reference-to-array partial-orders cleaner against the pointer
-/// overload from `log_helper_extras.hpp`).
-template <typename T>
-constexpr bool kIsLoggableRange =
-    HasBeginEndImpl<T>::value &&
-    !std::is_convertible_v<const T&, std::string_view> &&
-    !std::is_array_v<T>;
 
 /// Decayed element type of a range.
 template <typename T>
