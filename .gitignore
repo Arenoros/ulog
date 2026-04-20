@@ -2,6 +2,7 @@ build/
 build-*/
 cmake-build-*/
 .cache/
+.bench-cache/
 compile_commands.json
 
 # Conan-generated user preset (machine-specific)
