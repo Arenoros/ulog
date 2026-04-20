@@ -37,6 +37,11 @@ struct LoggerConfig {
     /// preserves existing behaviour.
     bool emit_location = true;
 
+    /// Timestamp rendering style for the built-in text formatters (TSKV,
+    /// LTSV, JSON, JsonYaDeploy). `kOtlpJson` always emits `timeUnixNano`
+    /// per OTLP spec and ignores this setting.
+    TimestampFormat timestamp_format = TimestampFormat::kIso8601Micro;
+
     /// Only consulted by `MakeAsyncLogger`.
     std::size_t queue_capacity = 65536;
     OverflowBehavior overflow = OverflowBehavior::kDiscard;

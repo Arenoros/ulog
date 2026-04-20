@@ -41,6 +41,9 @@ public:
         /// caller attaches its own semantic tags instead of source
         /// locations.
         bool emit_location = true;
+        /// Timestamp rendering style for TSKV/LTSV/JSON/JsonYaDeploy.
+        /// `kOtlpJson` always emits `timeUnixNano` per OTLP spec.
+        TimestampFormat timestamp_format = TimestampFormat::kIso8601Micro;
     };
 
     AsyncLogger();

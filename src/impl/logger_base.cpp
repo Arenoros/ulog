@@ -71,11 +71,11 @@ formatters::BasePtr TextLoggerBase::MakeFormatterInto(
         case Format::kTskv:
             return PlaceFormatter<formatters::TskvFormatter>(
                 scratch, scratch_size,
-                level, module_function, module_file, module_line, now);
+                level, module_function, module_file, module_line, now, ts_fmt_);
         case Format::kLtsv:
             return PlaceFormatter<formatters::LtsvFormatter>(
                 scratch, scratch_size,
-                level, module_function, module_file, module_line, now);
+                level, module_function, module_file, module_line, now, ts_fmt_);
         case Format::kRaw:
             return PlaceFormatter<formatters::RawFormatter>(
                 scratch, scratch_size);
@@ -83,13 +83,14 @@ formatters::BasePtr TextLoggerBase::MakeFormatterInto(
             return PlaceFormatter<formatters::JsonFormatter>(
                 scratch, scratch_size,
                 level, module_function, module_file, module_line, now,
-                formatters::JsonFormatter::Variant::kStandard);
+                formatters::JsonFormatter::Variant::kStandard, ts_fmt_);
         case Format::kJsonYaDeploy:
             return PlaceFormatter<formatters::JsonFormatter>(
                 scratch, scratch_size,
                 level, module_function, module_file, module_line, now,
-                formatters::JsonFormatter::Variant::kYaDeploy);
+                formatters::JsonFormatter::Variant::kYaDeploy, ts_fmt_);
         case Format::kOtlpJson:
+            // OTLP spec mandates `timeUnixNano` — ts_fmt_ is ignored here.
             return PlaceFormatter<formatters::OtlpJsonFormatter>(
                 scratch, scratch_size,
                 level, module_function, module_file, module_line, now);

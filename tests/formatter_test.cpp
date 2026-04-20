@@ -402,6 +402,135 @@ TEST(EmitLocation, FalseSuppressesModuleLtsv) {
     ulog::SetDefaultLogger(nullptr);
 }
 
+// --------- timestamp_format knob ---------
+
+namespace {
+
+std::string ExtractTskvTimestamp(const std::string& rec) {
+    const auto key = rec.find("timestamp=");
+    if (key == std::string::npos) return {};
+    const auto start = key + std::string_view("timestamp=").size();
+    const auto tab = rec.find('\t', start);
+    return rec.substr(start, tab == std::string::npos ? std::string::npos : tab - start);
+}
+
+bool AllDigits(std::string_view s) {
+    if (s.empty()) return false;
+    for (char c : s) if (c < '0' || c > '9') return false;
+    return true;
+}
+
+}  // namespace
+
+TEST(TimestampFormat, Iso8601MicroDefaultShape) {
+    auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "x";
+    const auto ts = ExtractTskvTimestamp(logger->GetRecords().front());
+    // YYYY-MM-DDThh:mm:ss.uuuuuu+0000 = 31 chars
+    EXPECT_EQ(ts.size(), 31u) << ts;
+    EXPECT_NE(ts.find('T'), std::string::npos);
+    EXPECT_NE(ts.find('.'), std::string::npos);
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(TimestampFormat, Iso8601MilliShape) {
+    auto logger = std::make_shared<ulog::MemLogger>(
+        ulog::Format::kTskv, true, ulog::TimestampFormat::kIso8601Milli);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "x";
+    const auto ts = ExtractTskvTimestamp(logger->GetRecords().front());
+    // YYYY-MM-DDThh:mm:ss.mmm+0000 = 28 chars
+    EXPECT_EQ(ts.size(), 28u) << ts;
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(TimestampFormat, Iso8601SecShape) {
+    auto logger = std::make_shared<ulog::MemLogger>(
+        ulog::Format::kTskv, true, ulog::TimestampFormat::kIso8601Sec);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "x";
+    const auto ts = ExtractTskvTimestamp(logger->GetRecords().front());
+    // YYYY-MM-DDThh:mm:ss+0000 = 24 chars
+    EXPECT_EQ(ts.size(), 24u) << ts;
+    EXPECT_EQ(ts.find('.'), std::string::npos);
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(TimestampFormat, EpochSecPureDigits) {
+    auto logger = std::make_shared<ulog::MemLogger>(
+        ulog::Format::kTskv, true, ulog::TimestampFormat::kEpochSec);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "x";
+    const auto ts = ExtractTskvTimestamp(logger->GetRecords().front());
+    EXPECT_TRUE(AllDigits(ts)) << ts;
+    EXPECT_GE(ts.size(), 10u);
+    EXPECT_LE(ts.size(), 11u);
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(TimestampFormat, EpochMilliWiderThanSec) {
+    auto logger = std::make_shared<ulog::MemLogger>(
+        ulog::Format::kTskv, true, ulog::TimestampFormat::kEpochMilli);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "x";
+    const auto ts = ExtractTskvTimestamp(logger->GetRecords().front());
+    EXPECT_TRUE(AllDigits(ts)) << ts;
+    EXPECT_GE(ts.size(), 13u);
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(TimestampFormat, EpochNanoFitsBuffer) {
+    auto logger = std::make_shared<ulog::MemLogger>(
+        ulog::Format::kTskv, true, ulog::TimestampFormat::kEpochNano);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "x";
+    const auto ts = ExtractTskvTimestamp(logger->GetRecords().front());
+    EXPECT_TRUE(AllDigits(ts)) << ts;
+    EXPECT_GE(ts.size(), 19u);
+    EXPECT_LE(ts.size(), 20u);
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(TimestampFormat, JsonEpochEmittedAsNumber) {
+    auto logger = std::make_shared<ulog::MemLogger>(
+        ulog::Format::kJson, true, ulog::TimestampFormat::kEpochMilli);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "x";
+    const auto rec = logger->GetRecords().front();
+    // No quotes around the numeric timestamp.
+    EXPECT_NE(rec.find("\"timestamp\":"), std::string::npos) << rec;
+    EXPECT_EQ(rec.find("\"timestamp\":\""), std::string::npos) << rec;
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(TimestampFormat, JsonIso8601EmittedAsString) {
+    auto logger = std::make_shared<ulog::MemLogger>(
+        ulog::Format::kJson, true, ulog::TimestampFormat::kIso8601Milli);
+    ulog::SetDefaultLogger(logger);
+    LOG_INFO() << "x";
+    const auto rec = logger->GetRecords().front();
+    EXPECT_NE(rec.find("\"timestamp\":\""), std::string::npos) << rec;
+    ulog::SetDefaultLogger(nullptr);
+}
+
+TEST(TimestampFormat, ParseAndStringifyRoundTrip) {
+    const auto all = {
+        ulog::TimestampFormat::kIso8601Micro,
+        ulog::TimestampFormat::kIso8601Milli,
+        ulog::TimestampFormat::kIso8601Sec,
+        ulog::TimestampFormat::kEpochNano,
+        ulog::TimestampFormat::kEpochMicro,
+        ulog::TimestampFormat::kEpochMilli,
+        ulog::TimestampFormat::kEpochSec,
+    };
+    for (auto f : all) {
+        const auto s = ulog::ToString(f);
+        EXPECT_EQ(ulog::TimestampFormatFromString(s), f) << s;
+    }
+    EXPECT_THROW(ulog::TimestampFormatFromString("no-such-format"), std::runtime_error);
+}
+
 TEST(EmitLocation, FalseSuppressesModuleOtlpJson) {
     auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kOtlpJson, /*emit_location=*/false);
     ulog::SetDefaultLogger(logger);

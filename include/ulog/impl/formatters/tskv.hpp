@@ -6,6 +6,7 @@
 #include <chrono>
 #include <string_view>
 
+#include <ulog/format.hpp>
 #include <ulog/impl/formatters/base.hpp>
 #include <ulog/impl/formatters/text_item.hpp>
 #include <ulog/level.hpp>
@@ -19,7 +20,8 @@ public:
                   std::string_view module_function,
                   std::string_view module_file,
                   int module_line,
-                  std::chrono::system_clock::time_point tp);
+                  std::chrono::system_clock::time_point tp,
+                  TimestampFormat ts_fmt = TimestampFormat::kIso8601Micro);
 
     void AddTag(std::string_view key, std::string_view value) override;
     void AddJsonTag(std::string_view key, const JsonString& value) override;

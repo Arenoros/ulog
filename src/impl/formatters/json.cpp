@@ -74,7 +74,8 @@ JsonFormatter::JsonFormatter(Level level,
                              std::string_view module_file,
                              int module_line,
                              std::chrono::system_clock::time_point tp,
-                             Variant variant)
+                             Variant variant,
+                             TimestampFormat ts_fmt)
     : variant_(variant) {
     auto& b = item_->payload;
     b += '{';
@@ -82,10 +83,20 @@ JsonFormatter::JsonFormatter(Level level,
     // through EmitField which always prepends ",".
     b += '"';
     AppendJsonEscaped(b, TranslateKey("timestamp"));
-    b += "\":\"";
-    const auto ts = detail::FormatTimestampUtc(tp);
-    AppendJsonEscaped(b, ts);
-    b += '"';
+    const bool ts_is_numeric =
+        (ts_fmt == TimestampFormat::kEpochNano) ||
+        (ts_fmt == TimestampFormat::kEpochMicro) ||
+        (ts_fmt == TimestampFormat::kEpochMilli) ||
+        (ts_fmt == TimestampFormat::kEpochSec);
+    const auto ts = detail::FormatTimestamp(tp, ts_fmt);
+    if (ts_is_numeric) {
+        b += "\":";
+        b += ts;
+    } else {
+        b += "\":\"";
+        AppendJsonEscaped(b, ts);
+        b += '"';
+    }
 
     EmitField("level", ToUpperCaseString(level), /*is_json=*/false);
 

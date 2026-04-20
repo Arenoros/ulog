@@ -42,4 +42,39 @@ std::string_view ToString(Format format) noexcept {
     return "unknown";
 }
 
+namespace {
+
+struct TsEntry {
+    std::string_view name;
+    TimestampFormat fmt;
+};
+
+constexpr std::array<TsEntry, 7> kTsTable = {{
+    {"iso8601_micro", TimestampFormat::kIso8601Micro},
+    {"iso8601_milli", TimestampFormat::kIso8601Milli},
+    {"iso8601_sec",   TimestampFormat::kIso8601Sec},
+    {"epoch_nano",    TimestampFormat::kEpochNano},
+    {"epoch_micro",   TimestampFormat::kEpochMicro},
+    {"epoch_milli",   TimestampFormat::kEpochMilli},
+    {"epoch_sec",     TimestampFormat::kEpochSec},
+}};
+
+}  // namespace
+
+TimestampFormat TimestampFormatFromString(std::string_view s) {
+    for (const auto& e : kTsTable) {
+        if (e.name == s) return e.fmt;
+    }
+    throw std::runtime_error(fmt::format(
+        "Unknown timestamp format '{}' (expected iso8601_micro/iso8601_milli/"
+        "iso8601_sec/epoch_nano/epoch_micro/epoch_milli/epoch_sec)", s));
+}
+
+std::string_view ToString(TimestampFormat fmt) noexcept {
+    for (const auto& e : kTsTable) {
+        if (e.fmt == fmt) return e.name;
+    }
+    return "unknown";
+}
+
 }  // namespace ulog

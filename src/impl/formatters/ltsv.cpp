@@ -18,12 +18,13 @@ LtsvFormatter::LtsvFormatter(Level level,
                              std::string_view module_function,
                              std::string_view module_file,
                              int module_line,
-                             std::chrono::system_clock::time_point tp) {
+                             std::chrono::system_clock::time_point tp,
+                             TimestampFormat ts_fmt) {
     auto& b = item_->payload;
 
     detail::EncodeTskv(b, "timestamp", detail::TskvMode::kKey);
     b += kLtsvSeparator;
-    detail::AppendTimestampUtc(b, tp);
+    detail::AppendTimestamp(b, tp, ts_fmt);
 
     b += kLtsvPairsSeparator;
     detail::EncodeTskv(b, "level", detail::TskvMode::kKey);

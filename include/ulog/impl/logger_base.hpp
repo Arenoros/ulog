@@ -77,10 +77,13 @@ private:
 /// (TSKV/LTSV/RAW/JSON). Dispatches `MakeFormatter` by format.
 class TextLoggerBase : public LoggerBase {
 public:
-    explicit TextLoggerBase(Format format, bool emit_location = true) noexcept
-        : format_(format), emit_location_(emit_location) {}
+    explicit TextLoggerBase(Format format,
+                            bool emit_location = true,
+                            TimestampFormat ts_fmt = TimestampFormat::kIso8601Micro) noexcept
+        : format_(format), emit_location_(emit_location), ts_fmt_(ts_fmt) {}
     Format GetFormat() const noexcept { return format_; }
     bool GetEmitLocation() const noexcept { return emit_location_; }
+    TimestampFormat GetTimestampFormat() const noexcept { return ts_fmt_; }
     formatters::BasePtr MakeFormatterInto(void* scratch,
                                           std::size_t scratch_size,
                                           Level level,
@@ -91,6 +94,7 @@ public:
 private:
     Format format_;
     bool emit_location_;
+    TimestampFormat ts_fmt_;
 };
 
 }  // namespace ulog::impl

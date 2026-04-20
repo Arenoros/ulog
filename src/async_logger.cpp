@@ -244,7 +244,8 @@ struct AsyncLogger::State {
 
 AsyncLogger::AsyncLogger() : AsyncLogger(Config{}) {}
 
-AsyncLogger::AsyncLogger(const Config& cfg) : impl::TextLoggerBase(cfg.format, cfg.emit_location) {
+AsyncLogger::AsyncLogger(const Config& cfg)
+    : impl::TextLoggerBase(cfg.format, cfg.emit_location, cfg.timestamp_format) {
     state_ = std::make_unique<State>(cfg);
     state_->worker = std::thread([this] { state_->WorkerLoop(); });
 }

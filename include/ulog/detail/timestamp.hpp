@@ -5,18 +5,34 @@
 
 #include <chrono>
 #include <string>
+#include <string_view>
+
+#include <ulog/format.hpp>
 
 namespace ulog::detail {
 
-/// Formats time_point as "YYYY-MM-DDThh:mm:ss.uuuuuu+0000" (UTC, microseconds).
-/// Thread-safe on all platforms (uses gmtime_s/gmtime_r).
-std::string FormatTimestampUtc(std::chrono::system_clock::time_point tp);
+/// Formats `tp` according to `fmt`. Thread-safe on all platforms.
+/// See `ulog::TimestampFormat` for the list of supported shapes.
+std::string FormatTimestamp(std::chrono::system_clock::time_point tp,
+                            TimestampFormat fmt);
 
-/// Appends the formatted timestamp to a sink that supports `append(const char*, size_t)` or `+= std::string_view`.
+/// Back-compat shim: `kIso8601Micro` (the pre-knob default shape).
+inline std::string FormatTimestampUtc(std::chrono::system_clock::time_point tp) {
+    return FormatTimestamp(tp, TimestampFormat::kIso8601Micro);
+}
+
+/// Appends the formatted timestamp to a sink that supports
+/// `+= std::string_view`.
+template <typename Sink>
+void AppendTimestamp(Sink& sink, std::chrono::system_clock::time_point tp,
+                     TimestampFormat fmt) {
+    const auto s = FormatTimestamp(tp, fmt);
+    sink += std::string_view(s);
+}
+
 template <typename Sink>
 void AppendTimestampUtc(Sink& sink, std::chrono::system_clock::time_point tp) {
-    const auto s = FormatTimestampUtc(tp);
-    sink += std::string_view(s);
+    AppendTimestamp(sink, tp, TimestampFormat::kIso8601Micro);
 }
 
 }  // namespace ulog::detail
