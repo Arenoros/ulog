@@ -16,7 +16,7 @@ namespace {
 
 std::shared_ptr<ulog::MemLogger> InstallMem(ulog::Format fmt) {
     auto logger = std::make_shared<ulog::MemLogger>(fmt);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     return logger;
 }
 
@@ -36,7 +36,7 @@ TEST(FormatterTskv, BasicRecord) {
     EXPECT_TRUE(Contains(r, "level=INFO"));
     EXPECT_TRUE(Contains(r, "text=hello"));
     EXPECT_EQ(r.back(), '\n');
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterTskv, EscapesTabsInText) {
@@ -44,7 +44,7 @@ TEST(FormatterTskv, EscapesTabsInText) {
     LOG_INFO() << "a\tb\nc";
     const auto r = mem->GetRecords().front();
     EXPECT_TRUE(Contains(r, "text=a\\tb\\nc"));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterTskv, TagsFromLogExtra) {
@@ -54,7 +54,7 @@ TEST(FormatterTskv, TagsFromLogExtra) {
     const auto r = mem->GetRecords().front();
     EXPECT_TRUE(Contains(r, "user_id=42"));
     EXPECT_TRUE(Contains(r, "op=create"));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterLtsv, UsesColonSeparator) {
@@ -64,7 +64,7 @@ TEST(FormatterLtsv, UsesColonSeparator) {
     EXPECT_TRUE(Contains(r, "timestamp:"));
     EXPECT_TRUE(Contains(r, "level:INFO"));
     EXPECT_TRUE(Contains(r, "text:x"));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterRaw, OnlyTextNoHeader) {
@@ -74,7 +74,7 @@ TEST(FormatterRaw, OnlyTextNoHeader) {
     EXPECT_FALSE(Contains(r, "timestamp="));
     EXPECT_FALSE(Contains(r, "level="));
     EXPECT_TRUE(Contains(r, "text=payload-body"));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterJson, EmitsJsonObject) {
@@ -85,7 +85,7 @@ TEST(FormatterJson, EmitsJsonObject) {
     EXPECT_EQ(r[r.size() - 2], '}');
     EXPECT_TRUE(Contains(r, "\"level\":\"INFO\""));
     EXPECT_TRUE(Contains(r, "\"text\":\"hi\""));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterJson, TypedTagsEmitAsNativeJsonTypes) {
@@ -101,7 +101,7 @@ TEST(FormatterJson, TypedTagsEmitAsNativeJsonTypes) {
     EXPECT_NE(r.find("\"ratio\":3.14"), std::string::npos) << r;
     EXPECT_NE(r.find("\"ok\":true"), std::string::npos) << r;
     EXPECT_NE(r.find("\"name\":\"ada\""), std::string::npos) << r;
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(LogHelperExceptions, WithExceptionCapturesTypeAndMessage) {
@@ -121,7 +121,7 @@ TEST(LogHelperExceptions, WithExceptionCapturesTypeAndMessage) {
     EXPECT_NE(r.find("exception_type="), std::string::npos) << r;
     EXPECT_NE(r.find("runtime_error"), std::string::npos) << r;
     EXPECT_NE(r.find("text=op-failed"), std::string::npos) << r;
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterJson, YaDeployPassesThroughAddJsonTag) {
@@ -140,7 +140,7 @@ TEST(FormatterJson, YaDeployPassesThroughAddJsonTag) {
     EXPECT_NE(r.find("\"@timestamp\":"), std::string::npos) << r;
     EXPECT_NE(r.find("\"_level\":\"INFO\""), std::string::npos) << r;
     EXPECT_NE(r.find("\"_message\":\"body\""), std::string::npos) << r;
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterJson, YaDeployVariantRenamesCoreFields) {
@@ -156,7 +156,7 @@ TEST(FormatterJson, YaDeployVariantRenamesCoreFields) {
     EXPECT_EQ(r.find("\"timestamp\":"), std::string::npos);
     EXPECT_EQ(r.find("\"level\":\"INFO\""), std::string::npos);
     EXPECT_EQ(r.find("\"text\":\"body\""), std::string::npos);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterOtlpJson, EmitsSchemaShape) {
@@ -181,7 +181,7 @@ TEST(FormatterOtlpJson, EmitsSchemaShape) {
     EXPECT_TRUE(Contains(r, "\"key\":\"latency_ms\",\"value\":{\"doubleValue\":13.5}")) << r;
     EXPECT_TRUE(Contains(r, "\"key\":\"ok\",\"value\":{\"boolValue\":true}")) << r;
     EXPECT_TRUE(Contains(r, "\"key\":\"endpoint\",\"value\":{\"stringValue\":\"/api\"}")) << r;
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterOtlpJson, NoAttributesElidesTheArray) {
@@ -193,7 +193,7 @@ TEST(FormatterOtlpJson, NoAttributesElidesTheArray) {
     const auto r = mem->GetRecords().front();
     EXPECT_TRUE(Contains(r, "\"body\":{\"stringValue\":\"plain\"}"));
     EXPECT_TRUE(Contains(r, "\"severityText\":\"INFO\""));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 namespace {
@@ -228,7 +228,7 @@ TEST(FormatterOtlpJson, TraceAndSpanIdsPromotedToTopLevel) {
     // native OTLP value kind.
     EXPECT_TRUE(Contains(r,
         "\"key\":\"user_id\",\"value\":{\"intValue\":\"42\"}")) << r;
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterOtlpJson, TraceIdAloneKeepsAttributesArrayShape) {
@@ -242,7 +242,7 @@ TEST(FormatterOtlpJson, TraceIdAloneKeepsAttributesArrayShape) {
     EXPECT_TRUE(Contains(r,
         "\"traceId\":\"0123456789abcdef0123456789abcdef\""));
     EXPECT_FALSE(Contains(r, "\"spanId\":"));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterOtlpJson, EmptyTraceContextEmitsNothing) {
@@ -260,7 +260,7 @@ TEST(FormatterOtlpJson, EmptyTraceContextEmitsNothing) {
     EXPECT_FALSE(Contains(r, "\"spanId\":")) << r;
     EXPECT_FALSE(Contains(r, "\"key\":\"trace_id\"")) << r;
     EXPECT_FALSE(Contains(r, "\"key\":\"span_id\"")) << r;
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterText, TraceContextFallsBackToPlainTags) {
@@ -276,7 +276,7 @@ TEST(FormatterText, TraceContextFallsBackToPlainTags) {
     const auto r = mem->GetRecords().front();
     EXPECT_TRUE(Contains(r, "trace_id=0123456789abcdef0123456789abcdef")) << r;
     EXPECT_TRUE(Contains(r, "span_id=fedcba9876543210")) << r;
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterInlineAlloc, PlacesFormatterIntoScratchWhenFits) {
@@ -337,7 +337,7 @@ TEST(FormatterJson, LongBodySpillsToHeapAndRoundTrips) {
     LOG_INFO() << big;
     const auto r = mem->GetRecords().front();
     EXPECT_NE(r.find("\"text\":\"" + big + "\""), std::string::npos) << r.size();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterOtlpJson, LongBodySpillsToHeapAndRoundTrips) {
@@ -347,7 +347,7 @@ TEST(FormatterOtlpJson, LongBodySpillsToHeapAndRoundTrips) {
     const auto r = mem->GetRecords().front();
     EXPECT_NE(r.find("\"body\":{\"stringValue\":\"" + big + "\"}"), std::string::npos)
         << r.size();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(FormatterJson, EscapesQuotesInValue) {
@@ -356,23 +356,23 @@ TEST(FormatterJson, EscapesQuotesInValue) {
     const auto r = mem->GetRecords().front();
     const std::string expected = std::string("\"text\":\"a\\\"b\\n\"");
     EXPECT_TRUE(Contains(r, expected));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 // --------- emit_location knob ---------
 
 TEST(EmitLocation, DefaultTrueEmitsModuleField) {
     auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "hi";
     const auto rec = logger->GetRecords().front();
     EXPECT_TRUE(Contains(rec, "module="));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(EmitLocation, FalseSuppressesModuleTskv) {
     auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv, /*emit_location=*/false);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "hi";
     const auto rec = logger->GetRecords().front();
     EXPECT_EQ(rec.find("module="), std::string::npos) << rec;
@@ -380,26 +380,26 @@ TEST(EmitLocation, FalseSuppressesModuleTskv) {
     EXPECT_TRUE(Contains(rec, "timestamp="));
     EXPECT_TRUE(Contains(rec, "level="));
     EXPECT_TRUE(Contains(rec, "text=hi"));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(EmitLocation, FalseSuppressesModuleJson) {
     auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kJson, /*emit_location=*/false);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "hi";
     const auto rec = logger->GetRecords().front();
     EXPECT_EQ(rec.find("\"module\":"), std::string::npos) << rec;
     EXPECT_TRUE(Contains(rec, "\"text\":\"hi\""));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(EmitLocation, FalseSuppressesModuleLtsv) {
     auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kLtsv, /*emit_location=*/false);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "hi";
     const auto rec = logger->GetRecords().front();
     EXPECT_EQ(rec.find("module:"), std::string::npos) << rec;
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 // --------- timestamp_format knob ---------
@@ -424,94 +424,94 @@ bool AllDigits(std::string_view s) {
 
 TEST(TimestampFormat, Iso8601MicroDefaultShape) {
     auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "x";
     const auto ts = ExtractTskvTimestamp(logger->GetRecords().front());
     // YYYY-MM-DDThh:mm:ss.uuuuuu+0000 = 31 chars
     EXPECT_EQ(ts.size(), 31u) << ts;
     EXPECT_NE(ts.find('T'), std::string::npos);
     EXPECT_NE(ts.find('.'), std::string::npos);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(TimestampFormat, Iso8601MilliShape) {
     auto logger = std::make_shared<ulog::MemLogger>(
         ulog::Format::kTskv, true, ulog::TimestampFormat::kIso8601Milli);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "x";
     const auto ts = ExtractTskvTimestamp(logger->GetRecords().front());
     // YYYY-MM-DDThh:mm:ss.mmm+0000 = 28 chars
     EXPECT_EQ(ts.size(), 28u) << ts;
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(TimestampFormat, Iso8601SecShape) {
     auto logger = std::make_shared<ulog::MemLogger>(
         ulog::Format::kTskv, true, ulog::TimestampFormat::kIso8601Sec);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "x";
     const auto ts = ExtractTskvTimestamp(logger->GetRecords().front());
     // YYYY-MM-DDThh:mm:ss+0000 = 24 chars
     EXPECT_EQ(ts.size(), 24u) << ts;
     EXPECT_EQ(ts.find('.'), std::string::npos);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(TimestampFormat, EpochSecPureDigits) {
     auto logger = std::make_shared<ulog::MemLogger>(
         ulog::Format::kTskv, true, ulog::TimestampFormat::kEpochSec);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "x";
     const auto ts = ExtractTskvTimestamp(logger->GetRecords().front());
     EXPECT_TRUE(AllDigits(ts)) << ts;
     EXPECT_GE(ts.size(), 10u);
     EXPECT_LE(ts.size(), 11u);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(TimestampFormat, EpochMilliWiderThanSec) {
     auto logger = std::make_shared<ulog::MemLogger>(
         ulog::Format::kTskv, true, ulog::TimestampFormat::kEpochMilli);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "x";
     const auto ts = ExtractTskvTimestamp(logger->GetRecords().front());
     EXPECT_TRUE(AllDigits(ts)) << ts;
     EXPECT_GE(ts.size(), 13u);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(TimestampFormat, EpochNanoFitsBuffer) {
     auto logger = std::make_shared<ulog::MemLogger>(
         ulog::Format::kTskv, true, ulog::TimestampFormat::kEpochNano);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "x";
     const auto ts = ExtractTskvTimestamp(logger->GetRecords().front());
     EXPECT_TRUE(AllDigits(ts)) << ts;
     EXPECT_GE(ts.size(), 19u);
     EXPECT_LE(ts.size(), 20u);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(TimestampFormat, JsonEpochEmittedAsNumber) {
     auto logger = std::make_shared<ulog::MemLogger>(
         ulog::Format::kJson, true, ulog::TimestampFormat::kEpochMilli);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "x";
     const auto rec = logger->GetRecords().front();
     // No quotes around the numeric timestamp.
     EXPECT_NE(rec.find("\"timestamp\":"), std::string::npos) << rec;
     EXPECT_EQ(rec.find("\"timestamp\":\""), std::string::npos) << rec;
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(TimestampFormat, JsonIso8601EmittedAsString) {
     auto logger = std::make_shared<ulog::MemLogger>(
         ulog::Format::kJson, true, ulog::TimestampFormat::kIso8601Milli);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "x";
     const auto rec = logger->GetRecords().front();
     EXPECT_NE(rec.find("\"timestamp\":\""), std::string::npos) << rec;
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(TimestampFormat, ParseAndStringifyRoundTrip) {
@@ -533,9 +533,9 @@ TEST(TimestampFormat, ParseAndStringifyRoundTrip) {
 
 TEST(EmitLocation, FalseSuppressesModuleOtlpJson) {
     auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kOtlpJson, /*emit_location=*/false);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "hi";
     const auto rec = logger->GetRecords().front();
     EXPECT_EQ(rec.find("\"module\""), std::string::npos) << rec;
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }

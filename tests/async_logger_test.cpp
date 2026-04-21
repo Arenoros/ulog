@@ -43,12 +43,12 @@ TEST(AsyncLogger, DrainsAllRecordsBeforeShutdown) {
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     for (int i = 0; i < 500; ++i) {
         LOG_INFO() << "msg " << i;
     }
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
     logger.reset();  // joins worker
 
     EXPECT_EQ(sink->Size(), 500u);
@@ -63,14 +63,14 @@ TEST(AsyncLogger, QueueDepthAndTotalLoggedMetrics) {
     EXPECT_EQ(logger->GetTotalLogged(), 0u);
     EXPECT_EQ(logger->GetQueueDepth(), 0u);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     for (int i = 0; i < 500; ++i) LOG_INFO() << "m " << i;
     ulog::LogFlush();
 
     EXPECT_EQ(logger->GetTotalLogged(), 500u);
     EXPECT_EQ(logger->GetQueueDepth(), 0u);
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(AsyncLogger, FlushIsSynchronous) {
@@ -79,13 +79,13 @@ TEST(AsyncLogger, FlushIsSynchronous) {
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     for (int i = 0; i < 100; ++i) LOG_INFO() << "tick " << i;
     ulog::LogFlush();
     // After Flush() returns, every record must have hit the sink.
     EXPECT_EQ(sink->Size(), 100u);
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(AsyncLogger, DiscardOverflowCountsDrops) {
@@ -124,13 +124,13 @@ TEST(AsyncLogger, DiscardOverflowCountsDrops) {
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     // Worker is parked in the first sink->Write(). Queue fills to 32,
     // the remaining ~4968 calls hit overflow and are dropped.
     for (int i = 0; i < 5000; ++i) LOG_INFO() << "x " << i;
     sink->Release();  // drain the queued records.
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const std::uint64_t delivered =
         static_cast<std::uint64_t>(sink->writes.load(std::memory_order_relaxed));
@@ -179,10 +179,10 @@ TEST(AsyncLogger, TlsCacheSurvivesLoggerRecycleAtSameAddress) {
         logger->SetLevel(ulog::Level::kTrace);
         logger->AddSink(sink);
 
-        ulog::SetDefaultLogger(logger);
+        ulog::impl::SetDefaultLoggerRef(*logger);
         for (int i = 0; i < 50; ++i) LOG_INFO() << "round=" << round << " i=" << i;
         ulog::LogFlush();
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
         logger.reset();
 
         EXPECT_EQ(sink->Size(), 50u) << "round " << round;
@@ -195,7 +195,7 @@ TEST(AsyncLogger, MultiThreadedProducers) {
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     constexpr int kThreads = 4;
     constexpr int kPerThread = 200;
@@ -208,7 +208,7 @@ TEST(AsyncLogger, MultiThreadedProducers) {
     for (auto& t : ts) t.join();
 
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
     logger.reset();
 
     EXPECT_EQ(sink->Size(), static_cast<std::size_t>(kThreads * kPerThread));

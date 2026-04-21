@@ -34,6 +34,8 @@
 #include <ulog/log.hpp>
 #include <ulog/sinks/base_sink.hpp>
 
+#include "ulog/null_logger.hpp"
+
 namespace {
 
 class DiscardSink final : public ulog::sinks::BaseSink {
@@ -53,7 +55,7 @@ void BM_AsyncEnqueueCost(benchmark::State& state) {
     auto logger = std::make_shared<ulog::AsyncLogger>(cfg);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(std::make_shared<DiscardSink>());
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     std::uint64_t counter = 0;
     for (auto _ : state) {
@@ -68,7 +70,7 @@ void BM_AsyncEnqueueCost(benchmark::State& state) {
     // Drain before destruction so the next benchmark does not inherit a
     // still-running worker. Not part of the measurement window.
     logger->Flush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 BENCHMARK(BM_AsyncEnqueueCost);
 
@@ -84,7 +86,7 @@ void BM_AsyncEndToEnd(benchmark::State& state) {
     auto logger = std::make_shared<ulog::AsyncLogger>(cfg);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(std::make_shared<DiscardSink>());
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     std::uint64_t counter = 0;
     for (auto _ : state) {
@@ -97,7 +99,7 @@ void BM_AsyncEndToEnd(benchmark::State& state) {
     logger->Flush();
     state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()));
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 BENCHMARK(BM_AsyncEndToEnd);
 
@@ -111,7 +113,7 @@ void BM_AsyncDisabledLogCost(benchmark::State& state) {
     auto logger = std::make_shared<ulog::AsyncLogger>(cfg);
     logger->SetLevel(ulog::Level::kInfo);  // DEBUG filtered out
     logger->AddSink(std::make_shared<DiscardSink>());
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     std::uint64_t counter = 0;
     for (auto _ : state) {
@@ -121,7 +123,7 @@ void BM_AsyncDisabledLogCost(benchmark::State& state) {
     state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()));
 
     logger->Flush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 BENCHMARK(BM_AsyncDisabledLogCost);
 

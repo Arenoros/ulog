@@ -69,7 +69,7 @@ struct LoggingDtor {
 TEST(LogHelperNoexcept, LogsFromNoexceptDestructor) {
     auto mem = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
     mem->SetLevel(ulog::Level::kTrace);
-    ulog::SetDefaultLogger(mem);
+    ulog::impl::SetDefaultLoggerRef(*mem);
 
     {
         LoggingDtor d{7};
@@ -79,7 +79,7 @@ TEST(LogHelperNoexcept, LogsFromNoexceptDestructor) {
     const auto recs = mem->GetRecords();
     ASSERT_EQ(recs.size(), 1u);
     EXPECT_NE(recs[0].find("dtor log id=7"), std::string::npos) << recs[0];
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 // `operator<< LogExtra` with a LogExtra that has a null-string-like
@@ -87,13 +87,13 @@ TEST(LogHelperNoexcept, LogsFromNoexceptDestructor) {
 TEST(LogHelperNoexcept, LogExtraStreamsCleanly) {
     auto mem = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
     mem->SetLevel(ulog::Level::kTrace);
-    ulog::SetDefaultLogger(mem);
+    ulog::impl::SetDefaultLoggerRef(*mem);
 
     ulog::LogExtra e{{"k", std::string("v")}};
     LOG_INFO() << "m" << e;
 
     EXPECT_EQ(mem->GetRecords().size(), 1u);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 // Chained streaming of many values — exercises the repeated `broken`
@@ -102,7 +102,7 @@ TEST(LogHelperNoexcept, LogExtraStreamsCleanly) {
 TEST(LogHelperNoexcept, ChainedStreamingAllArrive) {
     auto mem = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
     mem->SetLevel(ulog::Level::kTrace);
-    ulog::SetDefaultLogger(mem);
+    ulog::impl::SetDefaultLoggerRef(*mem);
 
     LOG_INFO() << "a=" << 1 << " b=" << 2 << " c=" << 3 << " d=" << ulog::Hex{0x10}
                << " e=" << ulog::HexShort{0x20} << " f=" << ulog::Quoted{"q"};
@@ -110,5 +110,5 @@ TEST(LogHelperNoexcept, ChainedStreamingAllArrive) {
     const auto recs = mem->GetRecords();
     ASSERT_EQ(recs.size(), 1u);
     EXPECT_NE(recs[0].find("a=1 b=2 c=3"), std::string::npos) << recs[0];
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }

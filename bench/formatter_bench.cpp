@@ -24,7 +24,7 @@ void BM_FormatThroughput(benchmark::State& state) {
     auto logger = std::make_shared<ulog::SyncLogger>(F);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(std::make_shared<DiscardSink>());
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     std::uint64_t counter = 0;
     for (auto _ : state) {
@@ -33,7 +33,7 @@ void BM_FormatThroughput(benchmark::State& state) {
         ++counter;
     }
     state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 BENCHMARK_TEMPLATE(BM_FormatThroughput, ulog::Format::kTskv);

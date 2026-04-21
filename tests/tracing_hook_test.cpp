@@ -26,7 +26,7 @@ void EmitTags(ulog::TagSink& sink, void* user_ctx) {
 TEST(TracingHook, CallbackAddsTags) {
     auto mem = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
     mem->SetLevel(ulog::Level::kTrace);
-    ulog::SetDefaultLogger(mem);
+    ulog::impl::SetDefaultLoggerRef(*mem);
 
     Ctx ctx;
     ulog::SetTracingHook(&EmitTags, &ctx);
@@ -38,15 +38,15 @@ TEST(TracingHook, CallbackAddsTags) {
     EXPECT_NE(recs.front().find("span_id=xyz789"), std::string::npos);
 
     ulog::SetTracingHook(nullptr);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(TracingHook, NullHookDoesNothing) {
     auto mem = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
-    ulog::SetDefaultLogger(mem);
+    ulog::impl::SetDefaultLoggerRef(*mem);
     ulog::SetTracingHook(nullptr);
     LOG_INFO() << "no-hook";
     ASSERT_EQ(mem->GetRecords().size(), 1u);
     EXPECT_EQ(mem->GetRecords().front().find("trace_id="), std::string::npos);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }

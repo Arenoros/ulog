@@ -38,7 +38,7 @@ void BM_SyncSlowSink(benchmark::State& state) {
     auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(std::make_shared<SlowSink>(delay));
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     std::uint64_t counter = 0;
     for (auto _ : state) {
@@ -46,7 +46,7 @@ void BM_SyncSlowSink(benchmark::State& state) {
         ++counter;
     }
     state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()));
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 BENCHMARK(BM_SyncSlowSink)->Arg(0)->Arg(1)->Arg(10)->Arg(50)->Iterations(2000);
 
@@ -59,7 +59,7 @@ void BM_AsyncSlowSink(benchmark::State& state) {
     auto logger = std::make_shared<ulog::AsyncLogger>(cfg);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(std::make_shared<SlowSink>(delay));
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     std::uint64_t counter = 0;
     for (auto _ : state) {
@@ -70,7 +70,7 @@ void BM_AsyncSlowSink(benchmark::State& state) {
     // Don't Flush — the worker can be many seconds behind at 50 us/record;
     // the producer cost is what we wanted. Dropping the logger drains
     // on destruction via the State worker-stop path.
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 BENCHMARK(BM_AsyncSlowSink)->Arg(0)->Arg(1)->Arg(10)->Arg(50)->Iterations(2000);
 

@@ -209,7 +209,7 @@ TEST(StreamingParity, VoidPointerAsHex) {
 TEST(StreamingParity, WorksViaLogMacro) {
     auto mem = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
     mem->SetLevel(ulog::Level::kTrace);
-    ulog::SetDefaultLogger(mem);
+    ulog::impl::SetDefaultLoggerRef(*mem);
 
     std::optional<int> o{7};
     const std::error_code ec = std::make_error_code(std::errc::timed_out);
@@ -223,5 +223,5 @@ TEST(StreamingParity, WorksViaLogMacro) {
     EXPECT_TRUE(Contains(recs[0], "opt=7")) << recs[0];
     EXPECT_TRUE(Contains(recs[0], "ec=")) << recs[0];
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }

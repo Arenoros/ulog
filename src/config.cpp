@@ -98,7 +98,7 @@ std::shared_ptr<AsyncLogger> MakeAsyncLogger(const LoggerConfig& cfg) {
 
 std::shared_ptr<AsyncLogger> InitDefaultLogger(const LoggerConfig& cfg) {
     auto logger = MakeAsyncLogger(cfg);
-    SetDefaultLogger(logger);
+    impl::SetDefaultLoggerRef(*logger);
     return logger;
 }
 

@@ -37,6 +37,6 @@ int main() {
     LOG_WARNING() << "inside trace-b";
 
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
     return 0;
 }

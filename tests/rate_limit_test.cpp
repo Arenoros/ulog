@@ -13,7 +13,7 @@ namespace {
 std::shared_ptr<ulog::MemLogger> InstallMem() {
     auto m = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
     m->SetLevel(ulog::Level::kTrace);
-    ulog::SetDefaultLogger(m);
+    ulog::impl::SetDefaultLoggerRef(*m);
     return m;
 }
 
@@ -26,7 +26,7 @@ TEST(RateLimit, DropsRepeatedCalls) {
     const auto recs = mem->GetRecords();
     // Expected emits at counts 1, 2, 4, 8, 16, 32 — that's 6.
     EXPECT_EQ(recs.size(), 6u);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(RateLimit, DroppedSuffixPresent) {
@@ -45,7 +45,7 @@ TEST(RateLimit, DroppedSuffixPresent) {
         if (r.find("[dropped=") != std::string::npos) { saw_dropped_suffix = true; break; }
     }
     EXPECT_TRUE(saw_dropped_suffix);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(RateLimit, GlobalDroppedCounterAggregates) {
@@ -58,7 +58,7 @@ TEST(RateLimit, GlobalDroppedCounterAggregates) {
     EXPECT_GT(dropped, 0u);
     ulog::ResetRateLimitStats();
     EXPECT_EQ(ulog::GetRateLimitDroppedTotal(), 0u);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 namespace {
@@ -115,7 +115,7 @@ TEST(RateLimit, DropHandlerFiresOnSuppressedCalls) {
     ASSERT_NE(file, nullptr);
     EXPECT_NE(std::strstr(file, "rate_limit_test.cpp"), nullptr) << file;
     EXPECT_GT(g_handler_last_line.load(std::memory_order_relaxed), 0);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(RateLimit, DropHandlerNotCalledWhenDeregistered) {
@@ -138,7 +138,7 @@ TEST(RateLimit, DropHandlerNotCalledWhenDeregistered) {
     for (int i = 0; i < 32; ++i) LOG_LIMITED_INFO() << "silent-again " << i;
     EXPECT_EQ(g_handler_calls.load(std::memory_order_relaxed), installed_calls);
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(RateLimit, ResetsAfterOneSecond) {
@@ -152,5 +152,5 @@ TEST(RateLimit, ResetsAfterOneSecond) {
 
     // First new record after reset always emits (count == 1).
     EXPECT_EQ(after, before + 1u);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }

@@ -175,13 +175,13 @@ TEST(UnixSocketSink, DeliversRecordsToListener) {
         auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
         logger->SetLevel(ulog::Level::kTrace);
         logger->AddSink(sink);
-        ulog::SetDefaultLogger(logger);
+        ulog::impl::SetDefaultLoggerRef(*logger);
 
         LOG_INFO() << "over-unix-1";
         LOG_ERROR() << "over-unix-2";
         ulog::LogFlush();
 
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(50));

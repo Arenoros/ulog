@@ -33,7 +33,7 @@ int main() {
     logger->SetLevel(ulog::Level::kTrace);
     auto counter = std::make_shared<CountingStdoutSink>();
     logger->AddSink(counter);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     LOG_INFO() << "one";
     LOG_INFO() << "two";
@@ -41,6 +41,6 @@ int main() {
 
     std::printf("--- emitted %zu records ---\n", counter->Count());
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
     return 0;
 }

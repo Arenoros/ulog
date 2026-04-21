@@ -59,10 +59,10 @@ TEST(Config, MakeSyncLoggerFromConfig) {
         cfg.truncate_on_start = true;
 
         auto logger = ulog::MakeSyncLogger(cfg);
-        ulog::SetDefaultLogger(logger);
+        ulog::impl::SetDefaultLoggerRef(*logger);
         LOG_INFO() << "via-cfg";
         ulog::LogFlush();
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
     }
 
     std::ifstream f(tmp, std::ios::binary);
@@ -86,10 +86,10 @@ TEST(Config, EmitLocationFalsePropagatesToSync) {
         cfg.emit_location = false;
 
         auto logger = ulog::MakeSyncLogger(cfg);
-        ulog::SetDefaultLogger(logger);
+        ulog::impl::SetDefaultLoggerRef(*logger);
         LOG_INFO() << "no-loc";
         ulog::LogFlush();
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
     }
 
     std::ifstream f(tmp, std::ios::binary);
@@ -115,7 +115,7 @@ TEST(Config, InitDefaultLoggerAsync) {
 
         LOG_INFO() << "async-cfg";
         ulog::LogFlush();
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
     }
 
     std::ifstream f(tmp, std::ios::binary);

@@ -33,9 +33,9 @@ struct LoggerFixture {
         logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
         logger->SetLevel(ulog::Level::kTrace);
         logger->AddSink(std::make_shared<DiscardSink>());
-        ulog::SetDefaultLogger(logger);
+        ulog::impl::SetDefaultLoggerRef(*logger);
     }
-    ~LoggerFixture() { ulog::SetDefaultLogger(nullptr); }
+    ~LoggerFixture() { ulog::SetNullDefaultLogger(); }
 };
 
 // ---------------------------------------------------------------------------

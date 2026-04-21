@@ -48,10 +48,10 @@ TEST(PerSinkFormat, SyncDifferentFormatsOneRecord) {
     logger->AddSink(tskv_sink);                                  // inherits TSKV
     logger->AddSink(json_sink, ulog::Format::kJson);             // override → JSON
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "payload";
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto tskv_recs = tskv_sink->Records();
     const auto json_recs = json_sink->Records();
@@ -77,10 +77,10 @@ TEST(PerSinkFormat, SyncSameFormatReusesSinglePayload) {
     logger->AddSink(a);
     logger->AddSink(b, ulog::Format::kTskv);  // same as base
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "same";
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     ASSERT_EQ(a->Records().size(), 1u);
     ASSERT_EQ(b->Records().size(), 1u);
@@ -98,10 +98,10 @@ TEST(PerSinkFormat, SyncThreeDistinctFormats) {
     logger->AddSink(ltsv, ulog::Format::kLtsv);
     logger->AddSink(json, ulog::Format::kJson);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_WARNING() << "triple";
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     ASSERT_EQ(tskv->Records().size(), 1u);
     ASSERT_EQ(ltsv->Records().size(), 1u);
@@ -121,14 +121,14 @@ TEST(PerSinkFormat, SyncTagsFanOutToAllFormats) {
     logger->AddSink(tskv);
     logger->AddSink(json, ulog::Format::kJson);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     {
         ulog::LogExtra extra;
         extra.Extend("user_id", std::string("42"));
         LOG_INFO() << extra << "payload";
     }
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto t = tskv->Records().front();
     const auto j = json->Records().front();
@@ -147,10 +147,10 @@ TEST(PerSinkFormat, AsyncDifferentFormatsOneRecord) {
     logger->AddSink(tskv_sink);
     logger->AddSink(json_sink, ulog::Format::kJson);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "async-multi";
     logger->Flush();  // blocks until worker drains
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     ASSERT_EQ(tskv_sink->Records().size(), 1u);
     ASSERT_EQ(json_sink->Records().size(), 1u);
@@ -167,10 +167,10 @@ TEST(PerSinkFormat, SyncRawFormatOverride) {
     logger->AddSink(tskv);
     logger->AddSink(raw, ulog::Format::kRaw);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "payload";
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto tskv_recs = tskv->Records();
     const auto raw_recs = raw->Records();
@@ -198,12 +198,12 @@ TEST(PerSinkFormat, AsyncThreeDistinctFormatsBatched) {
     logger->AddSink(ltsv, ulog::Format::kLtsv);
     logger->AddSink(json, ulog::Format::kJson);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     for (int i = 0; i < 5; ++i) {
         LOG_INFO() << "batch-" << i;
     }
     logger->Flush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto tskv_recs = tskv->Records();
     const auto ltsv_recs = ltsv->Records();
@@ -229,11 +229,11 @@ TEST(PerSinkFormat, PerSinkLevelGateWithFormatOverride) {
     logger->AddSink(tskv);
     logger->AddSink(json, ulog::Format::kJson);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "info-only";
     LOG_ERROR() << "both";
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto tskv_recs = tskv->Records();
     const auto json_recs = json->Records();
@@ -251,11 +251,11 @@ TEST(PerSinkFormat, LoggerLevelFilterSkipsEntireRecord) {
     logger->AddSink(tskv);
     logger->AddSink(json, ulog::Format::kJson);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "filtered-out";
     LOG_ERROR() << "kept";
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto tskv_recs = tskv->Records();
     const auto json_recs = json->Records();
@@ -276,10 +276,10 @@ TEST(PerSinkFormat, DuplicateOverrideFormatReusesIndex) {
     logger->AddSink(json_a, ulog::Format::kJson);
     logger->AddSink(json_b, ulog::Format::kJson);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "dup";
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto a = json_a->Records();
     const auto b = json_b->Records();
@@ -297,10 +297,10 @@ TEST(PerSinkFormat, SyncEmptyRegistryLogsStillWork) {
     auto sink = std::make_shared<CaptureSink>();
     logger->AddSink(sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "plain";
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     ASSERT_EQ(sink->Records().size(), 1u);
     EXPECT_TRUE(Contains(sink->Records().front(), "text=plain"));

@@ -18,8 +18,7 @@ TEST(LogMacros, CompileCoverage) {
     LOG_ERROR() << "error " << ulog::HexShort{0xabc};
     LOG_CRITICAL() << "critical " << ulog::Quoted{"quoted"};
 
-    auto log_ptr = ulog::GetDefaultLoggerPtr();
-    auto& log = *log_ptr;  // pin with the shared_ptr snapshot.
+    auto& log = ulog::GetDefaultLogger();
     LOG_INFO_TO(log) << "to-default";
     LOG_ERROR_TO(log) << "to-default err";
 
@@ -43,7 +42,7 @@ TEST(LogMacros, LogExtraStream) {
 TEST(LogMacros, LFMTDeliversFormattedPayload) {
     auto mem = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
     mem->SetLevel(ulog::Level::kTrace);
-    ulog::SetDefaultLogger(mem);
+    ulog::impl::SetDefaultLoggerRef(*mem);
 
     LFMT_INFO("user={} id={}", "alice", 42);
     LFMT_ERROR("delta={:.2f}", 3.14159);
@@ -52,13 +51,13 @@ TEST(LogMacros, LFMTDeliversFormattedPayload) {
     ASSERT_EQ(recs.size(), 2u);
     EXPECT_NE(recs[0].find("text=user=alice id=42"), std::string::npos) << recs[0];
     EXPECT_NE(recs[1].find("text=delta=3.14"), std::string::npos) << recs[1];
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(LogMacros, LPRINTDeliversPrintfPayload) {
     auto mem = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
     mem->SetLevel(ulog::Level::kTrace);
-    ulog::SetDefaultLogger(mem);
+    ulog::impl::SetDefaultLoggerRef(*mem);
 
     LPRINT_INFO("code=%d path=%s", 7, "/api/x");
     LPRINT_WARNING("pct=%5.2f%%", 99.9);
@@ -67,7 +66,7 @@ TEST(LogMacros, LPRINTDeliversPrintfPayload) {
     ASSERT_EQ(recs.size(), 2u);
     EXPECT_NE(recs[0].find("text=code=7 path=/api/x"), std::string::npos) << recs[0];
     EXPECT_NE(recs[1].find("text=pct=99.90%"), std::string::npos) << recs[1];
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(LogMacros, LFMTSkipsFormatWhenLevelFiltered) {
@@ -76,7 +75,7 @@ TEST(LogMacros, LFMTSkipsFormatWhenLevelFiltered) {
     // dropped record.
     auto mem = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
     mem->SetLevel(ulog::Level::kError);
-    ulog::SetDefaultLogger(mem);
+    ulog::impl::SetDefaultLoggerRef(*mem);
 
     int called = 0;
     auto make = [&] { ++called; return 99; };
@@ -87,7 +86,7 @@ TEST(LogMacros, LFMTSkipsFormatWhenLevelFiltered) {
     LFMT_ERROR("x={}", make());  // accepted
     EXPECT_EQ(called, 1);
     EXPECT_EQ(mem->GetRecords().size(), 1u);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(LogMacros, LFMTAndLPRINTToExplicitLogger) {

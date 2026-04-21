@@ -14,7 +14,7 @@ namespace {
 
 std::shared_ptr<ulog::MemLogger> Install(ulog::Format fmt = ulog::Format::kTskv) {
     auto logger = std::make_shared<ulog::MemLogger>(fmt);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     return logger;
 }
 
@@ -33,7 +33,7 @@ protected:
     void SetUp() override { ulog::ClearRecordEnrichers(); }
     void TearDown() override {
         ulog::ClearRecordEnrichers();
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
     }
 };
 
@@ -160,7 +160,7 @@ TEST_F(RecordEnricherTest, EnrichmentFansOutToEveryFormat) {
     // Per-sink format sanity: enricher tags must reach all formatters,
     // not just the primary.
     auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     // Sanity: MemLogger is single-sink — this test only verifies that
     // the tag made it via the fanout path. Full multi-sink coverage

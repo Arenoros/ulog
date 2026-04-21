@@ -16,6 +16,8 @@
 #include <ulog/sinks/tcp_socket_sink.hpp>
 #include <ulog/sync_logger.hpp>
 
+#include "ulog/null_logger.hpp"
+
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -290,13 +292,13 @@ TEST(TcpSocketSink, DeliversRecordsToListener) {
         auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
         logger->SetLevel(ulog::Level::kTrace);
         logger->AddSink(sink);
-        ulog::SetDefaultLogger(logger);
+        ulog::impl::SetDefaultLoggerRef(*logger);
 
         LOG_INFO() << "over-tcp-1";
         LOG_ERROR() << "over-tcp-2";
         ulog::LogFlush();
 
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
     }
 
     // Give the listener a moment to flush recv into the buffer.
@@ -320,7 +322,7 @@ TEST(TcpSocketSink, ReopenReconnectsToListener) {
     auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(sink);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     LOG_INFO() << "before-reopen";
     ulog::LogFlush();
@@ -333,7 +335,7 @@ TEST(TcpSocketSink, ReopenReconnectsToListener) {
     ulog::LogFlush();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto got = listener.Received();
     EXPECT_NE(got.find("text=before-reopen"), std::string::npos) << got;
@@ -353,11 +355,11 @@ TEST(TcpSocketSink, ReopenClosesSocketWithoutCrash) {
     auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(sink);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     LOG_INFO() << "before-reopen";
     ulog::LogFlush();
     EXPECT_NO_THROW(sink->Reopen(ulog::sinks::ReopenMode::kAppend));
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }

@@ -160,12 +160,12 @@ TEST(InstrumentedSink, ComposesWithSyncLogger) {
     logger->SetLevel(ulog::Level::kInfo);
     logger->AddSink(instrumented);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_DEBUG() << "dropped";   // below logger level -> filtered, no sink call
     LOG_INFO()  << "a";
     LOG_ERROR() << "b";
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto s = instrumented->GetStats();
     EXPECT_EQ(s.writes, 2u);

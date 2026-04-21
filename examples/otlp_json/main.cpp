@@ -25,6 +25,6 @@ int main() {
     };
 
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
     return 0;
 }

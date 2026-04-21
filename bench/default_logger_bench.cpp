@@ -11,21 +11,21 @@
 
 namespace {
 
-void BM_GetDefaultLoggerPtr(benchmark::State& state) {
-    for (auto _ : state) {
-        auto p = ulog::GetDefaultLoggerPtr();
-        benchmark::DoNotOptimize(p);
+    void BM_GetDefaultLoggerPtr(benchmark::State& state) {
+        for (auto _ : state) {
+            auto& p = ulog::GetDefaultLogger();
+            benchmark::DoNotOptimize(p);
+        }
     }
-}
-BENCHMARK(BM_GetDefaultLoggerPtr);
+    BENCHMARK(BM_GetDefaultLoggerPtr);
 
-void BM_LogThroughNullDefault(benchmark::State& state) {
-    ulog::SetDefaultLogger(ulog::MakeNullLogger());
-    for (auto _ : state) {
-        LOG_INFO() << "payload " << 42;
+    void BM_LogThroughNullDefault(benchmark::State& state) {
+
+        ulog::SetNullDefaultLogger();
+        for (auto _ : state) {
+            LOG_INFO() << "payload " << 42;
+        }
     }
-    ulog::SetDefaultLogger(nullptr);
-}
-BENCHMARK(BM_LogThroughNullDefault);
+    BENCHMARK(BM_LogThroughNullDefault);
 
 }  // namespace

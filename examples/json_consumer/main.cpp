@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
     };
 
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     std::puts("Records written. Consume with:");
     std::printf("  tail -f %s | jq -c 'select(.level == \"ERROR\")'\n",

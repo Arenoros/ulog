@@ -12,14 +12,14 @@
 TEST(LogHelperTruncation, ShortMessageNoTruncatedTag) {
     auto mem = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
     mem->SetLevel(ulog::Level::kTrace);
-    ulog::SetDefaultLogger(mem);
+    ulog::impl::SetDefaultLoggerRef(*mem);
 
     LOG_INFO() << "short message";
 
     const auto recs = mem->GetRecords();
     ASSERT_EQ(recs.size(), 1u);
     EXPECT_EQ(recs[0].find("truncated=true"), std::string::npos) << recs[0];
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(LogHelperTruncation, LargeMessageTrimsAndTags) {

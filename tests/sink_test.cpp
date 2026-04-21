@@ -35,11 +35,11 @@ TEST(FileSink, WritesAndFlushes) {
         logger->SetLevel(ulog::Level::kTrace);
         logger->AddSink(std::make_shared<ulog::sinks::FileSink>(tmp.string(), /*truncate=*/true));
 
-        ulog::SetDefaultLogger(logger);
+        ulog::impl::SetDefaultLoggerRef(*logger);
         LOG_INFO() << "alpha";
         LOG_ERROR() << "beta";
         ulog::LogFlush();
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
     }  // logger + sink destroyed -> file closed
 
     const auto contents = ReadFileAll(tmp);
@@ -65,7 +65,7 @@ TEST(FileSink, ReopenAfterRotate) {
         logger->SetLevel(ulog::Level::kTrace);
         logger->AddSink(sink);
 
-        ulog::SetDefaultLogger(logger);
+        ulog::impl::SetDefaultLoggerRef(*logger);
         LOG_INFO() << "before-rotate";
         ulog::LogFlush();
 
@@ -77,7 +77,7 @@ TEST(FileSink, ReopenAfterRotate) {
 
         LOG_INFO() << "after-rotate";
         ulog::LogFlush();
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
     }
 
     const auto first = ReadFileAll(rotated);

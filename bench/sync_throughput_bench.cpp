@@ -29,7 +29,7 @@ void BM_SyncLoggerThroughput(benchmark::State& state) {
     auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(std::make_shared<DiscardSink>());
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     std::uint64_t counter = 0;
     for (auto _ : state) {
@@ -38,7 +38,7 @@ void BM_SyncLoggerThroughput(benchmark::State& state) {
     }
     state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()));
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 BENCHMARK(BM_SyncLoggerThroughput);
 
@@ -46,7 +46,7 @@ void BM_SyncDisabledLogCost(benchmark::State& state) {
     auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
     logger->SetLevel(ulog::Level::kInfo);  // DEBUG filtered out
     logger->AddSink(std::make_shared<DiscardSink>());
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     std::uint64_t counter = 0;
     for (auto _ : state) {
@@ -55,7 +55,7 @@ void BM_SyncDisabledLogCost(benchmark::State& state) {
     }
     state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()));
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 BENCHMARK(BM_SyncDisabledLogCost);
 

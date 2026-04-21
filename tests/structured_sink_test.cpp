@@ -71,10 +71,10 @@ TEST(StructuredSink, SyncReceivesLevelAndText) {
     auto s_sink = std::make_shared<CaptureStructuredSink>();
     logger->AddStructuredSink(s_sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_WARNING() << "hello";
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto recs = s_sink->Records();
     ASSERT_EQ(recs.size(), 1u);
@@ -90,7 +90,7 @@ TEST(StructuredSink, TagsPreserveNativeTypes) {
     auto s_sink = std::make_shared<CaptureStructuredSink>();
     logger->AddStructuredSink(s_sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     {
         ulog::LogExtra extra;
         extra.Extend("count", std::int64_t{42});
@@ -99,7 +99,7 @@ TEST(StructuredSink, TagsPreserveNativeTypes) {
         extra.Extend("name",  std::string{"alice"});
         LOG_INFO() << extra << "payload";
     }
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto recs = s_sink->Records();
     ASSERT_EQ(recs.size(), 1u);
@@ -137,9 +137,9 @@ TEST(StructuredSink, StructuredOnlyLoggerSkipsTextFormatter) {
     logger->AddStructuredSink(s_sink);
     // Note: no text sinks attached.
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "structured-only";
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto recs = s_sink->Records();
     ASSERT_EQ(recs.size(), 1u);
@@ -155,14 +155,14 @@ TEST(StructuredSink, MixedTextAndStructuredFanOut) {
     logger->AddSink(text);
     logger->AddStructuredSink(structured);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     {
         ulog::LogExtra extra;
         extra.Extend("user", std::string{"bob"});
         LOG_ERROR() << extra << "oops";
     }
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     // Both paths observe the record.
     const auto text_recs = text->Records();
@@ -187,10 +187,10 @@ TEST(StructuredSink, PerSinkLevelGate) {
     s_sink->SetLevel(ulog::Level::kError);
     logger->AddStructuredSink(s_sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "below";
     LOG_ERROR() << "at";
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     ASSERT_EQ(s_sink->Count(), 1u);
     EXPECT_EQ(s_sink->Records().front().text, "at");
@@ -204,10 +204,10 @@ TEST(StructuredSink, AsyncDispatchesOnWorker) {
     auto s_sink = std::make_shared<CaptureStructuredSink>();
     logger->AddStructuredSink(s_sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     for (int i = 0; i < 5; ++i) LOG_INFO() << "async-" << i;
     logger->Flush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto recs = s_sink->Records();
     ASSERT_EQ(recs.size(), 5u);
@@ -231,10 +231,10 @@ TEST(StructuredSink, AsyncMixedTextAndStructuredOneEnqueue) {
     logger->AddSink(text);
     logger->AddStructuredSink(structured);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     for (int i = 0; i < 10; ++i) LOG_INFO() << "both-" << i;
     logger->Flush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     EXPECT_EQ(text->Records().size(), 10u);
     EXPECT_EQ(structured->Count(), 10u);
@@ -252,9 +252,9 @@ TEST(StructuredSink, EmitLocationFalseSuppressesModuleFields) {
     auto s_sink = std::make_shared<CaptureStructuredSink>();
     logger->AddStructuredSink(s_sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "x";
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto recs = s_sink->Records();
     ASSERT_EQ(recs.size(), 1u);
@@ -272,9 +272,9 @@ TEST(StructuredSink, EmitLocationTrueKeepsModuleFields) {
     auto s_sink = std::make_shared<CaptureStructuredSink>();
     logger->AddStructuredSink(s_sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "x";
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto recs = s_sink->Records();
     ASSERT_EQ(recs.size(), 1u);
@@ -293,9 +293,9 @@ TEST(StructuredSink, MultipleStructuredSinksAllReceive) {
     logger->AddStructuredSink(b);
     logger->AddStructuredSink(c);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "fanout";
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     EXPECT_EQ(a->Count(), 1u);
     EXPECT_EQ(b->Count(), 1u);
@@ -311,13 +311,13 @@ TEST(StructuredSink, JsonStringTagPreserved) {
     auto s_sink = std::make_shared<CaptureStructuredSink>();
     logger->AddStructuredSink(s_sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     {
         ulog::LogExtra extra;
         extra.Extend("meta", ulog::JsonString{"{\"k\":1}"});
         LOG_INFO() << extra << "x";
     }
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     const auto recs = s_sink->Records();
     ASSERT_EQ(recs.size(), 1u);
@@ -341,9 +341,9 @@ TEST(StructuredSink, ThrowingSinkDoesNotAffectSiblings) {
     logger->AddStructuredSink(bad);
     logger->AddStructuredSink(good);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "survives";
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     EXPECT_EQ(good->Count(), 1u);
     EXPECT_EQ(good->Records().front().text, "survives");
@@ -361,10 +361,10 @@ TEST(StructuredSink, AsyncFlushWaitsForStructuredRecords) {
     auto s_sink = std::make_shared<CaptureStructuredSink>();
     logger->AddStructuredSink(s_sink);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     for (int i = 0; i < 100; ++i) LOG_INFO() << "r-" << i;
     logger->Flush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     EXPECT_EQ(s_sink->Count(), 100u);
 }
@@ -383,10 +383,10 @@ TEST(StructuredSink, AsyncFlushDrainsStructuredSinkFlushCount) {
     auto counter = std::make_shared<CountingSink>();
     logger->AddStructuredSink(counter);
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "x";
     logger->Flush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     EXPECT_GE(counter->flush_calls.load(), 1);
 }
@@ -401,9 +401,9 @@ TEST(StructuredSink, TraceContextReachesRecord) {
         sink.SetTraceContext("deadbeef", "cafef00d");
     });
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     LOG_INFO() << "traced";
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
     ulog::SetTracingHook(nullptr);
 
     const auto recs = s_sink->Records();

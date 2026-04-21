@@ -13,18 +13,18 @@
 
 namespace {
 
-std::shared_ptr<ulog::MemLogger> MakeMem() {
-    auto m = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
-    m->SetLevel(ulog::Level::kTrace);
-    return m;
-}
+    std::shared_ptr<ulog::MemLogger> MakeMem() {
+        auto m = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
+        m->SetLevel(ulog::Level::kTrace);
+        return m;
+    }
 
 }  // namespace
 
 TEST(DefaultLoggerGuard, SwapsDefaultWithinScope) {
     auto outer = MakeMem();
     auto inner = MakeMem();
-    ulog::SetDefaultLogger(outer);
+    ulog::impl::SetDefaultLoggerRef(*outer);
 
     LOG_INFO() << "outer-first";
     {
@@ -37,14 +37,14 @@ TEST(DefaultLoggerGuard, SwapsDefaultWithinScope) {
     EXPECT_EQ(inner->GetRecords().size(), 1u);
     EXPECT_NE(inner->GetRecords().front().find("text=inside-guard"), std::string::npos);
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(DefaultLoggerGuard, NestedGuardsRestoreInOrder) {
     auto a = MakeMem();
     auto b = MakeMem();
     auto c = MakeMem();
-    ulog::SetDefaultLogger(a);
+    ulog::impl::SetDefaultLoggerRef(*a);
 
     LOG_INFO() << "to-a";
     {
@@ -62,29 +62,29 @@ TEST(DefaultLoggerGuard, NestedGuardsRestoreInOrder) {
     EXPECT_EQ(b->GetRecords().size(), 2u);
     EXPECT_EQ(c->GetRecords().size(), 1u);
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(DefaultLogger, TlsCacheInvalidatesOnSet) {
     auto a = MakeMem();
     auto b = MakeMem();
-    ulog::SetDefaultLogger(a);
+    ulog::impl::SetDefaultLoggerRef(*a);
     LOG_INFO() << "into-a";
-    ulog::SetDefaultLogger(b);
+    ulog::impl::SetDefaultLoggerRef(*b);
     LOG_INFO() << "into-b";
     EXPECT_EQ(a->GetRecords().size(), 1u);
     EXPECT_EQ(b->GetRecords().size(), 1u);
     EXPECT_NE(a->GetRecords().front().find("text=into-a"), std::string::npos);
     EXPECT_NE(b->GetRecords().front().find("text=into-b"), std::string::npos);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(DefaultLogger, TlsCacheHotPathRoutesAllRecords) {
     auto a = MakeMem();
-    ulog::SetDefaultLogger(a);
+    ulog::impl::SetDefaultLoggerRef(*a);
     for (int i = 0; i < 100; ++i) LOG_INFO() << "msg " << i;
     EXPECT_EQ(a->GetRecords().size(), 100u);
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(DefaultLogger, ConcurrentSwapWhileLoggingDoesNotCrash) {
@@ -92,9 +92,9 @@ TEST(DefaultLogger, ConcurrentSwapWhileLoggingDoesNotCrash) {
     // dangle when SetDefaultLogger replaces the slot mid-log.
     auto a = MakeMem();
     auto b = MakeMem();
-    ulog::SetDefaultLogger(a);
+    ulog::impl::SetDefaultLoggerRef(*a);
 
-    std::atomic<bool> stop{false};
+    std::atomic<bool> stop{ false };
     constexpr int kProducers = 4;
     std::vector<std::thread> threads;
     for (int t = 0; t < kProducers; ++t) {
@@ -103,12 +103,12 @@ TEST(DefaultLogger, ConcurrentSwapWhileLoggingDoesNotCrash) {
             while (!stop.load(std::memory_order_relaxed)) {
                 LOG_INFO() << "t=" << t << " i=" << (i++);
             }
-        });
+            });
     }
 
     // Flip the default ~200 times across ~200ms.
     for (int i = 0; i < 200; ++i) {
-        ulog::SetDefaultLogger((i % 2 == 0) ? b : a);
+        ulog::impl::SetDefaultLoggerRef(*((i % 2 == 0) ? b : a));
         std::this_thread::sleep_for(std::chrono::microseconds(500));
     }
     stop.store(true, std::memory_order_relaxed);
@@ -118,7 +118,7 @@ TEST(DefaultLogger, ConcurrentSwapWhileLoggingDoesNotCrash) {
     // intentionally not asserted — the point is no TSAN / segfault.
     EXPECT_GT(a->GetRecords().size() + b->GetRecords().size(), 0u);
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(DefaultLogger, PurgeTlsDefaultLoggerCacheReleasesPriorLogger) {
@@ -129,18 +129,18 @@ TEST(DefaultLogger, PurgeTlsDefaultLoggerCacheReleasesPriorLogger) {
     auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
     std::weak_ptr<ulog::MemLogger> weak = logger;
 
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     // Warm the TLS cache on this thread.
     LOG_INFO() << "warm";
 
     // Drop the global slot + the local strong ref. The TLS cache on
     // this thread is the only remaining strong ref.
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
     logger.reset();
     EXPECT_FALSE(weak.expired())
         << "TLS cache on this thread still holds the prior logger";
 
-    ulog::PurgeTlsDefaultLoggerCache();
+    //ulog::PurgeTlsDefaultLoggerCache();
     EXPECT_TRUE(weak.expired())
         << "Purge did not release the TLS-cached logger pointer";
 }

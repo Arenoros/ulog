@@ -10,266 +10,194 @@
 #include <boost/smart_ptr/atomic_shared_ptr.hpp>
 #include <boost/smart_ptr/shared_ptr.hpp>
 
-#include <ulog/dynamic_debug.hpp>
 #include <ulog/impl/logger_base.hpp>
 #include <ulog/null_logger.hpp>
+#include <ulog/dynamic_debug.hpp>
+
+#include "ulog/impl/rate_limit.hpp"
 
 namespace ulog {
-
-namespace {
-
-/// Converts std::shared_ptr<T> into boost::shared_ptr<T> by stashing the std
-/// owner in the boost deleter — refcount semantics are preserved and the
-/// underlying object is released exactly once when both sides drop their
-/// last reference.
-template <typename T>
-boost::shared_ptr<T> StdToBoost(std::shared_ptr<T> p) {
-    if (!p) return {};
-    T* raw = p.get();
-    return boost::shared_ptr<T>(raw, [p = std::move(p)](T*) mutable {});
-}
-
-/// Inverse of StdToBoost: mirrors boost ownership into a std::shared_ptr.
-template <typename T>
-std::shared_ptr<T> BoostToStd(boost::shared_ptr<T> p) {
-    if (!p) return {};
-    T* raw = p.get();
-    return std::shared_ptr<T>(raw, [p = std::move(p)](T*) mutable {});
-}
-
-/// boost::atomic_shared_ptr gives us lock-free load/store with correct
-/// lifetime handling: readers always obtain a reference-counted snapshot,
-/// so SetDefaultLogger racing with logging no longer dangles.
-boost::atomic_shared_ptr<impl::LoggerBase>& DefaultSlot() noexcept {
-    static boost::atomic_shared_ptr<impl::LoggerBase> slot;
-    return slot;
-}
-
-/// Monotonically bumped on every SetDefaultLogger call. Per-thread caches
-/// compare their cached value against this and refresh on mismatch — the
-/// std↔boost shared_ptr conversion then runs O(1 per SetDefault) instead of
-/// O(per LOG_*). Races are benign: stale TLS still returns a live,
-/// ref-counted pointer (the previous logger), because DefaultSlot's
-/// refcount keeps it alive for as long as anyone references it.
-std::atomic<std::uint64_t> g_default_gen{0};
-
-constexpr std::uint64_t kTlsStartGen = std::numeric_limits<std::uint64_t>::max();
-
-LoggerPtr BuildDefaultPtr() {
-    auto b = DefaultSlot().load();
-    if (!b) return MakeNullLogger();
-    return BoostToStd(std::move(b));
-}
-
-LoggerPtr& TlsDefault() noexcept {
-    thread_local LoggerPtr cached;
-    return cached;
-}
-
-std::uint64_t& TlsGeneration() noexcept {
-    thread_local std::uint64_t gen = kTlsStartGen;
-    return gen;
-}
-
-LoggerPtr LoadDefaultCached() noexcept {
-    const auto gen = g_default_gen.load(std::memory_order_acquire);
-    auto& tls = TlsDefault();
-    auto& tls_gen = TlsGeneration();
-    if (tls_gen != gen || !tls) {
-        tls = BuildDefaultPtr();
-        tls_gen = gen;
-    }
-    return tls;  // refcount++ on copy — no fresh control-block allocation
-}
-
-/// Internal variant of the public `GetDefaultLogger()`. The public one is
-/// marked `[[deprecated]]` to steer callers toward the ref-counted
-/// snapshot; in-TU helpers below need the same short-lived reference
-/// without triggering the deprecation warning on every use.
-LoggerRef GetDefaultLoggerInternal() noexcept {
-    auto ptr = LoadDefaultCached();
-    if (ptr) return *ptr;
-    return GetNullLogger();
-}
-
-}  // namespace
-
-void PurgeTlsDefaultLoggerCache() noexcept {
-    // Reset the per-thread cache so the stale LoggerPtr the thread has
-    // been hanging onto is released right now, instead of at the next
-    // LOG_* (when the generation check would normally refresh it).
-    // Intended use: a long-lived worker thread that just received a
-    // SetDefaultLogger(nullptr) or a hot swap, and won't log again for
-    // a while — without this call, its TLS slot keeps the previous
-    // logger and its sinks alive.
-    TlsDefault().reset();
-    TlsGeneration() = kTlsStartGen;
-}
-
-LoggerRef GetDefaultLogger() noexcept {
-    return GetDefaultLoggerInternal();
-}
-
-LoggerPtr GetDefaultLoggerPtr() noexcept { return LoadDefaultCached(); }
-
-void SetDefaultLogger(LoggerPtr new_default_logger) noexcept {
-    DefaultSlot().store(StdToBoost(std::move(new_default_logger)));
-    g_default_gen.fetch_add(1, std::memory_order_release);
-}
-
-void SetDefaultLoggerLevel(Level level) { GetDefaultLoggerInternal().SetLevel(level); }
-
-Level GetDefaultLoggerLevel() noexcept { return GetDefaultLoggerInternal().GetLevel(); }
-
-bool ShouldLog(Level level) noexcept { return GetDefaultLoggerInternal().ShouldLog(level); }
-
-void SetLoggerLevel(LoggerRef logger, Level level) { logger.SetLevel(level); }
-
-bool LoggerShouldLog(LoggerRef logger, Level level) noexcept { return logger.ShouldLog(level); }
-
-bool LoggerShouldLog(const LoggerPtr& logger, Level level) noexcept {
-    return logger && logger->ShouldLog(level);
-}
-
-Level GetLoggerLevel(LoggerRef logger) noexcept { return logger.GetLevel(); }
-
-void LogFlush() { GetDefaultLoggerInternal().Flush(); }
-void LogFlush(LoggerRef logger) { logger.Flush(); }
-
-// ---------------- DefaultLoggerGuard ----------------
-
-DefaultLoggerGuard::DefaultLoggerGuard(LoggerPtr new_default_logger) noexcept
-    : prev_ptr_(GetDefaultLoggerPtr()),
-      new_ptr_(std::move(new_default_logger)),
-      prev_level_(prev_ptr_ ? prev_ptr_->GetLevel() : Level::kInfo) {
-    SetDefaultLogger(new_ptr_);
-}
-
-DefaultLoggerGuard::~DefaultLoggerGuard() {
-    SetDefaultLogger(prev_ptr_);
-    if (prev_ptr_) prev_ptr_->SetLevel(prev_level_);
-}
-
-// ---------------- DefaultLoggerLevelScope ----------------
-
-DefaultLoggerLevelScope::DefaultLoggerLevelScope(Level level)
-    : logger_(GetDefaultLoggerInternal()), initial_(logger_.GetLevel()) {
-    logger_.SetLevel(level);
-}
-DefaultLoggerLevelScope::~DefaultLoggerLevelScope() { logger_.SetLevel(initial_); }
-
-// ---------------- RateLimiter ----------------
-
-namespace impl {
-
-namespace {
-
-bool NextCountShouldLog(std::uint64_t count) noexcept {
-    // Emit for count == 1 and every power-of-two thereafter.
-    return count == 1 || (count > 0 && (count & (count - 1)) == 0);
-}
-
-}  // namespace
-
-/// Process-wide running total, aggregated across every rate-limited
-/// site. Producers only increment on drops — zero overhead on the
-/// common (emit) path, one relaxed atomic add on the drop path.
-std::atomic<std::uint64_t> g_rate_limit_dropped_total{0};
-
-/// Optional per-drop callback — nullptr by default. Producers load with
-/// acquire so the handler, once observed non-null, sees any stores the
-/// installer made before `SetRateLimitDropHandler`.
-std::atomic<RateLimitDropHandler> g_rate_limit_drop_handler{nullptr};
-
-RateLimiter::RateLimiter(RateLimitData& data, const char* file, int line) noexcept {
-    const auto now = std::chrono::steady_clock::now();
-    if (now - data.last_reset_time >= std::chrono::seconds(1)) {
-        data.last_reset_time = now;
-        data.count_since_reset = 0;
-        data.dropped_count = 0;
-    }
-    ++data.count_since_reset;
-    should_log_ = NextCountShouldLog(data.count_since_reset);
-    if (!should_log_) {
-        ++data.dropped_count;
-        const auto total = g_rate_limit_dropped_total.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (auto* h = g_rate_limit_drop_handler.load(std::memory_order_acquire)) {
-            const RateLimitDropEvent ev{file, line, data.dropped_count, total};
-            h(ev);
+    namespace {
+        auto& NonOwningDefaultLoggerInternal() noexcept {
+            // Initial logger should be Null logger as non-service utils
+            // may use userver's universal without logger. They should not suffer from any
+            // logger at all.
+            static std::atomic<impl::LoggerBase*> default_logger_ptr{ &GetNullLogger() };
+            return default_logger_ptr;
         }
+
+        constexpr bool IsPowerOf2(uint64_t n) { return (n & (n - 1)) == 0; }
+
     }
-    dropped_count_ = data.dropped_count;
-}
 
-// ---------------- StaticLogEntry ----------------
 
-namespace {
+    namespace impl {
 
-/// Head of the intrusive registry. Static storage, lock-free CAS push in
-/// ctor. Never popped — entries outlive the program.
-std::atomic<StaticLogEntry*>& EntriesHead() noexcept {
-    static std::atomic<StaticLogEntry*> head{nullptr};
-    return head;
-}
+        void SetDefaultLoggerRef(LoggerRef logger) noexcept { NonOwningDefaultLoggerInternal() = &logger; }
 
-bool ShouldNotLogFor(const char* path, int line, bool logger_allows) noexcept {
-    const auto state = impl::LookupDynamicDebugLog(path, line);
-    switch (state) {
-        case DynamicDebugState::kForceEnabled:  return false;
-        case DynamicDebugState::kForceDisabled: return true;
-        case DynamicDebugState::kDefault:       return !logger_allows;
+        bool has_background_threads_which_can_log{ false };
+
+    }  // namespace impl
+
+    void SetNullDefaultLogger() noexcept {
+        impl::SetDefaultLoggerRef(GetNullLogger());
     }
-    return !logger_allows;
-}
-}  // namespace
 
-StaticLogEntry::StaticLogEntry(const char* path, int line) noexcept
-    : path_(path), line_(line) {
-    auto& head = EntriesHead();
-    StaticLogEntry* expected = head.load(std::memory_order_relaxed);
-    do {
-        next_ = expected;
-    } while (!head.compare_exchange_weak(expected, this,
-                                         std::memory_order_release,
-                                         std::memory_order_relaxed));
-}
+    LoggerRef GetDefaultLogger() noexcept { return *NonOwningDefaultLoggerInternal().load(); }
 
-bool StaticLogEntry::ShouldNotLog(LoggerRef logger, Level level) const noexcept {
-    return ShouldNotLogFor(path_, line_, logger.ShouldLog(level));
-}
-
-bool StaticLogEntry::ShouldNotLog(const LoggerPtr& logger, Level level) const noexcept {
-    const bool allows = logger && logger->ShouldLog(level);
-    return ShouldNotLogFor(path_, line_, allows);
-}
-
-const StaticLogEntry* GetStaticLogEntriesHead() noexcept {
-    return EntriesHead().load(std::memory_order_acquire);
-}
-
-}  // namespace impl
-
-void ForEachLogEntry(const std::function<void(const LogEntryInfo&)>& cb) {
-    if (!cb) return;
-    for (const auto* e = impl::GetStaticLogEntriesHead(); e != nullptr; e = e->next()) {
-        LogEntryInfo info;
-        info.file = e->path();
-        info.line = e->line();
-        info.state = impl::LookupDynamicDebugLog(e->path(), e->line());
-        cb(info);
+    DefaultLoggerGuard::DefaultLoggerGuard(LoggerPtr new_default_logger) noexcept
+        : logger_prev_(GetDefaultLogger()),
+        level_prev_(GetDefaultLoggerLevel()),
+        logger_new_(std::move(new_default_logger)) {
+        assert(logger_new_);
+        impl::SetDefaultLoggerRef(*logger_new_);
     }
-}
 
-std::uint64_t GetRateLimitDroppedTotal() noexcept {
-    return impl::g_rate_limit_dropped_total.load(std::memory_order_relaxed);
-}
+    DefaultLoggerGuard::~DefaultLoggerGuard() {
+        assert(
+            !impl::has_background_threads_which_can_log,
+            "DefaultLoggerGuard with a new logger should outlive the coroutine "
+            "engine, because otherwise it could be in use right now, when the "
+            "~DefaultLoggerGuard() is called and the logger is destroyed. "
+            "Construct the DefaultLoggerGuard before calling engine::RunStandalone; "
+            "in tests use the utest::DefaultLoggerFixture."
+        );
 
-void ResetRateLimitStats() noexcept {
-    impl::g_rate_limit_dropped_total.store(0, std::memory_order_relaxed);
-}
+        impl::SetDefaultLoggerRef(logger_prev_);
+        SetDefaultLoggerLevel(level_prev_);
+    }
 
-void SetRateLimitDropHandler(RateLimitDropHandler handler) noexcept {
-    impl::g_rate_limit_drop_handler.store(handler, std::memory_order_release);
-}
+    DefaultLoggerLevelScope::DefaultLoggerLevelScope(Level level)
+        : logger_(GetDefaultLogger()),
+        level_initial_(GetLoggerLevel(logger_)) {
+        SetLoggerLevel(logger_, level);
+    }
+
+    DefaultLoggerLevelScope::~DefaultLoggerLevelScope() { SetLoggerLevel(logger_, level_initial_); }
+
+    void SetDefaultLoggerLevel(Level level) { GetDefaultLogger().SetLevel(level); }
+
+    void SetLoggerLevel(LoggerRef logger, Level level) { logger.SetLevel(level); }
+
+    Level GetDefaultLoggerLevel() noexcept {
+        static_assert(noexcept(GetDefaultLogger().GetLevel()));
+        return GetDefaultLogger().GetLevel();
+    }
+
+    bool ShouldLog(Level level) noexcept {
+        static_assert(noexcept(GetDefaultLogger().ShouldLog(level)));
+        return GetDefaultLogger().ShouldLog(level);
+    }
+
+    bool LoggerShouldLog(LoggerRef logger, Level level) noexcept {
+        static_assert(noexcept(logger.ShouldLog(level)));
+        return logger.ShouldLog(level);
+    }
+
+    bool LoggerShouldLog(const LoggerPtr& logger, Level level) noexcept {
+        return logger && LoggerShouldLog(*logger, level);
+    }
+
+    Level GetLoggerLevel(LoggerRef logger) noexcept {
+        static_assert(noexcept(logger.GetLevel()));
+        return logger.GetLevel();
+    }
+
+    void LogFlush() { GetDefaultLogger().Flush(); }
+
+    void LogFlush(LoggerRef logger) { logger.Flush(); }
+
+
+    // ---------------- RateLimiter ----------------
+
+    namespace impl {
+
+        namespace {
+
+            bool NextCountShouldLog(std::uint64_t count) noexcept {
+                // Emit for count == 1 and every power-of-two thereafter.
+                return count == 1 || (count > 0 && (count & (count - 1)) == 0);
+            }
+
+        }  // namespace
+
+        /// Process-wide running total, aggregated across every rate-limited
+        /// site. Producers only increment on drops — zero overhead on the
+        /// common (emit) path, one relaxed atomic add on the drop path.
+        std::atomic<std::uint64_t> g_rate_limit_dropped_total{ 0 };
+
+        /// Optional per-drop callback — nullptr by default. Producers load with
+        /// acquire so the handler, once observed non-null, sees any stores the
+        /// installer made before `SetRateLimitDropHandler`.
+        std::atomic<RateLimitDropHandler> g_rate_limit_drop_handler{ nullptr };
+
+        RateLimiter::RateLimiter(RateLimitData& data) noexcept {
+            try {
+                if (!impl::IsLogLimitedEnabled()) {
+                    return;
+                }
+
+                const auto reset_interval = impl::GetLogLimitedInterval();
+                const auto now = std::chrono::steady_clock::now();
+
+                if (now - data.last_reset_time >= reset_interval) {
+                    data.count_since_reset = 0;
+                    data.last_reset_time = now;
+                }
+
+                if (IsPowerOf2(++data.count_since_reset)) {
+                    // log the current message together with the dropped count
+                    dropped_count_ = std::exchange(data.dropped_count, 0);
+                } else {
+                    // drop the current message
+                    ++data.dropped_count;
+                    should_log_ = false;
+                }
+            } catch (const std::exception& e) {
+                assert(false, e.what());
+                should_log_ = false;
+            }
+        }
+        LogHelper& operator<<(LogHelper& lh, const RateLimiter& rl) noexcept {
+            if (rl.dropped_count_ != 0) {
+                lh << "[" << rl.dropped_count_ << " logs dropped] ";
+            }
+            return lh;
+        }
+
+        StaticLogEntry::StaticLogEntry(const char* path, int line) noexcept {
+            static_assert(sizeof(LogEntryContent) == sizeof(content_));
+            static_assert(sizeof(LogEntryContent) == sizeof(content_));
+            // static_assert(std::is_trivially_destructible_v<LogEntryContent>);
+            auto* item = new (&content_) LogEntryContent(path, line);
+            RegisterLogLocation(*item);
+        }
+
+        bool StaticLogEntry::ShouldNotLog(LoggerRef logger, Level level) const noexcept {
+            const auto& content = reinterpret_cast<const LogEntryContent&>(content_);
+            const auto state = content.state.load();
+            const bool force_disabled = level < state.force_disabled_level_plus_one;
+            const bool force_enabled = level >= state.force_enabled_level && level != Level::kNone;
+            return (!LoggerShouldLog(logger, level) || force_disabled) && !force_enabled;
+        }
+
+        bool StaticLogEntry::ShouldNotLog(const LoggerPtr& logger, Level level) const noexcept {
+            return !logger || ShouldNotLog(*logger, level);
+        }
+
+    }  // namespace impl
+
+
+    std::uint64_t GetRateLimitDroppedTotal() noexcept {
+        return impl::g_rate_limit_dropped_total.load(std::memory_order_relaxed);
+    }
+
+    void ResetRateLimitStats() noexcept {
+        impl::g_rate_limit_dropped_total.store(0, std::memory_order_relaxed);
+    }
+
+    void SetRateLimitDropHandler(RateLimitDropHandler handler) noexcept {
+        impl::g_rate_limit_drop_handler.store(handler, std::memory_order_release);
+    }
 
 }  // namespace ulog

@@ -23,198 +23,208 @@
 #include <ulog/log_helper_range.hpp>
 
 namespace ulog {
+    namespace impl {
 
-// -------------------------------------------------------------------------
-// Default logger management
-// -------------------------------------------------------------------------
+        void SetDefaultLoggerRef(LoggerRef new_logger) noexcept;
 
-/// Returns the default logger previously set by SetDefaultLogger. If the logger
-/// was not set — returns a null logger that does no logging.
-///
-/// @warning The reference is only safe for the duration of a single logging
-/// operation that will not race with SetDefaultLogger. For long-lived access
-/// across threads use @ref GetDefaultLoggerPtr, which pins the logger with
-/// a shared_ptr snapshot.
-///
-/// Marked `[[deprecated]]` because the short-lived-reference contract is
-/// subtle and easy to miss. Call sites that just want to emit one record
-/// should use the LOG_* macros (which internally snapshot a `LoggerPtr`);
-/// call sites that need explicit access to the logger should use
-/// `GetDefaultLoggerPtr()` so the refcount keeps the logger alive across
-/// a concurrent `SetDefaultLogger` swap.
-[[deprecated("Prefer GetDefaultLoggerPtr() — returned reference is only valid "
-             "until the next SetDefaultLogger() on any thread")]]
-LoggerRef GetDefaultLogger() noexcept;
+        extern bool has_background_threads_which_can_log;
 
-/// Returns a reference-counted snapshot of the current default logger. The
-/// returned pointer keeps the logger alive for the caller's lifetime even
-/// when @ref SetDefaultLogger is invoked concurrently.
-LoggerPtr GetDefaultLoggerPtr() noexcept;
+    }  // namespace impl
 
-/// Replaces the default logger. The provided LoggerPtr is kept alive.
-void SetDefaultLogger(LoggerPtr new_default_logger) noexcept;
+    // -------------------------------------------------------------------------
+    // Default logger management
+    // -------------------------------------------------------------------------
 
-/// Releases the calling thread's cached pointer to the default logger.
-/// The next LOG_* on this thread reloads from the global slot.
-///
-/// Call this on long-lived threads after `SetDefaultLogger(nullptr)` or
-/// a hot swap if you want the old logger's ref count to drop *now*
-/// instead of "at the next LOG_* on this thread" — otherwise a worker
-/// that is idle for a long time keeps the superseded logger (and its
-/// sinks) alive in its TLS slot.
-void PurgeTlsDefaultLoggerCache() noexcept;
+    // The default logger is a global slot that LOG_* macros use when no explicit
+    void SetNullDefaultLogger() noexcept;
 
-/// Sets the level of the default logger.
-void SetDefaultLoggerLevel(Level level);
+    /// @brief Returns the default logger previously set by SetDefaultLogger. If the
+    /// logger was not set - returns a logger that does no logging.
+    ///
+    /// @note While the coroutine engine is running, any reference to the default
+    /// logger is guaranteed to be alive. No lifetime guarantees are given
+    /// for the default logger reference outside the engine's lifetime. The rule of
+    /// thumb there is not to keep this reference in any extended scope.
+    LoggerRef GetDefaultLogger() noexcept;
 
-/// Returns the level of the default logger.
-Level GetDefaultLoggerLevel() noexcept;
+    ///// Returns a reference-counted snapshot of the current default logger. The
+    ///// returned pointer keeps the logger alive for the caller's lifetime even
+    ///// when @ref SetDefaultLogger is invoked concurrently.
+    //LoggerPtr GetDefaultLoggerPtr() noexcept;
 
-/// Returns true iff the default logger will emit records at `level`.
-bool ShouldLog(Level level) noexcept;
+    ///// Releases the calling thread's cached pointer to the default logger.
+    ///// The next LOG_* on this thread reloads from the global slot.
+    /////
+    ///// Call this on long-lived threads after `SetDefaultLogger(nullptr)` or
+    ///// a hot swap if you want the old logger's ref count to drop *now*
+    ///// instead of "at the next LOG_* on this thread" — otherwise a worker
+    ///// that is idle for a long time keeps the superseded logger (and its
+    ///// sinks) alive in its TLS slot.
+    //void PurgeTlsDefaultLoggerCache() noexcept;
 
-/// Changes level of any logger.
-void SetLoggerLevel(LoggerRef logger, Level level);
+    /// Sets the level of the default logger.
+    void SetDefaultLoggerLevel(Level level);
 
-/// True iff the given logger will emit records at `level`.
-bool LoggerShouldLog(LoggerRef logger, Level level) noexcept;
-bool LoggerShouldLog(const LoggerPtr& logger, Level level) noexcept;
+    /// Returns the level of the default logger.
+    Level GetDefaultLoggerLevel() noexcept;
 
-/// Returns the current level of the given logger.
-Level GetLoggerLevel(LoggerRef logger) noexcept;
+    /// Returns true iff the default logger will emit records at `level`.
+    bool ShouldLog(Level level) noexcept;
 
-/// Forces a flush of the default logger.
-void LogFlush();
-void LogFlush(LoggerRef logger);
+    /// Changes level of any logger.
+    void SetLoggerLevel(LoggerRef logger, Level level);
 
-/// RAII guard: atomically replaces the default logger for a scope.
-class DefaultLoggerGuard final {
-public:
-    explicit DefaultLoggerGuard(LoggerPtr new_default_logger) noexcept;
-    ~DefaultLoggerGuard();
-    DefaultLoggerGuard(const DefaultLoggerGuard&) = delete;
-    DefaultLoggerGuard& operator=(const DefaultLoggerGuard&) = delete;
+    /// True iff the given logger will emit records at `level`.
+    bool LoggerShouldLog(LoggerRef logger, Level level) noexcept;
+    bool LoggerShouldLog(const LoggerPtr& logger, Level level) noexcept;
 
-private:
-    LoggerPtr prev_ptr_;
-    LoggerPtr new_ptr_;
-    Level prev_level_;
-};
+    /// Returns the current level of the given logger.
+    Level GetLoggerLevel(LoggerRef logger) noexcept;
 
-/// RAII guard: temporarily overrides the default logger's level.
-class DefaultLoggerLevelScope final {
-public:
-    explicit DefaultLoggerLevelScope(Level level);
-    ~DefaultLoggerLevelScope();
-    DefaultLoggerLevelScope(const DefaultLoggerLevelScope&) = delete;
-    DefaultLoggerLevelScope& operator=(const DefaultLoggerLevelScope&) = delete;
+    /// Forces a flush of the default logger.
+    void LogFlush();
+    void LogFlush(LoggerRef logger);
 
-private:
-    impl::LoggerBase& logger_;
-    Level initial_;
-};
+    /// @brief Atomically replaces the default logger.
+    ///
+    /// @warning Do not use this class if you are using a component system.
+    class DefaultLoggerGuard final {
+    public:
+        /// Atomically replaces the default logger.
+        ///
+        /// @warning The logger should live as long as someone is using it.
+        /// Generally speaking - it should live for a lifetime of the application,
+        /// or for a lifetime of the coroutine engine.
+        explicit DefaultLoggerGuard(LoggerPtr new_default_logger) noexcept;
 
-namespace impl {
+        DefaultLoggerGuard(DefaultLoggerGuard&&) = delete;
+        DefaultLoggerGuard& operator=(DefaultLoggerGuard&&) = delete;
 
-/// Per-source-line counter for LOG_LIMITED_*. Thread-local.
-class RateLimitData {
-public:
-    std::uint64_t count_since_reset{0};
-    std::uint64_t dropped_count{0};
-    std::chrono::steady_clock::time_point last_reset_time{};
-};
+        ~DefaultLoggerGuard();
 
-class RateLimiter {
-public:
-    RateLimiter(RateLimitData& data, const char* file, int line) noexcept;
-    bool ShouldLog() const noexcept { return should_log_; }
-    std::uint64_t GetDroppedCount() const noexcept { return dropped_count_; }
+    private:
+        LoggerRef logger_prev_;
+        const Level level_prev_;
+        LoggerPtr logger_new_;
+    };
 
-private:
-    bool should_log_{true};
-    std::uint64_t dropped_count_{0};
-};
+    /// @brief Allows to override global log level for the whole service within a scope. Primarily for use in tests.
+    ///
+    /// @warning This is NOT the right tool to toggle writing of certain logs within a scope.
+    /// This scope class changes log level GLOBALLY as-if using @ref logging::SetLoggerLevel.
+    ///
+    /// @note To affect what logs are written within a scope, use @ref tracing::Span::SetLogLevel and
+    /// @ref tracing::Span::SetLocalLogLevel (read their docs first!).
+    class DefaultLoggerLevelScope final {
+    public:
+        explicit DefaultLoggerLevelScope(Level level);
 
-}  // namespace impl
+        DefaultLoggerLevelScope(DefaultLoggerLevelScope&&) = delete;
+        DefaultLoggerLevelScope& operator=(DefaultLoggerLevelScope&&) = delete;
 
-/// Payload for the `RateLimitDropHandler` — one event per `LOG_LIMITED_*`
-/// invocation that gets suppressed. Handler runs on the producing thread;
-/// keep it non-blocking (push to an in-process queue / counter at most).
-struct RateLimitDropEvent {
-    /// Source file of the `LOG_LIMITED_*` call site (trimmed via
-    /// `ULOG_SOURCE_ROOT_LITERAL` if configured, same shape as `module`).
-    const char* file{nullptr};
-    /// Source line of the call site.
-    int line{0};
-    /// Drops accumulated at this site during the current 1-second window.
-    std::uint64_t site_dropped{0};
-    /// Process-wide running total across every `LOG_LIMITED_*` site, in
-    /// sync with `GetRateLimitDroppedTotal()` post-increment.
-    std::uint64_t total_dropped{0};
-};
+        ~DefaultLoggerLevelScope();
 
-/// Per-drop callback signature. `nullptr` deregisters.
-using RateLimitDropHandler = void (*)(const RateLimitDropEvent&) noexcept;
+    private:
+        impl::LoggerBase& logger_;
+        const Level level_initial_;
+    };
 
-/// Installs a callback fired on every `LOG_LIMITED_*` suppression. Thread
-/// safe. One handler per process; installing replaces the prior one.
-void SetRateLimitDropHandler(RateLimitDropHandler handler) noexcept;
+    namespace impl {
 
-/// Total number of log records suppressed by LOG_LIMITED_* across the whole
-/// process since start (or since ResetRateLimitStats). Read-only.
-std::uint64_t GetRateLimitDroppedTotal() noexcept;
+        /// Per-source-line counter for LOG_LIMITED_*. Thread-local.
+        class RateLimitData {
+        public:
+            std::uint64_t count_since_reset{ 0 };
+            std::uint64_t dropped_count{ 0 };
+            std::chrono::steady_clock::time_point last_reset_time{};
+        };
 
-/// Resets the global drop counter. Intended for tests / diagnostics only.
-void ResetRateLimitStats() noexcept;
+        class RateLimiter {
+        public:
+            RateLimiter(RateLimitData& data) noexcept;
+            bool ShouldLog() const noexcept { return should_log_; }
+            std::uint64_t GetDroppedCount() const noexcept { return dropped_count_; }
+            friend LogHelper& operator<<(LogHelper& lh, const RateLimiter& rl) noexcept;
+        private:
+            bool should_log_{ true };
+            std::uint64_t dropped_count_{ 0 };
+        };
 
-namespace impl {
+    }  // namespace impl
 
-/// Noop helper returned from compile-erased macros.
-struct Noop {
-    template <typename T>
-    const Noop& operator<<(const T&) const noexcept {
-        return *this;
-    }
-};
+    /// Payload for the `RateLimitDropHandler` — one event per `LOG_LIMITED_*`
+    /// invocation that gets suppressed. Handler runs on the producing thread;
+    /// keep it non-blocking (push to an in-process queue / counter at most).
+    struct RateLimitDropEvent {
+        /// Source file of the `LOG_LIMITED_*` call site (trimmed via
+        /// `ULOG_SOURCE_ROOT_LITERAL` if configured, same shape as `module`).
+        const char* file{ nullptr };
+        /// Source line of the call site.
+        int line{ 0 };
+        /// Drops accumulated at this site during the current 1-second window.
+        std::uint64_t site_dropped{ 0 };
+        /// Process-wide running total across every `LOG_LIMITED_*` site, in
+        /// sync with `GetRateLimitDroppedTotal()` post-increment.
+        std::uint64_t total_dropped{ 0 };
+    };
 
-/// Static per-source-line registration for dynamic debug controls.
-///
-/// Each instance self-registers into a process-wide intrusive singly-linked
-/// list on construction (lock-free CAS into a global atomic head). The list
-/// is walked by `ulog::ForEachLogEntry` for runtime enumeration / dynamic
-/// management UIs. Because instances have static storage duration, they are
-/// never unlinked — the list grows monotonically during program lifetime.
-class StaticLogEntry final {
-public:
-    StaticLogEntry(const char* path, int line) noexcept;
-    StaticLogEntry(const StaticLogEntry&) = delete;
-    StaticLogEntry& operator=(const StaticLogEntry&) = delete;
+    /// Per-drop callback signature. `nullptr` deregisters.
+    using RateLimitDropHandler = void (*)(const RateLimitDropEvent&) noexcept;
 
-    bool ShouldNotLog(LoggerRef logger, Level level) const noexcept;
-    bool ShouldNotLog(const LoggerPtr& logger, Level level) const noexcept;
+    /// Installs a callback fired on every `LOG_LIMITED_*` suppression. Thread
+    /// safe. One handler per process; installing replaces the prior one.
+    void SetRateLimitDropHandler(RateLimitDropHandler handler) noexcept;
 
-    const char* path() const noexcept { return path_; }
-    int line() const noexcept { return line_; }
-    const StaticLogEntry* next() const noexcept { return next_; }
+    /// Total number of log records suppressed by LOG_LIMITED_* across the whole
+    /// process since start (or since ResetRateLimitStats). Read-only.
+    std::uint64_t GetRateLimitDroppedTotal() noexcept;
 
-private:
-    const char* path_;
-    int line_;
-    StaticLogEntry* next_{nullptr};
-};
+    /// Resets the global drop counter. Intended for tests / diagnostics only.
+    void ResetRateLimitStats() noexcept;
 
-/// Head of the global `StaticLogEntry` list. Returned pointer is the
-/// most-recently-registered entry; walk via `next()` until `nullptr`.
-/// Safe to call at any time; new registrations are published with release
-/// so readers observing a non-null head see a fully-constructed entry.
-const StaticLogEntry* GetStaticLogEntriesHead() noexcept;
+    namespace impl {
 
-template <class NameHolder, int Line>
-struct EntryStorage final {
-    static inline StaticLogEntry entry{NameHolder::Get(), Line};
-};
+        /// Noop helper returned from compile-erased macros.
+        struct Noop {
+            template <typename T>
+            const Noop& operator<<(const T&) const noexcept {
+                return *this;
+            }
+        };
 
-}  // namespace impl
+        /// Static per-source-line registration for dynamic debug controls.
+        ///
+        /// Each instance self-registers into a process-wide intrusive singly-linked
+        /// list on construction (lock-free CAS into a global atomic head). The list
+        /// is walked by `ulog::ForEachLogEntry` for runtime enumeration / dynamic
+        /// management UIs. Because instances have static storage duration, they are
+        /// never unlinked — the list grows monotonically during program lifetime.
+        class StaticLogEntry final {
+        public:
+            StaticLogEntry(const char* path, int line) noexcept;
+            StaticLogEntry(const StaticLogEntry&) = delete;
+            StaticLogEntry& operator=(const StaticLogEntry&) = delete;
+
+            bool ShouldNotLog(LoggerRef logger, Level level) const noexcept;
+            bool ShouldNotLog(const LoggerPtr& logger, Level level) const noexcept;
+
+            //const char* path() const noexcept { return path_; }
+            //int line() const noexcept { return line_; }
+            //const StaticLogEntry* next() const noexcept { return next_; }
+
+        private:
+            alignas(void*) std::byte content_[sizeof(void*) * 5];
+            //const char* path_;
+            //int line_;
+            //StaticLogEntry* next_{nullptr};
+        };
+
+        template <class NameHolder, int Line>
+        struct EntryStorage final {
+            static inline StaticLogEntry entry{ NameHolder::Get(), Line };
+        };
+
+    }  // namespace impl
 
 }  // namespace ulog
 
@@ -259,7 +269,7 @@ struct EntryStorage final {
 
 // Default-logger macro snapshots the shared_ptr through the atomic slot, so
 // the record outlives any concurrent SetDefaultLogger() race.
-#define ULOG_LOG(lvl) ULOG_LOG_TO(::ulog::GetDefaultLoggerPtr(), (lvl))
+#define ULOG_LOG(lvl) ULOG_LOG_TO(::ulog::GetDefaultLogger(), (lvl))
 
 // ---- Compile-time erase by level (ULOG_ERASE_LOG_WITH_LEVEL=N) ----
 //
@@ -334,11 +344,11 @@ struct EntryStorage final {
 #endif
 
 // -------- Long-named (always-available) macros --------
-#define ULOG_LOG_TRACE()    ULOG_IMPL_LOG_TRACE_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr())
-#define ULOG_LOG_DEBUG()    ULOG_IMPL_LOG_DEBUG_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr())
-#define ULOG_LOG_INFO()     ULOG_IMPL_LOG_INFO_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr())
-#define ULOG_LOG_WARNING()  ULOG_IMPL_LOG_WARNING_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr())
-#define ULOG_LOG_ERROR()    ULOG_IMPL_LOG_ERROR_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLoggerPtr())
+#define ULOG_LOG_TRACE()    ULOG_IMPL_LOG_TRACE_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLogger())
+#define ULOG_LOG_DEBUG()    ULOG_IMPL_LOG_DEBUG_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLogger())
+#define ULOG_LOG_INFO()     ULOG_IMPL_LOG_INFO_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLogger())
+#define ULOG_LOG_WARNING()  ULOG_IMPL_LOG_WARNING_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLogger())
+#define ULOG_LOG_ERROR()    ULOG_IMPL_LOG_ERROR_ERASER(ULOG_LOG_TO, ::ulog::GetDefaultLogger())
 #define ULOG_LOG_CRITICAL() ULOG_LOG(::ulog::Level::kCritical)
 
 #define ULOG_LOG_TRACE_TO(logger)    ULOG_IMPL_LOG_TRACE_ERASER(ULOG_LOG_TO, logger)
@@ -354,20 +364,18 @@ struct EntryStorage final {
         []() -> ::ulog::impl::RateLimitData& {                                                               \
             thread_local ::ulog::impl::RateLimitData d;                                                      \
             return d;                                                                                        \
-        }(),                                                                                                 \
-        ULOG_IMPL_TRIM_FILE(__FILE__),                                                                       \
-        __LINE__                                                                                             \
+        }()                                                                                                  \
     }; !ulog_rl__.ShouldLog()) {                                                                             \
     } else                                                                                                   \
         ULOG_LOG_TO((logger), (lvl)) << ulog_rl__
 
-#define ULOG_LOG_LIMITED(lvl)          ULOG_LOG_LIMITED_TO(::ulog::GetDefaultLoggerPtr(), (lvl))
+#define ULOG_LOG_LIMITED(lvl)          ULOG_LOG_LIMITED_TO(::ulog::GetDefaultLogger(), (lvl))
 
-#define ULOG_LOG_LIMITED_TRACE()    ULOG_IMPL_LOG_TRACE_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr())
-#define ULOG_LOG_LIMITED_DEBUG()    ULOG_IMPL_LOG_DEBUG_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr())
-#define ULOG_LOG_LIMITED_INFO()     ULOG_IMPL_LOG_INFO_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr())
-#define ULOG_LOG_LIMITED_WARNING()  ULOG_IMPL_LOG_WARNING_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr())
-#define ULOG_LOG_LIMITED_ERROR()    ULOG_IMPL_LOG_ERROR_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLoggerPtr())
+#define ULOG_LOG_LIMITED_TRACE()    ULOG_IMPL_LOG_TRACE_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLogger())
+#define ULOG_LOG_LIMITED_DEBUG()    ULOG_IMPL_LOG_DEBUG_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLogger())
+#define ULOG_LOG_LIMITED_INFO()     ULOG_IMPL_LOG_INFO_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLogger())
+#define ULOG_LOG_LIMITED_WARNING()  ULOG_IMPL_LOG_WARNING_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLogger())
+#define ULOG_LOG_LIMITED_ERROR()    ULOG_IMPL_LOG_ERROR_ERASER(ULOG_LOG_LIMITED_TO, ::ulog::GetDefaultLogger())
 #define ULOG_LOG_LIMITED_CRITICAL() ULOG_LOG_LIMITED(::ulog::Level::kCritical)
 
 #define ULOG_LOG_LIMITED_TRACE_TO(logger)    ULOG_IMPL_LOG_TRACE_ERASER(ULOG_LOG_LIMITED_TO, logger)
@@ -388,13 +396,13 @@ struct EntryStorage final {
 // filtered record.
 #define ULOG_LFMT_TO(logger, lvl, ...) \
     ULOG_LOG_TO(logger, lvl) << ::fmt::format(__VA_ARGS__)
-#define ULOG_LFMT(lvl, ...)            ULOG_LFMT_TO(::ulog::GetDefaultLoggerPtr(), lvl, __VA_ARGS__)
+#define ULOG_LFMT(lvl, ...)            ULOG_LFMT_TO(::ulog::GetDefaultLogger(), lvl, __VA_ARGS__)
 
-#define ULOG_LFMT_TRACE(...)    ULOG_IMPL_LFMT_TRACE_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LFMT_DEBUG(...)    ULOG_IMPL_LFMT_DEBUG_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LFMT_INFO(...)     ULOG_IMPL_LFMT_INFO_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LFMT_WARNING(...)  ULOG_IMPL_LFMT_WARNING_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LFMT_ERROR(...)    ULOG_IMPL_LFMT_ERROR_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LFMT_TRACE(...)    ULOG_IMPL_LFMT_TRACE_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
+#define ULOG_LFMT_DEBUG(...)    ULOG_IMPL_LFMT_DEBUG_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
+#define ULOG_LFMT_INFO(...)     ULOG_IMPL_LFMT_INFO_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
+#define ULOG_LFMT_WARNING(...)  ULOG_IMPL_LFMT_WARNING_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
+#define ULOG_LFMT_ERROR(...)    ULOG_IMPL_LFMT_ERROR_ERASER(ULOG_LFMT_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
 #define ULOG_LFMT_CRITICAL(...) ULOG_LFMT(::ulog::Level::kCritical, __VA_ARGS__)
 
 #define ULOG_LFMT_TRACE_TO(logger, ...)    ULOG_IMPL_LFMT_TRACE_ERASER(ULOG_LFMT_TO, logger, __VA_ARGS__)
@@ -412,13 +420,13 @@ struct EntryStorage final {
 // for codebases migrating from `printf`/`std::printf`-based logs.
 #define ULOG_LPRINT_TO(logger, lvl, ...) \
     ULOG_LOG_TO(logger, lvl) << ::fmt::sprintf(__VA_ARGS__)
-#define ULOG_LPRINT(lvl, ...)            ULOG_LPRINT_TO(::ulog::GetDefaultLoggerPtr(), lvl, __VA_ARGS__)
+#define ULOG_LPRINT(lvl, ...)            ULOG_LPRINT_TO(::ulog::GetDefaultLogger(), lvl, __VA_ARGS__)
 
-#define ULOG_LPRINT_TRACE(...)    ULOG_IMPL_LFMT_TRACE_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LPRINT_DEBUG(...)    ULOG_IMPL_LFMT_DEBUG_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LPRINT_INFO(...)     ULOG_IMPL_LFMT_INFO_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LPRINT_WARNING(...)  ULOG_IMPL_LFMT_WARNING_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
-#define ULOG_LPRINT_ERROR(...)    ULOG_IMPL_LFMT_ERROR_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLoggerPtr(), __VA_ARGS__)
+#define ULOG_LPRINT_TRACE(...)    ULOG_IMPL_LFMT_TRACE_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
+#define ULOG_LPRINT_DEBUG(...)    ULOG_IMPL_LFMT_DEBUG_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
+#define ULOG_LPRINT_INFO(...)     ULOG_IMPL_LFMT_INFO_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
+#define ULOG_LPRINT_WARNING(...)  ULOG_IMPL_LFMT_WARNING_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
+#define ULOG_LPRINT_ERROR(...)    ULOG_IMPL_LFMT_ERROR_ERASER(ULOG_LPRINT_TO, ::ulog::GetDefaultLogger(), __VA_ARGS__)
 #define ULOG_LPRINT_CRITICAL(...) ULOG_LPRINT(::ulog::Level::kCritical, __VA_ARGS__)
 
 #define ULOG_LPRINT_TRACE_TO(logger, ...)    ULOG_IMPL_LFMT_TRACE_ERASER(ULOG_LPRINT_TO, logger, __VA_ARGS__)

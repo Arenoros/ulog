@@ -61,7 +61,7 @@ void BM_SyncLogLatency(benchmark::State& state) {
     auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(std::make_shared<DiscardSink>());
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     std::vector<std::uint64_t> samples(kLatencyIters);
     std::uint64_t counter = 0;
@@ -78,7 +78,7 @@ void BM_SyncLogLatency(benchmark::State& state) {
     ReportPercentiles(state, samples);
     state.SetItemsProcessed(static_cast<std::int64_t>(kLatencyIters));
 
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 BENCHMARK(BM_SyncLogLatency)->Iterations(1)->Unit(benchmark::kMicrosecond);
 
@@ -96,7 +96,7 @@ void BM_AsyncLogLatencyEnqueue(benchmark::State& state) {
     auto logger = std::make_shared<ulog::AsyncLogger>(cfg);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(std::make_shared<DiscardSink>());
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     std::vector<std::uint64_t> samples(kLatencyIters);
     std::uint64_t counter = 0;
@@ -115,7 +115,7 @@ void BM_AsyncLogLatencyEnqueue(benchmark::State& state) {
     state.SetItemsProcessed(static_cast<std::int64_t>(kLatencyIters));
 
     logger->Flush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 BENCHMARK(BM_AsyncLogLatencyEnqueue)->Iterations(1)->Unit(benchmark::kMicrosecond);
 
@@ -133,7 +133,7 @@ void BM_AsyncLogLatencyBlock(benchmark::State& state) {
     auto logger = std::make_shared<ulog::AsyncLogger>(cfg);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(std::make_shared<DiscardSink>());
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     std::vector<std::uint64_t> samples(kLatencyIters);
     std::uint64_t counter = 0;
@@ -151,7 +151,7 @@ void BM_AsyncLogLatencyBlock(benchmark::State& state) {
     state.SetItemsProcessed(static_cast<std::int64_t>(kLatencyIters));
 
     logger->Flush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 BENCHMARK(BM_AsyncLogLatencyBlock)->Iterations(1)->Unit(benchmark::kMicrosecond);
 

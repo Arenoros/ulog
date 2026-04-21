@@ -6,7 +6,7 @@ int main() {
     auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
     logger->SetLevel(ulog::Level::kDebug);
     logger->AddSink(ulog::sinks::StderrSink());
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     LOG_INFO() << "hello from ulog";
     LOG_WARNING() << "value=" << 42;

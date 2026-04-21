@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
     auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kOtlpJson);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(http_sink);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
 
     LOG_INFO() << "user logged in" << ulog::LogExtra{
         {"user_id",    42},
@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
     // Four records → auto-flush on batch_size=4; Flush below is a no-op
     // but shown for the canonical shutdown shape.
     ulog::LogFlush();
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     std::printf("Posted to %s\n", endpoint.c_str());
     return 0;

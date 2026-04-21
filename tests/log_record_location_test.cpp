@@ -22,7 +22,7 @@ namespace {
 
 auto CaptureOneRecord(ulog::Format fmt = ulog::Format::kTskv) {
     auto logger = std::make_shared<ulog::MemLogger>(fmt);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     return logger;
 }
 
@@ -106,7 +106,7 @@ TEST(LogRecordLocation, DirectLogHelperCallFillsLocation) {
     // this test body — NOT inside log_helper.hpp. Verifies the hook
     // captures the call site, not the header.
     auto logger = std::make_shared<ulog::MemLogger>(ulog::Format::kTskv);
-    ulog::SetDefaultLogger(logger);
+    ulog::impl::SetDefaultLoggerRef(*logger);
     {
         const int expected_line = __LINE__ + 1;
         ulog::LogHelper(*logger, ulog::Level::kInfo) << "direct";
@@ -117,14 +117,14 @@ TEST(LogRecordLocation, DirectLogHelperCallFillsLocation) {
         EXPECT_NE(rec.find(line_suffix), std::string::npos) << rec;
         EXPECT_NE(rec.find("log_record_location_test"), std::string::npos) << rec;
     }
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 }
 
 TEST(LogRecordLocation, TskvModuleUsesPrecomputedLine) {
     auto mem = CaptureOneRecord();
     const int expected_line = __LINE__ + 1;
     LOG_INFO() << "x";
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
 
     ASSERT_EQ(mem->GetRecords().size(), 1u);
     const auto module_value = ExtractTskvValue(mem->GetRecords().front(), "module");

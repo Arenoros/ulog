@@ -124,7 +124,7 @@ void SetupEnqueue(const benchmark::State& state) {
         logger->SetLevel(ulog::Level::kTrace);
         logger->AddSink(std::make_shared<DiscardSink>());
         SharedLogger() = logger;
-        ulog::SetDefaultLogger(logger);
+        ulog::impl::SetDefaultLoggerRef(*logger);
     }
 }
 
@@ -132,7 +132,7 @@ void TeardownEnqueue(const benchmark::State& state) {
     if (state.thread_index() == 0) {
         auto& g = SharedLogger();
         if (g) g->Flush();
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
         SharedLogger().reset();
     }
 }
@@ -177,7 +177,7 @@ void SetupEndToEnd(const benchmark::State& state) {
         logger->SetLevel(ulog::Level::kTrace);
         logger->AddSink(std::make_shared<DiscardSink>());
         SharedLogger() = logger;
-        ulog::SetDefaultLogger(logger);
+        ulog::impl::SetDefaultLoggerRef(*logger);
     }
 }
 
@@ -185,7 +185,7 @@ void TeardownEndToEnd(const benchmark::State& state) {
     if (state.thread_index() == 0) {
         auto& g = SharedLogger();
         if (g) g->Flush();
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
         SharedLogger().reset();
     }
 }
@@ -228,7 +228,7 @@ void SetupBackpressure(const benchmark::State& state, ulog::OverflowBehavior ov)
         // will run many times faster, so backpressure is guaranteed.
         logger->AddSink(std::make_shared<SlowDelaySink>(std::chrono::microseconds(10)));
         SharedBackpressureLogger() = logger;
-        ulog::SetDefaultLogger(logger);
+        ulog::impl::SetDefaultLoggerRef(*logger);
     }
 }
 
@@ -236,7 +236,7 @@ void TeardownBackpressure(const benchmark::State& state) {
     if (state.thread_index() == 0) {
         auto& g = SharedBackpressureLogger();
         if (g) g->Flush();
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
         SharedBackpressureLogger().reset();
     }
 }
@@ -290,7 +290,7 @@ void SetupSlow(const benchmark::State& state) {
         logger->SetLevel(ulog::Level::kTrace);
         logger->AddSink(std::make_shared<SlowDelaySink>(std::chrono::microseconds(5)));
         SharedSlowLogger() = logger;
-        ulog::SetDefaultLogger(logger);
+        ulog::impl::SetDefaultLoggerRef(*logger);
     }
 }
 
@@ -298,7 +298,7 @@ void TeardownSlow(const benchmark::State& state) {
     if (state.thread_index() == 0) {
         auto& g = SharedSlowLogger();
         if (g) g->Flush();
-        ulog::SetDefaultLogger(nullptr);
+        ulog::SetNullDefaultLogger();
         SharedSlowLogger().reset();
     }
 }

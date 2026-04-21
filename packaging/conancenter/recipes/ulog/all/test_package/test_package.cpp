@@ -9,6 +9,6 @@
 int main() {
     ulog::SetDefaultLogger(ulog::MakeNullLogger());
     LOG_INFO() << "hello from conan test_package";
-    ulog::SetDefaultLogger(nullptr);
+    ulog::SetNullDefaultLogger();
     return 0;
 }

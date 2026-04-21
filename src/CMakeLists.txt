@@ -32,7 +32,7 @@ target_sources(ulog PRIVATE
     async_logger.cpp
     config.cpp
     tracing_hook.cpp
-)
+ "rate_limit.cpp")
 
 if(NOT WIN32)
     target_sources(ulog PRIVATE
