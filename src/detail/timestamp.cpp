@@ -142,7 +142,7 @@ namespace ulog::detail {
         };
 
         template<TimestampFormat Format>
-        using StdChronoType = FormatInfo<Format>::type;
+        using StdChronoType = typename FormatInfo<Format>::type;
 
         template<TimestampFormat Format>
         using StdTimePoint = std::chrono::time_point<TimePoint::clock, StdChronoType<Format>>;
@@ -152,7 +152,7 @@ namespace ulog::detail {
             return std::chrono::time_point_cast<StdChronoType<Format>>(now);
         }
         template<TimestampFormat Format>
-        static consteval size_t TemplateSize() {
+        static constexpr size_t TemplateSize() {
             return FormatInfo<Format>::kTimeTemplate.size();
         }
 
