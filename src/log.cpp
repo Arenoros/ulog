@@ -1,12 +1,13 @@
 #include <ulog/log.hpp>
 
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <utility>
-
+#include <fmt/base.h>
 #include <boost/smart_ptr/atomic_shared_ptr.hpp>
 #include <boost/smart_ptr/shared_ptr.hpp>
 
@@ -54,14 +55,12 @@ namespace ulog {
     }
 
     DefaultLoggerGuard::~DefaultLoggerGuard() {
-        assert(
-            !impl::has_background_threads_which_can_log,
+        FMT_ASSERT(!impl::has_background_threads_which_can_log,
             "DefaultLoggerGuard with a new logger should outlive the coroutine "
             "engine, because otherwise it could be in use right now, when the "
             "~DefaultLoggerGuard() is called and the logger is destroyed. "
             "Construct the DefaultLoggerGuard before calling engine::RunStandalone; "
-            "in tests use the utest::DefaultLoggerFixture."
-        );
+            "in tests use the utest::DefaultLoggerFixture.");
 
         impl::SetDefaultLoggerRef(logger_prev_);
         SetDefaultLoggerLevel(level_prev_);
@@ -154,7 +153,7 @@ namespace ulog {
                     should_log_ = false;
                 }
             } catch (const std::exception& e) {
-                assert(false, e.what());
+                FMT_ASSERT(false, e.what());
                 should_log_ = false;
             }
         }
