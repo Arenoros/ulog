@@ -103,7 +103,7 @@ class UlogConan(ConanFile):
         # here would raise on conflict.
 
     def requirements(self):
-        self.requires("fmt/12.1.0", transitive_headers=True, override=True)
+        self.requires("fmt/12.1.0", transitive_headers=True, force=True)
         self.requires("boost/1.90.0", transitive_headers=True)
         if self.options.with_nlohmann:
             self.requires("nlohmann_json/3.11.3", transitive_headers=True)
