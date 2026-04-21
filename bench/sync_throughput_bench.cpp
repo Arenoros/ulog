@@ -25,8 +25,8 @@ public:
     void Write(std::string_view /*record*/) override {}
 };
 
-void BM_SyncLoggerThroughput(benchmark::State& state) {
-    auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);
+void BM_SyncLoggerThroughput(benchmark::State& state, ulog::Format fmt) {
+    auto logger = std::make_shared<ulog::SyncLogger>(fmt);
     logger->SetLevel(ulog::Level::kTrace);
     logger->AddSink(std::make_shared<DiscardSink>());
     ulog::impl::SetDefaultLoggerRef(*logger);
@@ -40,7 +40,12 @@ void BM_SyncLoggerThroughput(benchmark::State& state) {
 
     ulog::SetNullDefaultLogger();
 }
-BENCHMARK(BM_SyncLoggerThroughput);
+BENCHMARK_CAPTURE(BM_SyncLoggerThroughput, Tskv,         ulog::Format::kTskv);
+BENCHMARK_CAPTURE(BM_SyncLoggerThroughput, Ltsv,         ulog::Format::kLtsv);
+BENCHMARK_CAPTURE(BM_SyncLoggerThroughput, Raw,          ulog::Format::kRaw);
+BENCHMARK_CAPTURE(BM_SyncLoggerThroughput, Json,         ulog::Format::kJson);
+BENCHMARK_CAPTURE(BM_SyncLoggerThroughput, JsonYaDeploy, ulog::Format::kJsonYaDeploy);
+BENCHMARK_CAPTURE(BM_SyncLoggerThroughput, OtlpJson,     ulog::Format::kOtlpJson);
 
 void BM_SyncDisabledLogCost(benchmark::State& state) {
     auto logger = std::make_shared<ulog::SyncLogger>(ulog::Format::kTskv);

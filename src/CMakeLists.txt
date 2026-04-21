@@ -2,7 +2,7 @@ target_sources(ulog PRIVATE
     detail/file_handle.cpp
     detail/socket.cpp
     detail/timestamp.cpp
-
+    
     impl/logger_base.cpp
     impl/tag_writer.cpp
     impl/formatters/json.cpp
@@ -32,7 +32,7 @@ target_sources(ulog PRIVATE
     async_logger.cpp
     config.cpp
     tracing_hook.cpp
- "rate_limit.cpp")
+    rate_limit.cpp)
 
 if(NOT WIN32)
     target_sources(ulog PRIVATE
