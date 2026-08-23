@@ -1,0 +1,24 @@
+#pragma once
+
+#include <cstdint>
+#include <ulog/export.hpp>
+
+namespace ulog {
+
+struct Version final {
+  std::uint32_t major;
+  std::uint32_t minor;
+  std::uint32_t patch;
+
+  friend constexpr bool operator==(const Version&, const Version&) = default;
+};
+
+inline constexpr Version kVersion{
+    @PROJECT_VERSION_MAJOR@,
+    @PROJECT_VERSION_MINOR@,
+    @PROJECT_VERSION_PATCH@,
+};
+
+[[nodiscard]] ULOG_API Version GetVersion() noexcept;
+
+}  // namespace ulog

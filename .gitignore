@@ -1,0 +1,16 @@
+/out/
+/build/
+/build-*/
+/install/
+/test_package/build/
+/.conan2/
+/.vs/
+/.vscode/
+CMakeUserPresets.json
+/compile_commands.json
+*.user
+*.suo
+*.swp
+*.tmp
+*.py[cod]
+__pycache__/

@@ -1,0 +1,75 @@
+set(_ulog_install_prefix "@CMAKE_CURRENT_BINARY_DIR@/installed-consumer/prefix")
+set(_ulog_consumer_source "@CMAKE_CURRENT_BINARY_DIR@/installed-consumer/source")
+set(_ulog_consumer_build "@CMAKE_CURRENT_BINARY_DIR@/installed-consumer/build")
+
+set(_ulog_command_launcher)
+if(WIN32)
+  list(APPEND _ulog_command_launcher "@PROJECT_SOURCE_DIR@/scripts/with-msvc.cmd")
+endif()
+
+file(MAKE_DIRECTORY "${_ulog_consumer_source}")
+file(COPY "@PROJECT_SOURCE_DIR@/tests/consumer/" DESTINATION "${_ulog_consumer_source}")
+
+set(_ulog_config_args)
+set(_ulog_ctest_config_args)
+if(DEFINED ULOG_TEST_CONFIG AND NOT ULOG_TEST_CONFIG STREQUAL "")
+  list(APPEND _ulog_config_args --config "${ULOG_TEST_CONFIG}")
+  list(APPEND _ulog_ctest_config_args -C "${ULOG_TEST_CONFIG}")
+endif()
+
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" --install "@PROJECT_BINARY_DIR@" --prefix "${_ulog_install_prefix}"
+          ${_ulog_config_args} RESULT_VARIABLE _ulog_install_result
+)
+if(NOT _ulog_install_result EQUAL 0)
+  message(FATAL_ERROR "Installing Ulog for the external consumer failed.")
+endif()
+
+set(_ulog_generator_args -G "@CMAKE_GENERATOR@")
+if(NOT "@CMAKE_GENERATOR_PLATFORM@" STREQUAL "")
+  list(APPEND _ulog_generator_args -A "@CMAKE_GENERATOR_PLATFORM@")
+endif()
+if(NOT "@CMAKE_GENERATOR_TOOLSET@" STREQUAL "")
+  list(APPEND _ulog_generator_args -T "@CMAKE_GENERATOR_TOOLSET@")
+endif()
+
+set(_ulog_build_type_arg)
+if("@CMAKE_CONFIGURATION_TYPES@" STREQUAL "")
+  list(APPEND _ulog_build_type_arg "-DCMAKE_BUILD_TYPE=@CMAKE_BUILD_TYPE@")
+endif()
+
+set(_ulog_toolchain_args)
+if(NOT "@_ulog_consumer_make_program@" STREQUAL "")
+  list(APPEND _ulog_toolchain_args "-DCMAKE_MAKE_PROGRAM=@_ulog_consumer_make_program@")
+endif()
+if(NOT "@CMAKE_CXX_COMPILER@" STREQUAL "")
+  list(APPEND _ulog_toolchain_args "-DCMAKE_CXX_COMPILER=@CMAKE_CXX_COMPILER@")
+endif()
+
+execute_process(
+  COMMAND
+    ${_ulog_command_launcher} "@CMAKE_COMMAND@" -S "${_ulog_consumer_source}" -B
+    "${_ulog_consumer_build}" ${_ulog_generator_args} ${_ulog_build_type_arg}
+    ${_ulog_toolchain_args} "-DCMAKE_PREFIX_PATH=${_ulog_install_prefix}"
+    -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF
+  RESULT_VARIABLE _ulog_configure_result
+)
+if(NOT _ulog_configure_result EQUAL 0)
+  message(FATAL_ERROR "Configuring the isolated installed-package consumer failed.")
+endif()
+
+execute_process(
+  COMMAND ${_ulog_command_launcher} "@CMAKE_COMMAND@" --build "${_ulog_consumer_build}"
+          ${_ulog_config_args} RESULT_VARIABLE _ulog_build_result
+)
+if(NOT _ulog_build_result EQUAL 0)
+  message(FATAL_ERROR "Building the isolated installed-package consumer failed.")
+endif()
+
+execute_process(
+  COMMAND ${_ulog_command_launcher} "@CMAKE_CTEST_COMMAND@" --test-dir "${_ulog_consumer_build}"
+          --output-on-failure ${_ulog_ctest_config_args} RESULT_VARIABLE _ulog_test_result
+)
+if(NOT _ulog_test_result EQUAL 0)
+  message(FATAL_ERROR "Running the isolated installed-package consumer failed.")
+endif()

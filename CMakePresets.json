@@ -1,0 +1,134 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "core",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "ULOG_BUILD_BENCHMARKS": "OFF",
+        "ULOG_BUILD_DEPENDENCY_SMOKE_TESTS": "OFF",
+        "ULOG_BUILD_PACKAGE_TESTS": "ON",
+        "ULOG_BUILD_STRESS_TESTS": "OFF",
+        "ULOG_BUILD_UNIT_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "Dependency-free debug development",
+      "inherits": "core",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ULOG_WARNINGS_AS_ERRORS": "OFF"
+      }
+    },
+    {
+      "name": "release-static",
+      "displayName": "Dependency-free static release",
+      "inherits": "core",
+      "cacheVariables": {
+        "BUILD_SHARED_LIBS": "OFF",
+        "CMAKE_BUILD_TYPE": "Release",
+        "ULOG_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "release-shared",
+      "displayName": "Dependency-free shared release",
+      "inherits": "core",
+      "cacheVariables": {
+        "BUILD_SHARED_LIBS": "ON",
+        "CMAKE_BUILD_TYPE": "Release",
+        "ULOG_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Clang/GCC ASan and UBSan",
+      "inherits": "dev",
+      "cacheVariables": {
+        "ULOG_ENABLE_ASAN": "ON",
+        "ULOG_ENABLE_UBSAN": "ON",
+        "ULOG_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "tidy",
+      "displayName": "clang-tidy",
+      "inherits": "dev",
+      "cacheVariables": {
+        "ULOG_ENABLE_CLANG_TIDY": "ON",
+        "ULOG_WARNINGS_AS_ERRORS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "configuration": "Debug"
+    },
+    {
+      "name": "release-static",
+      "configurePreset": "release-static",
+      "configuration": "Release"
+    },
+    {
+      "name": "release-shared",
+      "configurePreset": "release-shared",
+      "configuration": "Release"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "configuration": "Debug"
+    },
+    {
+      "name": "tidy",
+      "configurePreset": "tidy",
+      "configuration": "Debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-static",
+      "configurePreset": "release-static",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-shared",
+      "configurePreset": "release-shared",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

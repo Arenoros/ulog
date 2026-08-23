@@ -1,0 +1,7 @@
+include(default)
+
+[settings]
+compiler.cppstd=20
+
+[conf]
+tools.cmake.cmaketoolchain:generator=NMake Makefiles

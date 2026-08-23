@@ -1,0 +1,14 @@
+{
+    "version": "0.5",
+    "requires": [
+        "libuv/1.51.0#ea781dcacf58c65462ab0d3d75e9b002%1764745176.352",
+        "gtest/1.17.0#43201cc96e5d35332662ce8890cceb27%1786446850.202",
+        "fmt/12.1.0#6baf0fb8351783472b94ee6e36232391%1785754553.994",
+        "benchmark/1.9.5#b885dc73ad67b40a55d45684d1c88ad1%1774363287.434"
+    ],
+    "build_requires": [
+        "cmake/4.4.2#8a0d360635c870b1d5c675489ee25074%1786458127.662"
+    ],
+    "python_requires": [],
+    "config_requires": []
+}

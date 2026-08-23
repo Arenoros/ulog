@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-package-test:
+    name: ${{ matrix.platform }}-${{ matrix.linkage }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-24.04
+            linkage: static
+            shared: false
+          - platform: linux
+            runner: ubuntu-24.04
+            linkage: shared
+            shared: true
+          - platform: macos
+            runner: macos-15
+            linkage: static
+            shared: false
+          - platform: macos
+            runner: macos-15
+            linkage: shared
+            shared: true
+          - platform: windows
+            runner: windows-2022
+            linkage: static
+            shared: false
+          - platform: windows
+            runner: windows-2022
+            linkage: shared
+            shared: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Conan
+        run: python -m pip install "conan>=2.8,<3"
+      - name: Detect toolchain
+        run: conan profile detect --force
+      - name: Check source boundary
+        run: cmake -DULOG_SOURCE_DIR=. -P cmake/CheckIndependence.cmake
+      - name: Resolve and check dependency graph
+        run: |
+          cmake -E make_directory out
+          conan graph info . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=${{ matrix.shared }}" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:build_benchmarks=True" -o "&:dependency_smoke=True" --lockfile=conan.lock --format=json --out-file=out/conan-graph.json
+          python scripts/check_conan_graph.py out/conan-graph.json
+      - name: Build, test, package, and test consumer
+        run: conan create . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=${{ matrix.shared }}" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:build_benchmarks=True" -o "&:dependency_smoke=True" -o "&:warnings_as_errors=True" --lockfile=conan.lock --build=missing
+      - name: Collect benchmark output
+        run: python scripts/collect_benchmark_results.py out/benchmark-results.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ matrix.platform }}-${{ matrix.linkage }}
+          path: out/benchmark-results.json
+
+  quality:
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install quality tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang-tidy
+          python -m pip install "conan>=2.8,<3" cmakelang
+      - name: Check formatting
+        run: |
+          cmake -DULOG_SOURCE_DIR=. -DULOG_FORMAT_MODE=check -P cmake/RunClangFormat.cmake
+          cmake-format --check CMakeLists.txt cmake/*.cmake cmake/*.cmake.in tests/CMakeLists.txt tests/cmake/*.cmake.in benchmarks/CMakeLists.txt tests/consumer/CMakeLists.txt test_package/CMakeLists.txt
+      - name: Detect Clang toolchain
+        run: conan profile detect --force
+      - name: Clang analysis and sanitizers
+        run: conan create . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Debug -o "&:shared=False" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:dependency_smoke=True" -o "&:warnings_as_errors=True" -o "&:enable_asan=True" -o "&:enable_ubsan=True" -o "&:enable_clang_tidy=True" --lockfile=conan.lock --build=missing
