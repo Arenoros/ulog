@@ -1,6 +1,8 @@
 Status: open
 Type: task
 Labels: ready-for-agent
+GitHub roadmap: https://github.com/Arenoros/ulog/issues/1
+GitHub Project: https://github.com/users/Arenoros/projects/5
 
 # Standalone Ulog Implementation
 
