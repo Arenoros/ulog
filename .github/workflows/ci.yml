@@ -5,12 +5,19 @@ on:
     branches: [develop]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
+env:
+  CONAN_VERSION: "2.31.2"
+
 jobs:
   build-package-test:
-    name: ${{ matrix.platform }}-${{ matrix.linkage }}
+    name: ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -18,52 +25,78 @@ jobs:
         include:
           - platform: linux
             runner: ubuntu-24.04
-            linkage: static
-            shared: false
-          - platform: linux
-            runner: ubuntu-24.04
-            linkage: shared
-            shared: true
           - platform: macos
             runner: macos-15
-            linkage: static
-            shared: false
-          - platform: macos
-            runner: macos-15
-            linkage: shared
-            shared: true
           - platform: windows
             runner: windows-2022
-            linkage: static
-            shared: false
-          - platform: windows
-            runner: windows-2022
-            linkage: shared
-            shared: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install Conan
-        run: python -m pip install "conan>=2.8,<3"
+        run: python -m pip install "conan==${{ env.CONAN_VERSION }}"
       - name: Detect toolchain
         run: conan profile detect --force
+      - name: Compute Conan cache identity
+        id: conan-profile
+        run: python scripts/conan_cache_key.py Release
+      - name: Restore Conan dependency cache
+        id: conan-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.conan2/p
+            ~/.conan2/cache.sqlite3
+          key: conan-v1-${{ env.CONAN_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.conan-profile.outputs.hash }}-${{ hashFiles('conan.lock', 'conanfile.py', 'conan/profiles/**') }}
       - name: Check source boundary
         run: cmake -DULOG_SOURCE_DIR=. -P cmake/CheckIndependence.cmake
-      - name: Resolve and check dependency graph
+      - name: Resolve and check dependency graphs
         run: |
           cmake -E make_directory out
-          conan graph info . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=${{ matrix.shared }}" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:build_benchmarks=True" -o "&:dependency_smoke=True" --lockfile=conan.lock --format=json --out-file=out/conan-graph.json
-          python scripts/check_conan_graph.py out/conan-graph.json
-      - name: Build, test, package, and test consumer
-        run: conan create . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=${{ matrix.shared }}" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:build_benchmarks=True" -o "&:dependency_smoke=True" -o "&:warnings_as_errors=True" --lockfile=conan.lock --build=missing
+          conan graph info . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=False" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:build_benchmarks=True" -o "&:dependency_smoke=True" --lockfile=conan.lock --format=json --out-file=out/conan-graph-static.json
+          python scripts/check_conan_graph.py out/conan-graph-static.json
+          conan graph info . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=True" -o "&:build_tests=True" -o "&:build_stress_tests=False" -o "&:build_benchmarks=False" -o "&:dependency_smoke=False" --lockfile=conan.lock --format=json --out-file=out/conan-graph-shared.json
+          python scripts/check_conan_graph.py out/conan-graph-shared.json
+      - name: Prepare dependencies
+        id: conan-dependencies
+        run: conan install . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=False" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:build_benchmarks=True" -o "&:dependency_smoke=True" --lockfile=conan.lock --build=missing --output-folder=out/conan-install
+      - name: Build and test static package
+        id: static-build
+        continue-on-error: true
+        run: conan create . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=False" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:build_benchmarks=True" -o "&:dependency_smoke=True" -o "&:warnings_as_errors=True" --lockfile=conan.lock --build=missing
+      - name: Build and test shared package
+        id: shared-build
+        continue-on-error: true
+        run: conan create . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=True" -o "&:build_tests=True" -o "&:build_stress_tests=False" -o "&:build_benchmarks=False" -o "&:dependency_smoke=False" -o "&:warnings_as_errors=True" --lockfile=conan.lock --build=missing
       - name: Collect benchmark output
+        if: steps.static-build.outcome == 'success'
         run: python scripts/collect_benchmark_results.py out/benchmark-results.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
+        if: steps.static-build.outcome == 'success'
         with:
-          name: benchmark-${{ matrix.platform }}-${{ matrix.linkage }}
+          name: benchmark-${{ matrix.platform }}
           path: out/benchmark-results.json
+          retention-days: 14
+      - name: Trim Conan dependency cache
+        if: always() && github.event_name == 'push' && steps.conan-dependencies.outcome == 'success' && steps.conan-cache.outputs.cache-hit != 'true'
+        run: |
+          conan remove "ulog/*" --confirm
+          conan cache clean "*"
+      - name: Save Conan dependency cache
+        if: always() && github.event_name == 'push' && steps.conan-dependencies.outcome == 'success' && steps.conan-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.conan2/p
+            ~/.conan2/cache.sqlite3
+          key: ${{ steps.conan-cache.outputs.cache-primary-key }}
+      - name: Check package build outcomes
+        if: always() && (steps.static-build.outcome != 'success' || steps.shared-build.outcome != 'success')
+        run: |
+          echo "static build: ${{ steps.static-build.outcome }}"
+          echo "shared build: ${{ steps.shared-build.outcome }}"
+          cmake -E false
 
   quality:
     runs-on: ubuntu-24.04
@@ -71,20 +104,47 @@ jobs:
       CC: clang
       CXX: clang++
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install quality tools
         run: |
           sudo apt-get update
           sudo apt-get install --yes clang-format clang-tidy
-          python -m pip install "conan>=2.8,<3" cmakelang
+          python -m pip install "conan==${{ env.CONAN_VERSION }}" cmakelang
       - name: Check formatting
         run: |
           cmake -DULOG_SOURCE_DIR=. -DULOG_FORMAT_MODE=check -P cmake/RunClangFormat.cmake
           cmake-format --check CMakeLists.txt cmake/*.cmake cmake/*.cmake.in tests/CMakeLists.txt tests/cmake/*.cmake.in benchmarks/CMakeLists.txt tests/consumer/CMakeLists.txt test_package/CMakeLists.txt
       - name: Detect Clang toolchain
         run: conan profile detect --force
+      - name: Compute Conan cache identity
+        id: conan-profile
+        run: python scripts/conan_cache_key.py Debug
+      - name: Restore Conan dependency cache
+        id: conan-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.conan2/p
+            ~/.conan2/cache.sqlite3
+          key: conan-v1-${{ env.CONAN_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.conan-profile.outputs.hash }}-${{ hashFiles('conan.lock', 'conanfile.py', 'conan/profiles/**') }}
+      - name: Prepare dependencies
+        id: conan-dependencies
+        run: conan install . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Debug -o "&:shared=False" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:dependency_smoke=True" -o "&:warnings_as_errors=True" -o "&:enable_asan=True" -o "&:enable_ubsan=True" -o "&:enable_clang_tidy=True" --lockfile=conan.lock --build=missing --output-folder=out/conan-install
       - name: Clang analysis and sanitizers
         run: conan create . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Debug -o "&:shared=False" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:dependency_smoke=True" -o "&:warnings_as_errors=True" -o "&:enable_asan=True" -o "&:enable_ubsan=True" -o "&:enable_clang_tidy=True" --lockfile=conan.lock --build=missing
+      - name: Trim Conan dependency cache
+        if: always() && github.event_name == 'push' && steps.conan-dependencies.outcome == 'success' && steps.conan-cache.outputs.cache-hit != 'true'
+        run: |
+          conan remove "ulog/*" --confirm
+          conan cache clean "*"
+      - name: Save Conan dependency cache
+        if: always() && github.event_name == 'push' && steps.conan-dependencies.outcome == 'success' && steps.conan-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.conan2/p
+            ~/.conan2/cache.sqlite3
+          key: ${{ steps.conan-cache.outputs.cache-primary-key }}
