@@ -21,6 +21,7 @@ file(
   LIST_DIRECTORIES FALSE
   "${ULOG_SOURCE_DIR}/include/*.h"
   "${ULOG_SOURCE_DIR}/include/*.hpp"
+  "${ULOG_SOURCE_DIR}/include/*.hpp.in"
   "${ULOG_SOURCE_DIR}/src/*.cpp"
   "${ULOG_SOURCE_DIR}/src/*.hpp"
   "${ULOG_SOURCE_DIR}/tests/*.cpp"

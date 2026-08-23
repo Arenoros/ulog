@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <memory_resource>
 
+#include "atomic_max.hpp"
+
 namespace ulog::test {
 
 class CountingMemoryResource final : public std::pmr::memory_resource {
@@ -29,7 +31,7 @@ class CountingMemoryResource final : public std::pmr::memory_resource {
     void* const result = upstream_->allocate(bytes, alignment);
     allocation_count_.fetch_add(1, std::memory_order_relaxed);
     const std::size_t current = current_bytes_.fetch_add(bytes, std::memory_order_relaxed) + bytes;
-    UpdatePeak(current);
+    UpdateRelaxedMaximum(peak_bytes_, current);
     return result;
   }
 
@@ -40,13 +42,6 @@ class CountingMemoryResource final : public std::pmr::memory_resource {
 
   [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
     return this == &other;
-  }
-
-  void UpdatePeak(std::size_t candidate) noexcept {
-    std::size_t peak = peak_bytes_.load(std::memory_order_relaxed);
-    while (peak < candidate &&
-           !peak_bytes_.compare_exchange_weak(peak, candidate, std::memory_order_relaxed)) {
-    }
   }
 
   std::pmr::memory_resource* upstream_;

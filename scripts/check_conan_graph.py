@@ -19,8 +19,7 @@ def main() -> int:
         reference = node.get("ref")
         if not reference:
             continue
-        package_name = reference.split("/", maxsplit=1)[0].lower()
-        if package_name == forbidden_name:
+        if forbidden_name in reference.lower():
             violations.append(reference)
 
     if violations:

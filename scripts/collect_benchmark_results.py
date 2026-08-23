@@ -17,10 +17,11 @@ def main() -> int:
         print(f"no benchmark-results.json found below {conan_home}", file=sys.stderr)
         return 1
 
+    newest_result = max(candidates, key=lambda path: path.stat().st_mtime_ns)
     destination = Path(sys.argv[1])
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(candidates[-1], destination)
-    print(f"copied {candidates[-1]} to {destination}")
+    shutil.copyfile(newest_result, destination)
+    print(f"copied {newest_result} to {destination}")
     return 0
 
 

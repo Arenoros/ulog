@@ -78,7 +78,7 @@ jobs:
       - name: Install quality tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes clang-tidy
+          sudo apt-get install --yes clang-format clang-tidy
           python -m pip install "conan>=2.8,<3" cmakelang
       - name: Check formatting
         run: |

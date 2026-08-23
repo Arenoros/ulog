@@ -1,6 +1,6 @@
 # Testing and performance checks
 
-The bootstrap establishes five independent test categories:
+The bootstrap establishes six independent test categories:
 
 - `unit`: public version seam and test memory resources;
 - `integration`/`package`: install Ulog, configure a copied external project,
@@ -8,6 +8,8 @@ The bootstrap establishes five independent test categories:
 - `dependencies`: compile and run fmt/libuv integration without linking those
   dependencies into the shipped bootstrap library;
 - `stress`: deterministic concurrent checks for allocation instrumentation;
+- `tooling`: regression checks for dependency-graph enforcement and benchmark
+  result collection;
 - `benchmark`: smoke-run Google Benchmark and emit JSON without a timing gate.
 
 Hosted CI benchmark timing is advisory. It confirms that benchmark executables
@@ -35,3 +37,15 @@ conan create . -pr:h=conan/profiles/cpp20 -pr:b=default --build=missing \
   -o "&:build_benchmarks=True" \
   -o "&:dependency_smoke=True"
 ```
+
+## Bootstrap verification record
+
+The bootstrap handoff was verified locally on Windows with CMake 3.31, Conan
+2.31, and MSVC 19.51. Both static and shared builds passed strict compilation,
+the independence check, installation, an isolated CMake consumer, the complete
+Conan test categories, and the separate Conan `test_package` consumer.
+
+The exact GitHub-hosted Ubuntu GCC, Ubuntu Clang sanitizer/static-analysis,
+macOS AppleClang, and Windows Server runner images remain CI-only validation.
+Their static/shared jobs and benchmark artifacts must pass before a change is
+merged; local Windows results do not substitute for those platform jobs.

@@ -20,7 +20,7 @@ set(_ulog_scan_roots
     "${ULOG_SOURCE_DIR}/.github"
 )
 set(_ulog_scan_files "${ULOG_SOURCE_DIR}/CMakeLists.txt" "${ULOG_SOURCE_DIR}/CMakePresets.json"
-                     "${ULOG_SOURCE_DIR}/conanfile.py"
+                     "${ULOG_SOURCE_DIR}/conanfile.py" "${ULOG_SOURCE_DIR}/conan.lock"
 )
 
 foreach(_ulog_root IN LISTS _ulog_scan_roots)

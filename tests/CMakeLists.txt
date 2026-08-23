@@ -4,6 +4,20 @@ add_test(NAME ulog.independence
 )
 set_tests_properties(ulog.independence PROPERTIES LABELS "architecture")
 
+if(PROJECT_IS_TOP_LEVEL)
+  find_package(
+    Python3
+    COMPONENTS Interpreter
+    REQUIRED
+  )
+  add_test(NAME ulog.script-tools COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s
+                                          "${CMAKE_CURRENT_SOURCE_DIR}/scripts" -p "*_test.py"
+  )
+  set_tests_properties(
+    ulog.script-tools PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS "tooling;unit"
+  )
+endif()
+
 if(ULOG_BUILD_UNIT_TESTS)
   find_package(GTest CONFIG REQUIRED)
   add_executable(ulog-unit-tests version_test.cpp memory_resource_test.cpp)
@@ -62,9 +76,12 @@ if(ULOG_BUILD_PACKAGE_TESTS)
     cmake/RunInstalledConsumer.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/RunInstalledConsumer.cmake"
     @ONLY
   )
-  add_test(NAME ulog.package-consumer
-           COMMAND "${CMAKE_COMMAND}" -DULOG_TEST_CONFIG=$<CONFIG> -P
-                   "${CMAKE_CURRENT_BINARY_DIR}/RunInstalledConsumer.cmake"
+  add_test(
+    NAME ulog.package-consumer
+    COMMAND
+      "${CMAKE_COMMAND}" -DULOG_TEST_CONFIG=$<CONFIG>
+      "-DULOG_TEST_MSVC_RUNTIME_LIBRARY=$<GENEX_EVAL:$<TARGET_PROPERTY:ulog,MSVC_RUNTIME_LIBRARY>>"
+      -P "${CMAKE_CURRENT_BINARY_DIR}/RunInstalledConsumer.cmake"
   )
   set_tests_properties(ulog.package-consumer PROPERTIES LABELS "integration;package")
 endif()

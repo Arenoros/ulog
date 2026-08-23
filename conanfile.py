@@ -1,7 +1,7 @@
 import os
 
 from conan import ConanFile
-from conan.tools.build import check_min_cppstd
+from conan.tools.build import can_run, check_min_cppstd
 from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
 from conan.tools.files import copy, load
 
@@ -61,6 +61,8 @@ class UlogConan(ConanFile):
         "src/*",
         "tests/*",
         "benchmarks/*",
+        "!**/__pycache__/*",
+        "!**/*.pyc",
     )
 
     def set_version(self):
@@ -98,9 +100,6 @@ class UlogConan(ConanFile):
             "build_benchmarks",
             "dependency_smoke",
             "warnings_as_errors",
-            "enable_asan",
-            "enable_ubsan",
-            "enable_tsan",
             "enable_clang_tidy",
         ):
             self.info.options.rm_safe(option)
@@ -116,7 +115,7 @@ class UlogConan(ConanFile):
         toolchain.cache_variables["BUILD_SHARED_LIBS"] = bool(self.options.shared)
         toolchain.cache_variables["BUILD_TESTING"] = True
         toolchain.cache_variables["ULOG_BUILD_UNIT_TESTS"] = bool(self.options.build_tests)
-        toolchain.cache_variables["ULOG_BUILD_PACKAGE_TESTS"] = True
+        toolchain.cache_variables["ULOG_BUILD_PACKAGE_TESTS"] = can_run(self)
         toolchain.cache_variables["ULOG_BUILD_STRESS_TESTS"] = bool(
             self.options.build_stress_tests
         )
@@ -142,7 +141,8 @@ class UlogConan(ConanFile):
         cmake = CMake(self)
         cmake.configure()
         cmake.build()
-        cmake.test()
+        if can_run(self):
+            cmake.test()
 
     def package(self):
         cmake = CMake(self)
@@ -160,3 +160,13 @@ class UlogConan(ConanFile):
         self.cpp_info.libs = ["ulog"]
         if not self.options.shared:
             self.cpp_info.defines = ["ULOG_STATIC_DEFINE"]
+
+        sanitizer_link_flags = []
+        if self.options.enable_asan:
+            sanitizer_link_flags.append("-fsanitize=address")
+        if self.options.enable_ubsan:
+            sanitizer_link_flags.append("-fsanitize=undefined")
+        if self.options.enable_tsan:
+            sanitizer_link_flags.append("-fsanitize=thread")
+        self.cpp_info.sharedlinkflags = list(sanitizer_link_flags)
+        self.cpp_info.exelinkflags = list(sanitizer_link_flags)

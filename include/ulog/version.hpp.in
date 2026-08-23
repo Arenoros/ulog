@@ -13,11 +13,14 @@ struct Version final {
   friend constexpr bool operator==(const Version&, const Version&) = default;
 };
 
+// CMake placeholders are not C++ tokens, so clang-format must preserve this initializer.
+// clang-format off
 inline constexpr Version kVersion{
     @PROJECT_VERSION_MAJOR@,
     @PROJECT_VERSION_MINOR@,
     @PROJECT_VERSION_PATCH@,
 };
+// clang-format on
 
 [[nodiscard]] ULOG_API Version GetVersion() noexcept;
 
