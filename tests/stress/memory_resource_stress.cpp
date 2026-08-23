@@ -11,7 +11,7 @@ int RunStressTest() {
   constexpr std::size_t kAllocationSize = 64;
 
   ulog::test::CountingMemoryResource resource;
-  std::vector<std::jthread> threads;
+  std::vector<std::thread> threads;
   threads.reserve(kThreadCount);
   for (std::size_t thread_index = 0; thread_index < kThreadCount; ++thread_index) {
     threads.emplace_back([&resource] {
@@ -21,7 +21,7 @@ int RunStressTest() {
       }
     });
   }
-  for (std::jthread& thread : threads) {
+  for (std::thread& thread : threads) {
     thread.join();
   }
 
