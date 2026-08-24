@@ -12,6 +12,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CORPUS_TOOL = PROJECT_ROOT / "scripts" / "baseline_corpus.py"
 CAPABILITY_MANIFEST = PROJECT_ROOT / "docs" / "migration" / "capability-manifest.md"
+CORPUS_ROOT = PROJECT_ROOT / "docs" / "migration" / "corpus"
+BASELINE_CORPUS = CORPUS_ROOT / "baseline-v1.json"
+TEXT_CORPUS = CORPUS_ROOT / "text-v1.json"
 TEXT_PROBE_SOURCE = PROJECT_ROOT / "tools" / "baseline_text_probe"
 BASELINE_REPOSITORY = "user" + "ver"
 BASELINE_REVISION = "72e07f717ae46a17822776df21ebd73dbc4ce728"
@@ -210,6 +213,75 @@ class BaselineCorpusTest(unittest.TestCase):
                 f"ULOG_BASELINE_SOURCE must name a clean {BASELINE_REPOSITORY} checkout",
                 output,
             )
+
+    def test_committed_text_corpus_has_issue_4_matrix(self):
+        self.assertTrue(
+            BASELINE_CORPUS.is_file(), "baseline-v1.json must remain in the corpus"
+        )
+        self.assertTrue(
+            TEXT_CORPUS.is_file(),
+            "Capture and commit docs/migration/corpus/text-v1.json for issue #4",
+        )
+
+        validation = self.run_validation_root(CORPUS_ROOT)
+        self.assertEqual(validation.returncode, 0, validation.stderr)
+
+        corpus = json.loads(TEXT_CORPUS.read_text(encoding="utf-8"))
+        cases_by_id = {case["id"]: case for case in corpus["cases"]}
+        self.assertEqual(
+            len(cases_by_id),
+            len(corpus["cases"]),
+            "text-v1.json must not contain duplicate case IDs",
+        )
+
+        format_features = {
+            "tskv": {"API-010", "FMT-002"},
+            "ltsv": {"API-010", "FMT-003"},
+            "raw": {"FMT-004"},
+        }
+        scenario_features = {
+            "empty": set(),
+            "simple": {"VAL-001"},
+            "unicode-controls": {"VAL-001", "VAL-006"},
+            "ordered-scalars": {"VAL-001", "VAL-006", "VAL-008"},
+            "replacement-frozen-duplicate": {
+                "VAL-001",
+                "VAL-006",
+                "VAL-007",
+            },
+        }
+        scenario_differences = {
+            "empty": [],
+            "simple": [],
+            "unicode-controls": [],
+            "ordered-scalars": [],
+            "replacement-frozen-duplicate": ["DEF-004"],
+        }
+        expected_case_ids = {
+            f"{format_name}-{scenario_name}"
+            for format_name in format_features
+            for scenario_name in scenario_features
+        }
+        missing_case_ids = sorted(expected_case_ids.difference(cases_by_id))
+        self.assertFalse(
+            missing_case_ids,
+            f"text-v1.json is missing issue #4 cases: {', '.join(missing_case_ids)}",
+        )
+
+        for format_name, format_ids in format_features.items():
+            for scenario_name, scenario_ids in scenario_features.items():
+                case_id = f"{format_name}-{scenario_name}"
+                with self.subTest(case_id=case_id):
+                    case = cases_by_id[case_id]
+                    self.assertEqual(
+                        case["feature_ids"], sorted(format_ids | scenario_ids)
+                    )
+                    self.assertEqual(
+                        case["difference_ids"], scenario_differences[scenario_name]
+                    )
+                    self.assertEqual(case["platform"], "portable")
+                    self.assertEqual(case["observed"]["kind"], "utf8")
+                    self.assertEqual(case["observed"]["format"], format_name)
 
     def run_validation_root(
         self, corpus_root: Path, manifest: Path = CAPABILITY_MANIFEST

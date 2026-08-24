@@ -1,0 +1,255 @@
+{
+  "cases": [
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "API-010",
+        "FMT-003"
+      ],
+      "id": "ltsv-empty",
+      "observed": {
+        "format": "ltsv",
+        "kind": "utf8",
+        "value": "timestamp:2000-01-02T03:04:05.123456\tlevel:INFO\tmodule:BaselineTextProbe ( <source-path>:321 )\ttext:\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "API-010",
+        "FMT-003",
+        "VAL-001",
+        "VAL-006",
+        "VAL-008"
+      ],
+      "id": "ltsv-ordered-scalars",
+      "observed": {
+        "format": "ltsv",
+        "kind": "utf8",
+        "value": "timestamp:2000-01-02T03:04:05.123456\tlevel:INFO\tmodule:BaselineTextProbe ( <source-path>:321 )\tstring:alpha\tsigned:-42\tunsigned:18446744073709551615\tfloat:1.5\tdouble:-2.25\tbool_true:1\tbool_false:0\tjson:{\"x\":1}\ttext:scalars\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [
+        "DEF-004"
+      ],
+      "feature_ids": [
+        "API-010",
+        "FMT-003",
+        "VAL-001",
+        "VAL-006",
+        "VAL-007"
+      ],
+      "id": "ltsv-replacement-frozen-duplicate",
+      "observed": {
+        "format": "ltsv",
+        "kind": "utf8",
+        "value": "timestamp:2000-01-02T03:04:05.123456\tlevel:INFO\tmodule:BaselineTextProbe ( <source-path>:321 )\tfirst:one\treplace:new\tlast:three\tfrozen:keep\tduplicate:one\tduplicate:two\ttext:collisions\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "API-010",
+        "FMT-003",
+        "VAL-001"
+      ],
+      "id": "ltsv-simple",
+      "observed": {
+        "format": "ltsv",
+        "kind": "utf8",
+        "value": "timestamp:2000-01-02T03:04:05.123456\tlevel:INFO\tmodule:BaselineTextProbe ( <source-path>:321 )\ttext:hello\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "API-010",
+        "FMT-003",
+        "VAL-001",
+        "VAL-006"
+      ],
+      "id": "ltsv-unicode-controls",
+      "observed": {
+        "format": "ltsv",
+        "kind": "utf8",
+        "value": "timestamp:2000-01-02T03:04:05.123456\tlevel:INFO\tmodule:BaselineTextProbe ( <source-path>:321 )\ta\\=.\\t\\r\\n\\0\\\\:é=ok:still|\\t\\r\\n\\0\\\\\ttext:Привет🌍|\\r\\n\\0\\t\\\\|literal:\\\\r\\\\n\\\\0\\\\t\\\\\\\\\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "FMT-004"
+      ],
+      "id": "raw-empty",
+      "observed": {
+        "format": "raw",
+        "kind": "utf8",
+        "value": "tskv\ttext=\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "FMT-004",
+        "VAL-001",
+        "VAL-006",
+        "VAL-008"
+      ],
+      "id": "raw-ordered-scalars",
+      "observed": {
+        "format": "raw",
+        "kind": "utf8",
+        "value": "tskv\tstring=alpha\tsigned=-42\tunsigned=18446744073709551615\tfloat=1.5\tdouble=-2.25\tbool_true=1\tbool_false=0\tjson={\"x\":1}\ttext=scalars\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [
+        "DEF-004"
+      ],
+      "feature_ids": [
+        "FMT-004",
+        "VAL-001",
+        "VAL-006",
+        "VAL-007"
+      ],
+      "id": "raw-replacement-frozen-duplicate",
+      "observed": {
+        "format": "raw",
+        "kind": "utf8",
+        "value": "tskv\tfirst=one\treplace=new\tlast=three\tfrozen=keep\tduplicate=one\tduplicate=two\ttext=collisions\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "FMT-004",
+        "VAL-001"
+      ],
+      "id": "raw-simple",
+      "observed": {
+        "format": "raw",
+        "kind": "utf8",
+        "value": "tskv\ttext=hello\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "FMT-004",
+        "VAL-001",
+        "VAL-006"
+      ],
+      "id": "raw-unicode-controls",
+      "observed": {
+        "format": "raw",
+        "kind": "utf8",
+        "value": "tskv\ta\\=.\\t\\r\\n\\0\\\\=é=ok:still|\\t\\r\\n\\0\\\\\ttext=Привет🌍|\\r\\n\\0\\t\\\\|literal:\\\\r\\\\n\\\\0\\\\t\\\\\\\\\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "API-010",
+        "FMT-002"
+      ],
+      "id": "tskv-empty",
+      "observed": {
+        "format": "tskv",
+        "kind": "utf8",
+        "value": "tskv\ttimestamp=2000-01-02T03:04:05.123456\tlevel=INFO\tmodule=BaselineTextProbe ( <source-path>:321 )\ttext=\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "API-010",
+        "FMT-002",
+        "VAL-001",
+        "VAL-006",
+        "VAL-008"
+      ],
+      "id": "tskv-ordered-scalars",
+      "observed": {
+        "format": "tskv",
+        "kind": "utf8",
+        "value": "tskv\ttimestamp=2000-01-02T03:04:05.123456\tlevel=INFO\tmodule=BaselineTextProbe ( <source-path>:321 )\tstring=alpha\tsigned=-42\tunsigned=18446744073709551615\tfloat=1.5\tdouble=-2.25\tbool_true=1\tbool_false=0\tjson={\"x\":1}\ttext=scalars\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [
+        "DEF-004"
+      ],
+      "feature_ids": [
+        "API-010",
+        "FMT-002",
+        "VAL-001",
+        "VAL-006",
+        "VAL-007"
+      ],
+      "id": "tskv-replacement-frozen-duplicate",
+      "observed": {
+        "format": "tskv",
+        "kind": "utf8",
+        "value": "tskv\ttimestamp=2000-01-02T03:04:05.123456\tlevel=INFO\tmodule=BaselineTextProbe ( <source-path>:321 )\tfirst=one\treplace=new\tlast=three\tfrozen=keep\tduplicate=one\tduplicate=two\ttext=collisions\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "API-010",
+        "FMT-002",
+        "VAL-001"
+      ],
+      "id": "tskv-simple",
+      "observed": {
+        "format": "tskv",
+        "kind": "utf8",
+        "value": "tskv\ttimestamp=2000-01-02T03:04:05.123456\tlevel=INFO\tmodule=BaselineTextProbe ( <source-path>:321 )\ttext=hello\n"
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "API-010",
+        "FMT-002",
+        "VAL-001",
+        "VAL-006"
+      ],
+      "id": "tskv-unicode-controls",
+      "observed": {
+        "format": "tskv",
+        "kind": "utf8",
+        "value": "tskv\ttimestamp=2000-01-02T03:04:05.123456\tlevel=INFO\tmodule=BaselineTextProbe ( <source-path>:321 )\ta\\=.\\t\\r\\n\\0\\\\=é=ok:still|\\t\\r\\n\\0\\\\\ttext=Привет🌍|\\r\\n\\0\\t\\\\|literal:\\\\r\\\\n\\\\0\\\\t\\\\\\\\\n"
+      },
+      "platform": "portable"
+    }
+  ],
+  "integrity": {
+    "algorithm": "sha256",
+    "canonicalization": "ulog-json-v1",
+    "value": "5f05893f7257e8897336b6d5738964491dab83c8bb3954049993aaae4959159e"
+  },
+  "provenance": {
+    "baseline_document": "docs/migration/baseline.md",
+    "capture_tool": "ulog-baseline-corpus/2",
+    "normalization_profile": "ulog-baseline-normalization/1",
+    "repository": "userver",
+    "revision": "72e07f717ae46a17822776df21ebd73dbc4ce728"
+  },
+  "schema_version": 1
+}
