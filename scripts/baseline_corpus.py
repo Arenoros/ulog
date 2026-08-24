@@ -12,6 +12,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+from migration_manifest import (
+    FEATURE_ID_PATTERN,
+    load_baseline_metadata,
+    load_manifest_ids,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_METADATA_PATH = PROJECT_ROOT / "docs" / "migration" / "baseline.md"
@@ -29,7 +35,6 @@ SUPPORTED_CAPTURE_TOOL_VERSIONS = {
 NORMALIZATION_VERSION = "ulog-baseline-normalization/1"
 CANONICALIZATION = "ulog-json-v1"
 CASE_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-FEATURE_ID_PATTERN = re.compile(r"^[A-Z]{3,5}-[0-9]{3}[A-Z]?$")
 NORMALIZATION_REPLACEMENTS = {
     "timestamp_local": "2000-01-02T03:04:05.123456",
     "timestamp_utc": "2000-01-02T03:04:05.123456Z",
@@ -329,23 +334,7 @@ def load_probe_output(output: str) -> dict[str, object]:
 
 
 def read_baseline_metadata() -> dict[str, str]:
-    try:
-        contents = BASELINE_METADATA_PATH.read_text(encoding="utf-8")
-    except OSError as error:
-        raise RuntimeError(
-            f"Unable to read migration baseline metadata at {BASELINE_METADATA_PATH}: "
-            f"{error}. Restore the file from the repository and retry."
-        ) from error
-
-    repositories = re.findall(r"^repository:\s*(\S+)\s*$", contents, re.MULTILINE)
-    revisions = re.findall(r"^commit:\s*([0-9a-f]{40})\s*$", contents, re.MULTILINE)
-    if len(repositories) != 1 or len(revisions) != 1:
-        raise RuntimeError(
-            f"{BASELINE_METADATA_PATH} must contain exactly one repository and one "
-            "40-character lowercase commit entry. Restore the documented metadata "
-            "and retry."
-        )
-    return {"repository": repositories[0], "revision": revisions[0]}
+    return load_baseline_metadata(BASELINE_METADATA_PATH)
 
 
 def load_json_file(path: Path) -> dict[str, object]:
@@ -390,34 +379,6 @@ def calculate_integrity(document: dict[str, object]) -> str:
         raise RuntimeError("Corpus integrity object must contain a value.")
     del integrity["value"]
     return hashlib.sha256(canonical_json(material)).hexdigest()
-
-
-def load_manifest_ids(path: Path) -> set[str]:
-    try:
-        contents = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as error:
-        raise RuntimeError(
-            f"Capability manifest '{path}' is not valid UTF-8 at byte "
-            f"{error.start}. Restore the manifest and retry."
-        ) from error
-    except OSError as error:
-        raise RuntimeError(
-            f"Unable to read capability manifest '{path}': {error}. "
-            "Restore the manifest and retry."
-        ) from error
-    ids = set(
-        re.findall(
-            r"^\| `([A-Z]{3,5}-[0-9]{3}[A-Z]?)` \|",
-            contents,
-            re.MULTILINE,
-        )
-    )
-    if not ids:
-        raise RuntimeError(
-            f"Capability manifest '{path}' contains no stable IDs. Restore the "
-            "manifest and retry."
-        )
-    return ids
 
 
 def validate_id_list(

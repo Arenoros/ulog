@@ -11,7 +11,8 @@ The bootstrap establishes seven independent test categories:
 - `tooling`: regression checks for dependency-graph enforcement and benchmark
   result collection;
 - `migration`: schema, provenance, manifest-ID, and integrity validation for
-  the committed offline baseline corpus, without an external checkout;
+  the committed offline baseline corpus and non-format parity scenarios,
+  without an external checkout;
 - `benchmark`: smoke-run Google Benchmark and emit JSON without a timing gate.
 
 Hosted CI benchmark timing is advisory. It confirms that benchmark executables

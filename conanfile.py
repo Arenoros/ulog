@@ -57,6 +57,7 @@ class UlogConan(ConanFile):
         "cmake/*",
         "docs/migration/baseline.md",
         "docs/migration/capability-manifest.md",
+        "docs/migration/non-format-parity-scenarios.md",
         "docs/migration/corpus/*.json",
         "include/*",
         "scripts/*.cmd",

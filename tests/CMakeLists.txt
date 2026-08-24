@@ -20,11 +20,23 @@ if(PROJECT_IS_TOP_LEVEL)
       --corpus-root "${PROJECT_SOURCE_DIR}/docs/migration/corpus" --manifest
       "${PROJECT_SOURCE_DIR}/docs/migration/capability-manifest.md"
   )
+  add_test(
+    NAME ulog.parity-scenarios
+    COMMAND
+      "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/non_format_scenarios.py" validate
+      --catalog "${PROJECT_SOURCE_DIR}/docs/migration/non-format-parity-scenarios.md" --manifest
+      "${PROJECT_SOURCE_DIR}/docs/migration/capability-manifest.md" --baseline
+      "${PROJECT_SOURCE_DIR}/docs/migration/baseline.md"
+  )
   set_tests_properties(
     ulog.script-tools PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS "tooling;unit"
   )
   set_tests_properties(
     ulog.corpus PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS "migration;tooling"
+  )
+  set_tests_properties(
+    ulog.parity-scenarios PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS
+                                     "migration;tooling"
   )
 endif()
 
