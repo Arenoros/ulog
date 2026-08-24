@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CORPUS_TOOL = PROJECT_ROOT / "scripts" / "baseline_corpus.py"
 CAPABILITY_MANIFEST = PROJECT_ROOT / "docs" / "migration" / "capability-manifest.md"
+TEXT_PROBE_SOURCE = PROJECT_ROOT / "tools" / "baseline_text_probe"
 BASELINE_REPOSITORY = "user" + "ver"
 BASELINE_REVISION = "72e07f717ae46a17822776df21ebd73dbc4ce728"
 PROBE_BASELINE = {
@@ -79,6 +81,27 @@ def probe_program(document: object) -> list[str]:
         "-c",
         f"print({json.dumps(json.dumps(document))})",
     ]
+
+
+def counting_probe_program(
+    temp_path: Path, documents: list[dict[str, object]]
+) -> list[str]:
+    probe_path = temp_path / "counting_probe.py"
+    counter_path = temp_path / "probe_run_count.txt"
+    probe_path.write_text(
+        "import json\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"documents = json.loads({json.dumps(json.dumps(documents))})\n"
+        "counter = Path(sys.argv[1])\n"
+        "index = int(counter.read_text()) if counter.exists() else 0\n"
+        "if index >= len(documents):\n"
+        "    raise RuntimeError('probe ran too many times')\n"
+        "counter.write_text(str(index + 1))\n"
+        "print(json.dumps(documents[index], ensure_ascii=False))\n",
+        encoding="utf-8",
+    )
+    return [sys.executable, str(probe_path), str(counter_path)]
 
 
 def recalculate_integrity(corpus: dict[str, object]) -> None:
@@ -160,6 +183,34 @@ raise SystemExit(9)
 
 
 class BaselineCorpusTest(unittest.TestCase):
+    def test_text_probe_configuration_reports_how_to_fix_missing_host_input(self):
+        cmake = shutil.which("cmake")
+        self.assertIsNotNone(cmake, "CMake must be available for repository tests")
+        with tempfile.TemporaryDirectory() as temp_directory:
+            result = subprocess.run(
+                [
+                    cmake,
+                    "-S",
+                    str(TEXT_PROBE_SOURCE),
+                    "-B",
+                    str(Path(temp_directory) / "build"),
+                ],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        output = f"{result.stdout}\n{result.stderr}"
+        if os.name == "nt":
+            self.assertIn("does not support a native Windows build", output)
+            self.assertIn("Linux or macOS", output)
+        else:
+            self.assertIn(
+                f"ULOG_BASELINE_SOURCE must name a clean {BASELINE_REPOSITORY} checkout",
+                output,
+            )
+
     def run_validation_root(
         self, corpus_root: Path, manifest: Path = CAPABILITY_MANIFEST
     ) -> subprocess.CompletedProcess[str]:
@@ -222,11 +273,18 @@ class BaselineCorpusTest(unittest.TestCase):
         )
 
     def test_validate_accepts_known_corpus_without_external_checkout(self):
-        with tempfile.TemporaryDirectory() as temp_directory:
-            result = self.run_validation(KNOWN_CORPUS, Path(temp_directory))
+        for capture_tool in ("ulog-baseline-corpus/1", "ulog-baseline-corpus/2"):
+            with self.subTest(capture_tool=capture_tool):
+                corpus = json.loads(json.dumps(KNOWN_CORPUS))
+                corpus["provenance"]["capture_tool"] = capture_tool
+                recalculate_integrity(corpus)
+                with tempfile.TemporaryDirectory() as temp_directory:
+                    result = self.run_validation(corpus, Path(temp_directory))
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Validated 1 corpus file(s) with 1 case(s)", result.stdout)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(
+                    "Validated 1 corpus file(s) with 1 case(s)", result.stdout
+                )
 
     def test_validate_rejects_accidental_payload_edit(self):
         edited_corpus = json.loads(json.dumps(KNOWN_CORPUS))
@@ -258,6 +316,134 @@ class BaselineCorpusTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("unknown manifest IDs: FMT-999", result.stderr)
+
+    def test_validate_rejects_unknown_capture_tool_version(self):
+        corpus = json.loads(json.dumps(KNOWN_CORPUS))
+        corpus["provenance"]["capture_tool"] = "ulog-baseline-corpus/999"
+        recalculate_integrity(corpus)
+        with tempfile.TemporaryDirectory() as temp_directory:
+            result = self.run_validation(corpus, Path(temp_directory))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("supported tool versions", result.stderr)
+        self.assertIn("Recapture", result.stderr)
+
+    def test_validate_rejects_duplicate_case_ids_across_files(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            corpus_root = Path(temp_directory) / "corpus"
+            corpus_root.mkdir()
+            for filename in ("first.json", "second.json"):
+                (corpus_root / filename).write_text(
+                    json.dumps(KNOWN_CORPUS, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            result = self.run_validation_root(corpus_root)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("duplicate case id 'raw-basic' across corpus files", result.stderr)
+        self.assertIn("first.json", result.stderr)
+        self.assertIn("second.json", result.stderr)
+
+    def test_validate_rejects_observed_with_an_unknown_member(self):
+        corpus = json.loads(json.dumps(KNOWN_CORPUS))
+        corpus["cases"][0]["observed"]["encoding"] = "utf-8"
+        recalculate_integrity(corpus)
+        with tempfile.TemporaryDirectory() as temp_directory:
+            result = self.run_validation(corpus, Path(temp_directory))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "observed must contain exactly kind, format, and value", result.stderr
+        )
+
+    def test_validate_rejects_format_without_matching_feature_id(self):
+        corpus = json.loads(json.dumps(KNOWN_CORPUS))
+        corpus["cases"][0]["observed"]["format"] = "tskv"
+        recalculate_integrity(corpus)
+        with tempfile.TemporaryDirectory() as temp_directory:
+            result = self.run_validation(corpus, Path(temp_directory))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("format 'tskv' must reference exactly FMT-002", result.stderr)
+
+    def test_validate_rejects_text_without_one_final_newline(self):
+        corpus = json.loads(json.dumps(KNOWN_CORPUS))
+        corpus["cases"][0]["observed"]["value"] = "tskv\tfoo=bar\ttext=test"
+        recalculate_integrity(corpus)
+        with tempfile.TemporaryDirectory() as temp_directory:
+            result = self.run_validation(corpus, Path(temp_directory))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("one newline-terminated log line", result.stderr)
+
+    def test_validate_accepts_ltsv_text_observation(self):
+        corpus = json.loads(json.dumps(KNOWN_CORPUS))
+        corpus["cases"][0] = {
+            "id": "ltsv-simple",
+            "feature_ids": ["FMT-003", "VAL-001"],
+            "difference_ids": [],
+            "platform": "portable",
+            "observed": {
+                "kind": "utf8",
+                "format": "ltsv",
+                "value": "timestamp:2000-01-02T03:04:05.123456\ttext:hello\n",
+            },
+        }
+        recalculate_integrity(corpus)
+        with tempfile.TemporaryDirectory() as temp_directory:
+            result = self.run_validation(corpus, Path(temp_directory))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_validate_rejects_invalid_text_kind_and_format(self):
+        invalid_members = (
+            ("kind", "bytes", "observed kind must be 'utf8'"),
+            ("format", "plain", "observed format must be one of"),
+        )
+        for member, value, diagnostic in invalid_members:
+            with self.subTest(member=member):
+                corpus = json.loads(json.dumps(KNOWN_CORPUS))
+                corpus["cases"][0]["observed"][member] = value
+                recalculate_integrity(corpus)
+                with tempfile.TemporaryDirectory() as temp_directory:
+                    result = self.run_validation(corpus, Path(temp_directory))
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(diagnostic, result.stderr)
+
+    def test_validate_rejects_cr_and_multiple_log_lines(self):
+        invalid_values = (
+            "tskv\ttext=test\r\n",
+            "tskv\ttext=first\nsecond\n",
+        )
+        for value in invalid_values:
+            with self.subTest(value=value):
+                corpus = json.loads(json.dumps(KNOWN_CORPUS))
+                corpus["cases"][0]["observed"]["value"] = value
+                recalculate_integrity(corpus)
+                with tempfile.TemporaryDirectory() as temp_directory:
+                    result = self.run_validation(corpus, Path(temp_directory))
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("one newline-terminated log line", result.stderr)
+
+    def test_validate_preserves_non_text_observation_schema(self):
+        corpus = json.loads(json.dumps(KNOWN_CORPUS))
+        corpus["cases"][0] = {
+            "id": "json-structured",
+            "feature_ids": ["FMT-005"],
+            "difference_ids": [],
+            "platform": "portable",
+            "observed": {
+                "kind": "json-object",
+                "value": {"text": "test", "typed": 42},
+            },
+        }
+        recalculate_integrity(corpus)
+        with tempfile.TemporaryDirectory() as temp_directory:
+            result = self.run_validation(corpus, Path(temp_directory))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_validate_rejects_duplicate_json_keys(self):
         contents = json.dumps(KNOWN_CORPUS, ensure_ascii=False, indent=2)
@@ -453,6 +639,134 @@ class BaselineCorpusTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_capture_accepts_two_runs_that_match_after_normalization(self):
+        timestamps = [
+            "2026-08-24T09:30:12.123456",
+            "2026-08-24T09:30:13.654321",
+        ]
+        documents = []
+        for timestamp in timestamps:
+            document = make_probe_document(feature_ids=["API-010", "FMT-002"])
+            case = document["cases"][0]
+            case["id"] = "tskv-repeatable"
+            case["observed"] = {
+                "kind": "utf8",
+                "format": "tskv",
+                "value": f"tskv\ttimestamp={timestamp}\ttext=test\n",
+            }
+            case["normalization"] = [
+                {
+                    "kind": "timestamp_local",
+                    "path": "/value",
+                    "value": timestamp,
+                    "occurrence": 0,
+                }
+            ]
+            documents.append(document)
+
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                counting_probe_program(temp_path, documents),
+            )
+            corpus = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(corpus["provenance"]["capture_tool"], "ulog-baseline-corpus/2")
+        self.assertIn(
+            "timestamp=2000-01-02T03:04:05.123456",
+            corpus["cases"][0]["observed"]["value"],
+        )
+
+    def test_independent_captures_are_byte_identical(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            outputs = []
+            for name in ("first", "second"):
+                output_parent = temp_path / name
+                output_parent.mkdir()
+                output_path = output_parent / "corpus.json"
+                result = self.run_capture(
+                    source_path,
+                    output_path,
+                    environment,
+                    probe_program(make_probe_document()),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                outputs.append(output_path.read_bytes())
+
+        self.assertEqual(outputs[0], outputs[1])
+
+    def test_capture_rejects_two_normalized_runs_that_differ(self):
+        documents = []
+        for run_number in (1, 2):
+            document = make_probe_document()
+            document["cases"][0]["observed"]["value"] = (
+                f"tskv\ttext=test\tnonce={run_number}\n"
+            )
+            documents.append(document)
+
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                counting_probe_program(temp_path, documents),
+            )
+
+            self.assertFalse(output_path.exists())
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("changed between consecutive probe runs", result.stderr)
+        self.assertIn("/cases/0/observed/value", result.stderr)
+        self.assertIn("Declare every volatile occurrence", result.stderr)
+
+    def test_capture_mismatch_preserves_existing_forced_destination(self):
+        documents = []
+        for run_number in (1, 2):
+            document = make_probe_document()
+            document["cases"][0]["observed"]["value"] = (
+                f"tskv\ttext=test\tnonce={run_number}\n"
+            )
+            documents.append(document)
+
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            output_path.write_text("existing evidence\n", encoding="utf-8")
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                counting_probe_program(temp_path, documents),
+                force=True,
+            )
+
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"), "existing evidence\n"
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("changed between consecutive probe runs", result.stderr)
+
     def test_capture_rejects_stale_probe_baseline(self):
         stale_baseline = {
             "repository": BASELINE_REPOSITORY,
@@ -607,6 +921,31 @@ class BaselineCorpusTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("unknown manifest IDs: FMT-999", result.stderr)
 
+    def test_capture_rejects_case_id_colliding_with_sibling_corpus(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            sibling_path = temp_path / "existing.json"
+            sibling_path.write_text(
+                json.dumps(KNOWN_CORPUS, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            output_path = temp_path / "new.json"
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                probe_program(make_probe_document()),
+            )
+
+            self.assertFalse(output_path.exists())
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("case id 'raw-basic' collides with sibling corpus", result.stderr)
+        self.assertIn("existing.json", result.stderr)
+
     def test_capture_reports_output_failure_without_traceback(self):
         with tempfile.TemporaryDirectory() as temp_directory:
             temp_path = Path(temp_directory)
@@ -719,7 +1058,7 @@ class BaselineCorpusTest(unittest.TestCase):
         self.assertEqual(
             corpus["provenance"],
             {
-                "capture_tool": "ulog-baseline-corpus/1",
+                "capture_tool": "ulog-baseline-corpus/2",
                 "baseline_document": "docs/migration/baseline.md",
                 "normalization_profile": "ulog-baseline-normalization/1",
                 "repository": "user" + "ver",

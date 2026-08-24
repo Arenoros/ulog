@@ -54,6 +54,42 @@ The pinned baseline does not support a native Windows build. Real capture must
 therefore run on a supported Linux or macOS host (or an equivalent VM). The
 committed-corpus validator remains platform-independent and runs on Windows.
 
+### Text formatter probe
+
+Issue [#4](https://github.com/Arenoros/ulog/issues/4) provides a standalone
+probe for the TSKV, LTSV, and Raw formatter corpus. Configure it separately
+from Ulog so userver remains absent from the regular build graph:
+
+```text
+cmake -S tools/baseline_text_probe -B /temporary/ulog-baseline-text-probe \
+  -DULOG_BASELINE_SOURCE=/absolute/path/to/userver
+cmake --build /temporary/ulog-baseline-text-probe \
+  --target ulog-baseline-text-probe
+python scripts/baseline_corpus.py capture \
+  --baseline-source /absolute/path/to/userver \
+  --output docs/migration/corpus/text-v1.json \
+  --force \
+  -- /temporary/ulog-baseline-text-probe/ulog-baseline-text-probe
+```
+
+The probe verifies the checkout, creates a temporary `git archive`, reads the
+commit attestation from that archive, and builds the exact extracted snapshot.
+It exercises the baseline `LogHelper` through a capturing `TextLogger`; it does
+not reproduce formatter behavior in probe code. Its five scenarios are mirrored
+across all three formats:
+
+| Scenario | Contract |
+| --- | --- |
+| `empty` | Empty text plus the format-specific preamble and final newline. |
+| `simple` | A non-empty fieldless message. |
+| `unicode-controls` | UTF-8 and key/value/message escaping of tab, CR, LF, NUL, backslash, and `=`. |
+| `ordered-scalars` | Ordered string, signed, unsigned, float, double, bool, and `JsonString` fields. |
+| `replacement-frozen-duplicate` | In-place replacement, rejected frozen replacement, and the `DEF-004` repeated-tag baseline defect. |
+
+TSKV and LTSV normalize the actual local timestamp and compiled source path.
+Raw declares its observed line deterministic with an empty normalization list;
+the line itself proves that timestamp and source metadata are omitted.
+
 ## Probe envelope
 
 Probe schema version 1 is independent of the committed schema. Each case names
@@ -127,6 +163,14 @@ than erasing their shape. Platform-specific behavior belongs in a separate case
 whose `platform` field names that platform; normalization must not disguise a
 real behavioral difference.
 
+Capture executes the probe twice and compares the complete normalized corpus
+before writing anything. A mismatch reports the first JSON Pointer that changed
+and leaves the destination untouched. Capture-tool version 2 records this
+two-run guarantee. The validator continues to accept version 1 evidence that
+was truthfully produced by the original one-run tool, but rejects unknown tool
+versions. Before publication, capture also validates sibling JSON corpus files
+under the output directory and refuses a case ID already owned by another file.
+
 ## Committed schema and integrity
 
 Committed schema version 1 has exactly four top-level fields:
@@ -136,6 +180,13 @@ normalization-profile version. Cases are sorted by ID; both ID lists are unique
 and sorted, and every ID must exist in the capability manifest. Corpus filenames
 must end in lowercase `.json`, ensuring case-sensitive and case-insensitive hosts
 validate the same fixture set.
+
+Every text observation has exactly `kind`, `format`, and `value`. `kind` is
+`utf8`; `format` is `tskv`, `ltsv`, or `raw` and must agree with `FMT-002`,
+`FMT-003`, or `FMT-004` respectively. `value` preserves the complete encoded
+line as a string, including order and repeated fields, and ends with exactly one
+LF. Case IDs are unique across the whole corpus root, not merely within one
+file.
 
 Integrity uses `sha256` and canonicalization `ulog-json-v1`:
 

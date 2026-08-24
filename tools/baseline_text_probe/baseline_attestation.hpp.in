@@ -1,0 +1,10 @@
+#pragma once
+
+#include <string_view>
+
+namespace ulog_baseline_attestation {
+
+inline constexpr std::string_view kRepository = "@ULOG_BASELINE_REPOSITORY@";
+inline constexpr std::string_view kRevision = "@ULOG_ARCHIVE_REVISION@";
+
+}  // namespace ulog_baseline_attestation

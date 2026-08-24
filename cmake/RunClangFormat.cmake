@@ -30,6 +30,9 @@ file(
   "${ULOG_SOURCE_DIR}/benchmarks/*.hpp"
   "${ULOG_SOURCE_DIR}/test_package/*.cpp"
   "${ULOG_SOURCE_DIR}/test_package/*.hpp"
+  "${ULOG_SOURCE_DIR}/tools/*.cpp"
+  "${ULOG_SOURCE_DIR}/tools/*.hpp"
+  "${ULOG_SOURCE_DIR}/tools/*.hpp.in"
 )
 list(FILTER _ulog_format_files EXCLUDE REGEX "/(build[^/]*|out)/")
 

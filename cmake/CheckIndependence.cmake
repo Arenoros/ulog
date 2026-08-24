@@ -17,6 +17,7 @@ set(_ulog_scan_roots
     "${ULOG_SOURCE_DIR}/cmake"
     "${ULOG_SOURCE_DIR}/conan"
     "${ULOG_SOURCE_DIR}/scripts"
+    "${ULOG_SOURCE_DIR}/tools"
     "${ULOG_SOURCE_DIR}/.github"
 )
 set(_ulog_scan_files "${ULOG_SOURCE_DIR}/CMakeLists.txt" "${ULOG_SOURCE_DIR}/CMakePresets.json"
@@ -31,6 +32,8 @@ foreach(_ulog_root IN LISTS _ulog_scan_roots)
       "${_ulog_root}/*"
     )
     list(FILTER _ulog_root_files EXCLUDE REGEX "/(build[^/]*|out|__pycache__)/")
+    # Baseline probes are manual evidence generators, outside Ulog's build graph.
+    list(FILTER _ulog_root_files EXCLUDE REGEX "/tools/baseline_text_probe/")
     list(FILTER _ulog_root_files EXCLUDE REGEX "/CMakeUserPresets\\.json$")
     list(APPEND _ulog_scan_files ${_ulog_root_files})
   endif()

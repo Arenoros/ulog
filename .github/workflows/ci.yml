@@ -116,7 +116,7 @@ jobs:
       - name: Check formatting
         run: |
           cmake -DULOG_SOURCE_DIR=. -DULOG_FORMAT_MODE=check -P cmake/RunClangFormat.cmake
-          cmake-format --check CMakeLists.txt cmake/*.cmake cmake/*.cmake.in tests/CMakeLists.txt tests/cmake/*.cmake.in benchmarks/CMakeLists.txt tests/consumer/CMakeLists.txt test_package/CMakeLists.txt
+          cmake-format --check CMakeLists.txt cmake/*.cmake cmake/*.cmake.in tests/CMakeLists.txt tests/cmake/*.cmake.in benchmarks/CMakeLists.txt tests/consumer/CMakeLists.txt test_package/CMakeLists.txt tools/baseline_text_probe/CMakeLists.txt
       - name: Detect Clang toolchain
         run: conan profile detect --force
       - name: Compute Conan cache identity

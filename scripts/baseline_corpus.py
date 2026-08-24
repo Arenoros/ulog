@@ -20,7 +20,11 @@ CAPABILITY_MANIFEST_PATH = (
 )
 CORPUS_SCHEMA_VERSION = 1
 PROBE_SCHEMA_VERSION = 1
-CAPTURE_TOOL_VERSION = "ulog-baseline-corpus/1"
+CAPTURE_TOOL_VERSION = "ulog-baseline-corpus/2"
+SUPPORTED_CAPTURE_TOOL_VERSIONS = {
+    "ulog-baseline-corpus/1",
+    CAPTURE_TOOL_VERSION,
+}
 NORMALIZATION_VERSION = "ulog-baseline-normalization/1"
 CANONICALIZATION = "ulog-json-v1"
 CASE_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -34,6 +38,11 @@ NORMALIZATION_REPLACEMENTS = {
     "platform": "<platform>",
 }
 CASE_PLATFORMS = {"portable", "windows", "linux", "macos"}
+TEXT_FORMAT_FEATURE_IDS = {
+    "tskv": "FMT-002",
+    "ltsv": "FMT-003",
+    "raw": "FMT-004",
+}
 LOCAL_TIMESTAMP_PATTERN = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}$"
 )
@@ -334,8 +343,51 @@ def validate_committed_case(raw_case: object, manifest_ids: set[str]) -> str:
             f"Corpus case '{case_id}' platform must be one of: {supported}."
         )
     observed = raw_case["observed"]
-    if not isinstance(observed, dict) or not observed:
-        raise RuntimeError(f"Corpus case '{case_id}' observed must be a JSON object.")
+    text_format_ids = set(TEXT_FORMAT_FEATURE_IDS.values())
+    claimed_text_format_ids = set(raw_case["feature_ids"]) & text_format_ids
+    is_text_observation = bool(claimed_text_format_ids) or (
+        isinstance(observed, dict) and observed.get("format") in TEXT_FORMAT_FEATURE_IDS
+    )
+    if not is_text_observation:
+        if not isinstance(observed, dict) or not observed:
+            raise RuntimeError(f"Corpus case '{case_id}' observed must be a JSON object.")
+        return case_id
+
+    if not isinstance(observed, dict) or set(observed) != {"kind", "format", "value"}:
+        raise RuntimeError(
+            f"Corpus case '{case_id}' observed must contain exactly kind, format, "
+            "and value. Recapture the case with the text corpus probe."
+        )
+    if observed["kind"] != "utf8":
+        raise RuntimeError(
+            f"Corpus case '{case_id}' observed kind must be 'utf8'; found "
+            f"{observed['kind']!r}."
+        )
+    observed_format = observed["format"]
+    if not isinstance(observed_format, str) or observed_format not in TEXT_FORMAT_FEATURE_IDS:
+        supported = ", ".join(sorted(TEXT_FORMAT_FEATURE_IDS))
+        raise RuntimeError(
+            f"Corpus case '{case_id}' observed format must be one of: {supported}."
+        )
+    expected_format_id = TEXT_FORMAT_FEATURE_IDS[observed_format]
+    actual_format_ids = sorted(claimed_text_format_ids)
+    if actual_format_ids != [expected_format_id]:
+        raise RuntimeError(
+            f"Corpus case '{case_id}' format '{observed_format}' must reference "
+            f"exactly {expected_format_id} among the text format IDs; found "
+            f"{actual_format_ids!r}."
+        )
+    observed_value = observed["value"]
+    if (
+        not isinstance(observed_value, str)
+        or not observed_value.endswith("\n")
+        or observed_value.count("\n") != 1
+        or "\r" in observed_value
+    ):
+        raise RuntimeError(
+            f"Corpus case '{case_id}' observed value must be one newline-terminated "
+            "log line with LF line ending."
+        )
     return case_id
 
 
@@ -344,7 +396,7 @@ def validate_corpus_document(
     document: dict[str, object],
     baseline: dict[str, str],
     manifest_ids: set[str],
-) -> int:
+) -> list[str]:
     if set(document) != {"schema_version", "provenance", "cases", "integrity"}:
         raise RuntimeError(
             f"Corpus file '{path}' must contain exactly schema_version, provenance, "
@@ -361,15 +413,20 @@ def validate_corpus_document(
 
     expected_provenance = {
         "baseline_document": "docs/migration/baseline.md",
-        "capture_tool": CAPTURE_TOOL_VERSION,
         "normalization_profile": NORMALIZATION_VERSION,
         "repository": baseline["repository"],
         "revision": baseline["revision"],
     }
-    if document["provenance"] != expected_provenance:
+    provenance = document["provenance"]
+    if (
+        not isinstance(provenance, dict)
+        or set(provenance) != {*expected_provenance, "capture_tool"}
+        or any(provenance.get(key) != value for key, value in expected_provenance.items())
+        or provenance.get("capture_tool") not in SUPPORTED_CAPTURE_TOOL_VERSIONS
+    ):
         raise RuntimeError(
             f"Corpus file '{path}' provenance does not match the migration baseline "
-            "and tool versions. Recapture it with the documented workflow."
+            "and supported tool versions. Recapture it with the documented workflow."
         )
 
     integrity = document["integrity"]
@@ -410,7 +467,21 @@ def validate_corpus_document(
             f"calculated {calculated_integrity}. Recapture the corpus from the pinned "
             "baseline or restore the accidental edit."
         )
-    return len(cases)
+    return case_ids
+
+
+def record_case_origins(
+    origins: dict[str, Path], case_ids: list[str], path: Path
+) -> None:
+    for case_id in case_ids:
+        previous_path = origins.get(case_id)
+        if previous_path is not None:
+            raise RuntimeError(
+                f"Corpus has duplicate case id '{case_id}' across corpus files "
+                f"'{previous_path}' and '{path}'. Rename or remove one case and "
+                "recapture both files."
+            )
+        origins[case_id] = path
 
 
 def validate(args: argparse.Namespace) -> int:
@@ -448,16 +519,52 @@ def validate(args: argparse.Namespace) -> int:
 
     baseline = read_baseline_metadata()
     manifest_ids = load_manifest_ids(args.manifest)
-    case_count = sum(
-        validate_corpus_document(
+    case_origins: dict[str, Path] = {}
+    case_count = 0
+    for path in corpus_files:
+        case_ids = validate_corpus_document(
             path, load_json_file(path), baseline, manifest_ids
         )
-        for path in corpus_files
-    )
+        case_count += len(case_ids)
+        record_case_origins(case_origins, case_ids, path)
     print(
         f"Validated {len(corpus_files)} corpus file(s) with {case_count} case(s)"
     )
     return 0
+
+
+def validate_candidate_case_ids(
+    output_path: Path,
+    candidate_case_ids: list[str],
+    baseline: dict[str, str],
+    manifest_ids: set[str],
+) -> None:
+    if not output_path.parent.is_dir():
+        return
+
+    output_resolved = output_path.resolve()
+    sibling_origins: dict[str, Path] = {}
+    sibling_paths = sorted(
+        path
+        for path in output_path.parent.rglob("*.json")
+        if path.is_file() and path.resolve() != output_resolved
+    )
+    for sibling_path in sibling_paths:
+        sibling_case_ids = validate_corpus_document(
+            sibling_path,
+            load_json_file(sibling_path),
+            baseline,
+            manifest_ids,
+        )
+        record_case_origins(sibling_origins, sibling_case_ids, sibling_path)
+
+    for case_id in candidate_case_ids:
+        sibling_path = sibling_origins.get(case_id)
+        if sibling_path is not None:
+            raise RuntimeError(
+                f"Candidate case id '{case_id}' collides with sibling corpus "
+                f"'{sibling_path}'. Rename or remove one case before capture."
+            )
 
 
 def decode_json_pointer(path: str, case_id: str) -> list[str]:
@@ -765,6 +872,42 @@ def build_corpus(
     return payload
 
 
+def describe_first_difference(first: object, second: object, path: str = "") -> str:
+    if type(first) is not type(second):
+        return (
+            f"{path or '/'}: first type {type(first).__name__}, "
+            f"second type {type(second).__name__}"
+        )
+    if isinstance(first, dict):
+        for key in sorted(set(first) | set(second)):
+            escaped_key = key.replace("~", "~0").replace("/", "~1")
+            child_path = f"{path}/{escaped_key}"
+            if key not in first:
+                return f"{child_path}: missing from first run"
+            if key not in second:
+                return f"{child_path}: missing from second run"
+            if first[key] != second[key]:
+                return describe_first_difference(first[key], second[key], child_path)
+    elif isinstance(first, list):
+        if len(first) != len(second):
+            return f"{path or '/'}: first length {len(first)}, second length {len(second)}"
+        for index, (first_item, second_item) in enumerate(zip(first, second)):
+            if first_item != second_item:
+                return describe_first_difference(
+                    first_item, second_item, f"{path}/{index}"
+                )
+    elif first != second:
+        max_display_length = 160
+        first_display = repr(first)
+        second_display = repr(second)
+        if len(first_display) > max_display_length:
+            first_display = f"{first_display[:max_display_length]}..."
+        if len(second_display) > max_display_length:
+            second_display = f"{second_display[:max_display_length]}..."
+        return f"{path or '/'}: first={first_display}, second={second_display}"
+    return path or "/"
+
+
 def run_probe(source_path: Path, command: list[str]) -> str:
     if command and command[0] == "--":
         command = command[1:]
@@ -882,13 +1025,29 @@ def capture(args: argparse.Namespace) -> int:
         )
     baseline = read_baseline_metadata()
     verify_checkout(args.baseline_source, baseline, after_probe=False)
-    probe_output = run_probe(args.baseline_source, args.probe_command)
-    probe_document = load_probe_output(probe_output)
-    raw_cases = validate_probe_envelope(probe_document, baseline)
-    verify_checkout(args.baseline_source, baseline, after_probe=True)
-    corpus = build_corpus(raw_cases, baseline)
     manifest_ids = load_manifest_ids(CAPABILITY_MANIFEST_PATH)
-    validate_corpus_document(args.output, corpus, baseline, manifest_ids)
+    captures = []
+    for _ in range(2):
+        probe_output = run_probe(args.baseline_source, args.probe_command)
+        probe_document = load_probe_output(probe_output)
+        raw_cases = validate_probe_envelope(probe_document, baseline)
+        verify_checkout(args.baseline_source, baseline, after_probe=True)
+        corpus = build_corpus(raw_cases, baseline)
+        validate_corpus_document(args.output, corpus, baseline, manifest_ids)
+        captures.append(corpus)
+
+    if captures[0] != captures[1]:
+        difference = describe_first_difference(captures[0], captures[1])
+        raise RuntimeError(
+            "Normalized corpus changed between consecutive probe runs at "
+            f"{difference}. Declare every volatile occurrence in normalization, "
+            "or make the probe input deterministic, then retry."
+        )
+    corpus = captures[0]
+    candidate_case_ids = [str(case["id"]) for case in corpus["cases"]]
+    validate_candidate_case_ids(
+        args.output, candidate_case_ids, baseline, manifest_ids
+    )
     write_corpus(args.output, corpus, args.force)
     print(f"Captured {len(corpus['cases'])} case(s) in {args.output}")
     return 0
