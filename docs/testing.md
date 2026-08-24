@@ -1,6 +1,6 @@
 # Testing and performance checks
 
-The bootstrap establishes six independent test categories:
+The bootstrap establishes seven independent test categories:
 
 - `unit`: public version seam and test memory resources;
 - `integration`/`package`: install Ulog, configure a copied external project,
@@ -10,6 +10,8 @@ The bootstrap establishes six independent test categories:
 - `stress`: deterministic concurrent checks for allocation instrumentation;
 - `tooling`: regression checks for dependency-graph enforcement and benchmark
   result collection;
+- `migration`: schema, provenance, manifest-ID, and integrity validation for
+  the committed offline baseline corpus, without an external checkout;
 - `benchmark`: smoke-run Google Benchmark and emit JSON without a timing gate.
 
 Hosted CI benchmark timing is advisory. It confirms that benchmark executables

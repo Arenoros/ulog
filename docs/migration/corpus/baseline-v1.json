@@ -1,0 +1,31 @@
+{
+  "cases": [
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "FMT-004",
+        "VAL-006"
+      ],
+      "id": "raw-basic",
+      "observed": {
+        "format": "raw",
+        "kind": "utf8",
+        "value": "tskv\tfoo=bar\ttext=test\n"
+      },
+      "platform": "portable"
+    }
+  ],
+  "integrity": {
+    "algorithm": "sha256",
+    "canonicalization": "ulog-json-v1",
+    "value": "0aa95807472b2e2d9571724bf6f71be461a6f7bdc2b5f16a86a360e2cd5bdcba"
+  },
+  "provenance": {
+    "baseline_document": "docs/migration/baseline.md",
+    "capture_tool": "ulog-baseline-corpus/1",
+    "normalization_profile": "ulog-baseline-normalization/1",
+    "repository": "userver",
+    "revision": "72e07f717ae46a17822776df21ebd73dbc4ce728"
+  },
+  "schema_version": 1
+}

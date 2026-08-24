@@ -13,8 +13,18 @@ if(PROJECT_IS_TOP_LEVEL)
   add_test(NAME ulog.script-tools COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s
                                           "${CMAKE_CURRENT_SOURCE_DIR}/scripts" -p "*_test.py"
   )
+  add_test(
+    NAME ulog.corpus
+    COMMAND
+      "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/baseline_corpus.py" validate
+      --corpus-root "${PROJECT_SOURCE_DIR}/docs/migration/corpus" --manifest
+      "${PROJECT_SOURCE_DIR}/docs/migration/capability-manifest.md"
+  )
   set_tests_properties(
     ulog.script-tools PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS "tooling;unit"
+  )
+  set_tests_properties(
+    ulog.corpus PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS "migration;tooling"
   )
 endif()
 
