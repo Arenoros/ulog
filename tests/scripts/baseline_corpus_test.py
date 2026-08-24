@@ -15,7 +15,9 @@ CAPABILITY_MANIFEST = PROJECT_ROOT / "docs" / "migration" / "capability-manifest
 CORPUS_ROOT = PROJECT_ROOT / "docs" / "migration" / "corpus"
 BASELINE_CORPUS = CORPUS_ROOT / "baseline-v1.json"
 TEXT_CORPUS = CORPUS_ROOT / "text-v1.json"
+JSON_CORPUS = CORPUS_ROOT / "json-v1.json"
 TEXT_PROBE_SOURCE = PROJECT_ROOT / "tools" / "baseline_text_probe"
+JSON_PROBE_SOURCE = PROJECT_ROOT / "tools" / "baseline_json_probe"
 BASELINE_REPOSITORY = "user" + "ver"
 BASELINE_REVISION = "72e07f717ae46a17822776df21ebd73dbc4ce728"
 PROBE_BASELINE = {
@@ -214,6 +216,34 @@ class BaselineCorpusTest(unittest.TestCase):
                 output,
             )
 
+    def test_json_probe_configuration_reports_how_to_fix_missing_host_input(self):
+        cmake = shutil.which("cmake")
+        self.assertIsNotNone(cmake, "CMake must be available for repository tests")
+        with tempfile.TemporaryDirectory() as temp_directory:
+            result = subprocess.run(
+                [
+                    cmake,
+                    "-S",
+                    str(JSON_PROBE_SOURCE),
+                    "-B",
+                    str(Path(temp_directory) / "build"),
+                ],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        output = f"{result.stdout}\n{result.stderr}"
+        if os.name == "nt":
+            self.assertIn("does not support a native Windows build", output)
+            self.assertIn("Linux or macOS", output)
+        else:
+            self.assertIn(
+                f"ULOG_BASELINE_SOURCE must name a clean {BASELINE_REPOSITORY} checkout",
+                output,
+            )
+
     def test_committed_text_corpus_has_issue_4_matrix(self):
         self.assertTrue(
             BASELINE_CORPUS.is_file(), "baseline-v1.json must remain in the corpus"
@@ -283,6 +313,194 @@ class BaselineCorpusTest(unittest.TestCase):
                     self.assertEqual(case["observed"]["kind"], "utf8")
                     self.assertEqual(case["observed"]["format"], format_name)
 
+    def test_committed_json_corpus_has_issue_5_matrix(self):
+        self.assertTrue(
+            JSON_CORPUS.is_file(),
+            "Capture and commit docs/migration/corpus/json-v1.json for issue #5",
+        )
+
+        validation = self.run_validation_root(CORPUS_ROOT)
+        self.assertEqual(validation.returncode, 0, validation.stderr)
+
+        corpus = json.loads(JSON_CORPUS.read_text(encoding="utf-8"))
+        cases_by_id = {case["id"]: case for case in corpus["cases"]}
+        self.assertEqual(
+            len(cases_by_id),
+            len(corpus["cases"]),
+            "json-v1.json must not contain duplicate case IDs",
+        )
+
+        format_contracts = {
+            "json": ("json", "FMT-005"),
+            "json-yadeploy": ("json_yadeploy", "FMT-006"),
+        }
+        scenario_features = {
+            "typed-nested-escaping": {
+                "API-010",
+                "VAL-001",
+                "VAL-006",
+                "VAL-008",
+            },
+            "replacement-frozen-duplicate": {
+                "API-010",
+                "VAL-001",
+                "VAL-006",
+                "VAL-007",
+            },
+        }
+        expected_case_ids = {
+            f"{case_prefix}-{scenario_name}"
+            for case_prefix in format_contracts
+            for scenario_name in scenario_features
+        }
+        self.assertEqual(
+            set(cases_by_id),
+            expected_case_ids,
+            "json-v1.json must contain exactly the issue #5 matrix",
+        )
+
+        for case_prefix, (format_name, format_id) in format_contracts.items():
+            for scenario_name, scenario_ids in scenario_features.items():
+                case_id = f"{case_prefix}-{scenario_name}"
+                with self.subTest(case_id=case_id):
+                    case = cases_by_id[case_id]
+                    self.assertEqual(
+                        case["feature_ids"], sorted({format_id} | scenario_ids)
+                    )
+                    expected_differences = (
+                        ["DEF-004"]
+                        if scenario_name == "replacement-frozen-duplicate"
+                        else []
+                    )
+                    self.assertEqual(case["difference_ids"], expected_differences)
+                    self.assertEqual(case["platform"], "portable")
+                    self.assertEqual(case["observed"]["kind"], "json-object")
+                    self.assertEqual(case["observed"]["format"], format_name)
+                    self.assertEqual(case["observed"]["framing"], "compact-lf")
+
+        standard_fields = {
+            "json": ("timestamp", "level", "module", "text"),
+            "json-yadeploy": ("@timestamp", "levelStr", "module", "message"),
+        }
+        typed_field_keys = [
+            "escaped-key\"\t\x00\\",
+            "signed",
+            "unsigned",
+            "float",
+            "double",
+            "bool-true",
+            "bool-false",
+            "null",
+            "nested",
+        ]
+        expected_typed_values = {
+            "escaped-key\"\t\x00\\": {
+                "kind": "string",
+                "value": "Привет🌍\t\r\n\x00\\",
+            },
+            "signed": {"kind": "number", "value": "-42"},
+            "unsigned": {
+                "kind": "number",
+                "value": "18446744073709551615",
+            },
+            "float": {"kind": "number", "value": "1.5"},
+            "double": {"kind": "number", "value": "-2.25"},
+            "bool-true": {"kind": "boolean", "value": True},
+            "bool-false": {"kind": "boolean", "value": False},
+            "null": {"kind": "null"},
+        }
+        expected_collision_members = {
+            "json": [
+                ("timestamp", "2000-01-02T03:04:05.123456Z"),
+                ("level", "INFO"),
+                ("module", "BaselineJsonProbe ( <source-path>:321 )"),
+                ("first", "one"),
+                ("replace", "new"),
+                ("last", "three"),
+                ("frozen", "keep"),
+                ("duplicate", "one"),
+                ("duplicate", "two"),
+                ("timestamp", "shadow-timestamp"),
+                ("level", "shadow-level"),
+                ("text", "shadow-text"),
+                ("text", "collisions"),
+            ],
+            "json-yadeploy": [
+                ("@timestamp", "2000-01-02T03:04:05.123456Z"),
+                ("levelStr", "INFO"),
+                ("module", "BaselineJsonProbe ( <source-path>:321 )"),
+                ("first", "one"),
+                ("replace", "new"),
+                ("last", "three"),
+                ("frozen", "keep"),
+                ("@timestamp", "shadow-timestamp"),
+                ("levelStr", "shadow-level"),
+                ("message", "shadow-message"),
+                ("duplicate", "one"),
+                ("duplicate", "two"),
+                ("message", "collisions"),
+            ],
+        }
+        for case_prefix in format_contracts:
+            case = cases_by_id[f"{case_prefix}-typed-nested-escaping"]
+            members = case["observed"]["members"]
+            prefix_fields = list(standard_fields[case_prefix][:3])
+            message_field = standard_fields[case_prefix][3]
+            self.assertEqual(
+                [member["key"] for member in members],
+                prefix_fields + typed_field_keys + [message_field],
+            )
+            self.assertEqual(
+                [member["value"]["value"] for member in members[:3]],
+                [
+                    "2000-01-02T03:04:05.123456Z",
+                    "INFO",
+                    "BaselineJsonProbe ( <source-path>:321 )",
+                ],
+            )
+            members_by_key = {member["key"]: member for member in members}
+            for key, expected_value in expected_typed_values.items():
+                self.assertEqual(members_by_key[key]["value"], expected_value)
+            self.assertEqual(
+                members_by_key[message_field]["value"],
+                {
+                    "kind": "string",
+                    "value": "message Привет🌍 \"\t\r\n\x00\\",
+                },
+            )
+            nested = members_by_key["nested"]["value"]
+            self.assertEqual(nested["kind"], "object")
+            self.assertEqual(
+                [member["key"] for member in nested["members"]],
+                ["a", "obj", "z"],
+            )
+            self.assertEqual(
+                nested["members"][0]["value"]["items"],
+                [
+                    {"kind": "string", "value": "x"},
+                    {"kind": "boolean", "value": False},
+                    {"kind": "null"},
+                ],
+            )
+            self.assertEqual(
+                [
+                    member["key"]
+                    for member in nested["members"][1]["value"]["members"]
+                ],
+                ["a", "b"],
+            )
+
+            collision_case = cases_by_id[
+                f"{case_prefix}-replacement-frozen-duplicate"
+            ]
+            actual_collision_members = [
+                (member["key"], member["value"]["value"])
+                for member in collision_case["observed"]["members"]
+            ]
+            self.assertEqual(
+                actual_collision_members, expected_collision_members[case_prefix]
+            )
+
     def run_validation_root(
         self, corpus_root: Path, manifest: Path = CAPABILITY_MANIFEST
     ) -> subprocess.CompletedProcess[str]:
@@ -345,7 +563,11 @@ class BaselineCorpusTest(unittest.TestCase):
         )
 
     def test_validate_accepts_known_corpus_without_external_checkout(self):
-        for capture_tool in ("ulog-baseline-corpus/1", "ulog-baseline-corpus/2"):
+        for capture_tool in (
+            "ulog-baseline-corpus/1",
+            "ulog-baseline-corpus/2",
+            "ulog-baseline-corpus/3",
+        ):
             with self.subTest(capture_tool=capture_tool):
                 corpus = json.loads(json.dumps(KNOWN_CORPUS))
                 corpus["provenance"]["capture_tool"] = capture_tool
@@ -483,6 +705,17 @@ class BaselineCorpusTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn(diagnostic, result.stderr)
 
+    def test_validate_rejects_non_string_format_without_traceback(self):
+        corpus = json.loads(json.dumps(KNOWN_CORPUS))
+        corpus["cases"][0]["observed"]["format"] = []
+        recalculate_integrity(corpus)
+        with tempfile.TemporaryDirectory() as temp_directory:
+            result = self.run_validation(corpus, Path(temp_directory))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("observed format must be one of", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_validate_rejects_cr_and_multiple_log_lines(self):
         invalid_values = (
             "tskv\ttext=test\r\n",
@@ -503,7 +736,7 @@ class BaselineCorpusTest(unittest.TestCase):
         corpus = json.loads(json.dumps(KNOWN_CORPUS))
         corpus["cases"][0] = {
             "id": "json-structured",
-            "feature_ids": ["FMT-005"],
+            "feature_ids": ["DST-001"],
             "difference_ids": [],
             "platform": "portable",
             "observed": {
@@ -516,6 +749,239 @@ class BaselineCorpusTest(unittest.TestCase):
             result = self.run_validation(corpus, Path(temp_directory))
 
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_validate_rejects_raw_json_log_line_in_committed_corpus(self):
+        corpus = json.loads(json.dumps(KNOWN_CORPUS))
+        corpus["cases"][0] = {
+            "id": "json-raw-observation",
+            "feature_ids": ["API-010", "FMT-005"],
+            "difference_ids": [],
+            "platform": "portable",
+            "observed": {
+                "kind": "json-line",
+                "format": "json",
+                "value": '{}\n',
+            },
+        }
+        recalculate_integrity(corpus)
+        with tempfile.TemporaryDirectory() as temp_directory:
+            result = self.run_validation(corpus, Path(temp_directory))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("recapture", result.stderr.lower())
+
+    def test_validate_rejects_json_object_without_standard_fields(self):
+        corpus = json.loads(json.dumps(KNOWN_CORPUS))
+        corpus["cases"][0] = {
+            "id": "json-missing-standard-fields",
+            "feature_ids": ["API-010", "FMT-005"],
+            "difference_ids": [],
+            "platform": "portable",
+            "observed": {
+                "kind": "json-object",
+                "format": "json",
+                "framing": "compact-lf",
+                "members": [],
+            },
+        }
+        recalculate_integrity(corpus)
+        with tempfile.TemporaryDirectory() as temp_directory:
+            result = self.run_validation(corpus, Path(temp_directory))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("missing standard fields", result.stderr)
+
+    def test_capture_rejects_malformed_json_log_line(self):
+        probe = make_probe_document(feature_ids=["API-010", "FMT-005"])
+        probe["cases"][0]["id"] = "json-malformed"
+        probe["cases"][0]["observed"] = {
+            "kind": "json-line",
+            "format": "json",
+            "value": '{"timestamp":}\n',
+        }
+
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            result = self.run_capture(
+                source_path,
+                output_path,
+                make_fake_git(temp_path, BASELINE_REVISION),
+                probe_program(probe),
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not valid JSON", result.stderr)
+
+    def test_capture_rejects_non_string_format_without_traceback(self):
+        probe = make_probe_document()
+        probe["cases"][0]["observed"]["format"] = []
+
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            result = self.run_capture(
+                source_path,
+                temp_path / "corpus.json",
+                make_fake_git(temp_path, BASELINE_REVISION),
+                probe_program(probe),
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("observed format must be one of", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_capture_normalizes_json_line_into_typed_ordered_members(self):
+        timestamp = "2026-08-24T09:30:12.123456Z"
+        source_path_value = "/baseline/tools/baseline_json_probe/main.cpp"
+        raw_line = (
+            f'{{"timestamp":"{timestamp}","level":"INFO",'
+            f'"module":"BaselineJsonProbe ( {source_path_value}:321 )",'
+            '"escaped-key\\"\\t\\u0000\\\\":"Привет🌍\\t\\r\\n\\u0000\\\\",'
+            '"signed":-42,"unsigned":18446744073709551615,"float":1.5,'
+            '"double":-2.25,"bool-true":true,"bool-false":false,"null":null,'
+            '"nested":{"z":1,"a":["x",false,null],'
+            '"obj":{"b":2,"a":true}},"duplicate":"one",'
+            '"duplicate":"two","text":"message"}\n'
+        )
+        probe = make_probe_document(
+            feature_ids=["API-010", "FMT-005", "VAL-001", "VAL-006", "VAL-008"]
+        )
+        probe_case = probe["cases"][0]
+        probe_case["id"] = "json-typed-nested-escaping"
+        probe_case["difference_ids"] = ["DEF-004"]
+        probe_case["observed"] = {
+            "kind": "json-line",
+            "format": "json",
+            "value": raw_line,
+        }
+        probe_case["normalization"] = [
+            {
+                "kind": "timestamp_utc",
+                "path": "/value",
+                "value": timestamp,
+                "occurrence": 0,
+            },
+            {
+                "kind": "source_path",
+                "path": "/value",
+                "value": source_path_value,
+                "occurrence": 0,
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            result = self.run_capture(
+                source_path,
+                output_path,
+                make_fake_git(temp_path, BASELINE_REVISION),
+                probe_program(probe),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            corpus = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(corpus["provenance"]["capture_tool"], "ulog-baseline-corpus/3")
+        observed = corpus["cases"][0]["observed"]
+        self.assertEqual(
+            observed,
+            {
+                "kind": "json-object",
+                "format": "json",
+                "framing": "compact-lf",
+                "members": [
+                    {
+                        "key": "timestamp",
+                        "value": {
+                            "kind": "string",
+                            "value": "2000-01-02T03:04:05.123456Z",
+                        },
+                    },
+                    {"key": "level", "value": {"kind": "string", "value": "INFO"}},
+                    {
+                        "key": "module",
+                        "value": {
+                            "kind": "string",
+                            "value": "BaselineJsonProbe ( <source-path>:321 )",
+                        },
+                    },
+                    {
+                        "key": "escaped-key\"\t\x00\\",
+                        "value": {
+                            "kind": "string",
+                            "value": "Привет🌍\t\r\n\x00\\",
+                        },
+                    },
+                    {"key": "signed", "value": {"kind": "number", "value": "-42"}},
+                    {
+                        "key": "unsigned",
+                        "value": {
+                            "kind": "number",
+                            "value": "18446744073709551615",
+                        },
+                    },
+                    {"key": "float", "value": {"kind": "number", "value": "1.5"}},
+                    {"key": "double", "value": {"kind": "number", "value": "-2.25"}},
+                    {"key": "bool-true", "value": {"kind": "boolean", "value": True}},
+                    {"key": "bool-false", "value": {"kind": "boolean", "value": False}},
+                    {"key": "null", "value": {"kind": "null"}},
+                    {
+                        "key": "nested",
+                        "value": {
+                            "kind": "object",
+                            "members": [
+                                {
+                                    "key": "a",
+                                    "value": {
+                                        "kind": "array",
+                                        "items": [
+                                            {"kind": "string", "value": "x"},
+                                            {"kind": "boolean", "value": False},
+                                            {"kind": "null"},
+                                        ],
+                                    },
+                                },
+                                {
+                                    "key": "obj",
+                                    "value": {
+                                        "kind": "object",
+                                        "members": [
+                                            {
+                                                "key": "a",
+                                                "value": {
+                                                    "kind": "boolean",
+                                                    "value": True,
+                                                },
+                                            },
+                                            {
+                                                "key": "b",
+                                                "value": {
+                                                    "kind": "number",
+                                                    "value": "2",
+                                                },
+                                            },
+                                        ],
+                                    },
+                                },
+                                {
+                                    "key": "z",
+                                    "value": {"kind": "number", "value": "1"},
+                                },
+                            ],
+                        },
+                    },
+                    {"key": "duplicate", "value": {"kind": "string", "value": "one"}},
+                    {"key": "duplicate", "value": {"kind": "string", "value": "two"}},
+                    {"key": "text", "value": {"kind": "string", "value": "message"}},
+                ],
+            },
+        )
 
     def test_validate_rejects_duplicate_json_keys(self):
         contents = json.dumps(KNOWN_CORPUS, ensure_ascii=False, indent=2)
@@ -751,7 +1217,7 @@ class BaselineCorpusTest(unittest.TestCase):
             corpus = json.loads(output_path.read_text(encoding="utf-8"))
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(corpus["provenance"]["capture_tool"], "ulog-baseline-corpus/2")
+        self.assertEqual(corpus["provenance"]["capture_tool"], "ulog-baseline-corpus/3")
         self.assertIn(
             "timestamp=2000-01-02T03:04:05.123456",
             corpus["cases"][0]["observed"]["value"],
@@ -1130,7 +1596,7 @@ class BaselineCorpusTest(unittest.TestCase):
         self.assertEqual(
             corpus["provenance"],
             {
-                "capture_tool": "ulog-baseline-corpus/2",
+                "capture_tool": "ulog-baseline-corpus/3",
                 "baseline_document": "docs/migration/baseline.md",
                 "normalization_profile": "ulog-baseline-normalization/1",
                 "repository": "user" + "ver",

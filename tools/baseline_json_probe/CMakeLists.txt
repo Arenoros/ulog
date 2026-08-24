@@ -7,11 +7,11 @@ if(WIN32)
   )
 endif()
 
-project(ulog-baseline-text-probe LANGUAGES CXX)
+project(ulog-baseline-json-probe LANGUAGES CXX)
 
 include("${CMAKE_CURRENT_LIST_DIR}/../baseline_probe/UlogBaselineProbe.cmake")
 ulog_add_baseline_probe(
-  TARGET ulog-baseline-text-probe
+  TARGET ulog-baseline-json-probe
   SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}"
-  DESCRIPTION text
+  DESCRIPTION JSON
 )

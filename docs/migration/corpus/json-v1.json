@@ -1,0 +1,557 @@
+{
+  "cases": [
+    {
+      "difference_ids": [
+        "DEF-004"
+      ],
+      "feature_ids": [
+        "API-010",
+        "FMT-005",
+        "VAL-001",
+        "VAL-006",
+        "VAL-007"
+      ],
+      "id": "json-replacement-frozen-duplicate",
+      "observed": {
+        "format": "json",
+        "framing": "compact-lf",
+        "kind": "json-object",
+        "members": [
+          {
+            "key": "timestamp",
+            "value": {
+              "kind": "string",
+              "value": "2000-01-02T03:04:05.123456Z"
+            }
+          },
+          {
+            "key": "level",
+            "value": {
+              "kind": "string",
+              "value": "INFO"
+            }
+          },
+          {
+            "key": "module",
+            "value": {
+              "kind": "string",
+              "value": "BaselineJsonProbe ( <source-path>:321 )"
+            }
+          },
+          {
+            "key": "first",
+            "value": {
+              "kind": "string",
+              "value": "one"
+            }
+          },
+          {
+            "key": "replace",
+            "value": {
+              "kind": "string",
+              "value": "new"
+            }
+          },
+          {
+            "key": "last",
+            "value": {
+              "kind": "string",
+              "value": "three"
+            }
+          },
+          {
+            "key": "frozen",
+            "value": {
+              "kind": "string",
+              "value": "keep"
+            }
+          },
+          {
+            "key": "duplicate",
+            "value": {
+              "kind": "string",
+              "value": "one"
+            }
+          },
+          {
+            "key": "duplicate",
+            "value": {
+              "kind": "string",
+              "value": "two"
+            }
+          },
+          {
+            "key": "timestamp",
+            "value": {
+              "kind": "string",
+              "value": "shadow-timestamp"
+            }
+          },
+          {
+            "key": "level",
+            "value": {
+              "kind": "string",
+              "value": "shadow-level"
+            }
+          },
+          {
+            "key": "text",
+            "value": {
+              "kind": "string",
+              "value": "shadow-text"
+            }
+          },
+          {
+            "key": "text",
+            "value": {
+              "kind": "string",
+              "value": "collisions"
+            }
+          }
+        ]
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "API-010",
+        "FMT-005",
+        "VAL-001",
+        "VAL-006",
+        "VAL-008"
+      ],
+      "id": "json-typed-nested-escaping",
+      "observed": {
+        "format": "json",
+        "framing": "compact-lf",
+        "kind": "json-object",
+        "members": [
+          {
+            "key": "timestamp",
+            "value": {
+              "kind": "string",
+              "value": "2000-01-02T03:04:05.123456Z"
+            }
+          },
+          {
+            "key": "level",
+            "value": {
+              "kind": "string",
+              "value": "INFO"
+            }
+          },
+          {
+            "key": "module",
+            "value": {
+              "kind": "string",
+              "value": "BaselineJsonProbe ( <source-path>:321 )"
+            }
+          },
+          {
+            "key": "escaped-key\"\t\u0000\\",
+            "value": {
+              "kind": "string",
+              "value": "Привет🌍\t\r\n\u0000\\"
+            }
+          },
+          {
+            "key": "signed",
+            "value": {
+              "kind": "number",
+              "value": "-42"
+            }
+          },
+          {
+            "key": "unsigned",
+            "value": {
+              "kind": "number",
+              "value": "18446744073709551615"
+            }
+          },
+          {
+            "key": "float",
+            "value": {
+              "kind": "number",
+              "value": "1.5"
+            }
+          },
+          {
+            "key": "double",
+            "value": {
+              "kind": "number",
+              "value": "-2.25"
+            }
+          },
+          {
+            "key": "bool-true",
+            "value": {
+              "kind": "boolean",
+              "value": true
+            }
+          },
+          {
+            "key": "bool-false",
+            "value": {
+              "kind": "boolean",
+              "value": false
+            }
+          },
+          {
+            "key": "null",
+            "value": {
+              "kind": "null"
+            }
+          },
+          {
+            "key": "nested",
+            "value": {
+              "kind": "object",
+              "members": [
+                {
+                  "key": "a",
+                  "value": {
+                    "items": [
+                      {
+                        "kind": "string",
+                        "value": "x"
+                      },
+                      {
+                        "kind": "boolean",
+                        "value": false
+                      },
+                      {
+                        "kind": "null"
+                      }
+                    ],
+                    "kind": "array"
+                  }
+                },
+                {
+                  "key": "obj",
+                  "value": {
+                    "kind": "object",
+                    "members": [
+                      {
+                        "key": "a",
+                        "value": {
+                          "kind": "boolean",
+                          "value": true
+                        }
+                      },
+                      {
+                        "key": "b",
+                        "value": {
+                          "kind": "number",
+                          "value": "2"
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "z",
+                  "value": {
+                    "kind": "number",
+                    "value": "1"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "text",
+            "value": {
+              "kind": "string",
+              "value": "message Привет🌍 \"\t\r\n\u0000\\"
+            }
+          }
+        ]
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [
+        "DEF-004"
+      ],
+      "feature_ids": [
+        "API-010",
+        "FMT-006",
+        "VAL-001",
+        "VAL-006",
+        "VAL-007"
+      ],
+      "id": "json-yadeploy-replacement-frozen-duplicate",
+      "observed": {
+        "format": "json_yadeploy",
+        "framing": "compact-lf",
+        "kind": "json-object",
+        "members": [
+          {
+            "key": "@timestamp",
+            "value": {
+              "kind": "string",
+              "value": "2000-01-02T03:04:05.123456Z"
+            }
+          },
+          {
+            "key": "levelStr",
+            "value": {
+              "kind": "string",
+              "value": "INFO"
+            }
+          },
+          {
+            "key": "module",
+            "value": {
+              "kind": "string",
+              "value": "BaselineJsonProbe ( <source-path>:321 )"
+            }
+          },
+          {
+            "key": "first",
+            "value": {
+              "kind": "string",
+              "value": "one"
+            }
+          },
+          {
+            "key": "replace",
+            "value": {
+              "kind": "string",
+              "value": "new"
+            }
+          },
+          {
+            "key": "last",
+            "value": {
+              "kind": "string",
+              "value": "three"
+            }
+          },
+          {
+            "key": "frozen",
+            "value": {
+              "kind": "string",
+              "value": "keep"
+            }
+          },
+          {
+            "key": "@timestamp",
+            "value": {
+              "kind": "string",
+              "value": "shadow-timestamp"
+            }
+          },
+          {
+            "key": "levelStr",
+            "value": {
+              "kind": "string",
+              "value": "shadow-level"
+            }
+          },
+          {
+            "key": "message",
+            "value": {
+              "kind": "string",
+              "value": "shadow-message"
+            }
+          },
+          {
+            "key": "duplicate",
+            "value": {
+              "kind": "string",
+              "value": "one"
+            }
+          },
+          {
+            "key": "duplicate",
+            "value": {
+              "kind": "string",
+              "value": "two"
+            }
+          },
+          {
+            "key": "message",
+            "value": {
+              "kind": "string",
+              "value": "collisions"
+            }
+          }
+        ]
+      },
+      "platform": "portable"
+    },
+    {
+      "difference_ids": [],
+      "feature_ids": [
+        "API-010",
+        "FMT-006",
+        "VAL-001",
+        "VAL-006",
+        "VAL-008"
+      ],
+      "id": "json-yadeploy-typed-nested-escaping",
+      "observed": {
+        "format": "json_yadeploy",
+        "framing": "compact-lf",
+        "kind": "json-object",
+        "members": [
+          {
+            "key": "@timestamp",
+            "value": {
+              "kind": "string",
+              "value": "2000-01-02T03:04:05.123456Z"
+            }
+          },
+          {
+            "key": "levelStr",
+            "value": {
+              "kind": "string",
+              "value": "INFO"
+            }
+          },
+          {
+            "key": "module",
+            "value": {
+              "kind": "string",
+              "value": "BaselineJsonProbe ( <source-path>:321 )"
+            }
+          },
+          {
+            "key": "escaped-key\"\t\u0000\\",
+            "value": {
+              "kind": "string",
+              "value": "Привет🌍\t\r\n\u0000\\"
+            }
+          },
+          {
+            "key": "signed",
+            "value": {
+              "kind": "number",
+              "value": "-42"
+            }
+          },
+          {
+            "key": "unsigned",
+            "value": {
+              "kind": "number",
+              "value": "18446744073709551615"
+            }
+          },
+          {
+            "key": "float",
+            "value": {
+              "kind": "number",
+              "value": "1.5"
+            }
+          },
+          {
+            "key": "double",
+            "value": {
+              "kind": "number",
+              "value": "-2.25"
+            }
+          },
+          {
+            "key": "bool-true",
+            "value": {
+              "kind": "boolean",
+              "value": true
+            }
+          },
+          {
+            "key": "bool-false",
+            "value": {
+              "kind": "boolean",
+              "value": false
+            }
+          },
+          {
+            "key": "null",
+            "value": {
+              "kind": "null"
+            }
+          },
+          {
+            "key": "nested",
+            "value": {
+              "kind": "object",
+              "members": [
+                {
+                  "key": "a",
+                  "value": {
+                    "items": [
+                      {
+                        "kind": "string",
+                        "value": "x"
+                      },
+                      {
+                        "kind": "boolean",
+                        "value": false
+                      },
+                      {
+                        "kind": "null"
+                      }
+                    ],
+                    "kind": "array"
+                  }
+                },
+                {
+                  "key": "obj",
+                  "value": {
+                    "kind": "object",
+                    "members": [
+                      {
+                        "key": "a",
+                        "value": {
+                          "kind": "boolean",
+                          "value": true
+                        }
+                      },
+                      {
+                        "key": "b",
+                        "value": {
+                          "kind": "number",
+                          "value": "2"
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "z",
+                  "value": {
+                    "kind": "number",
+                    "value": "1"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "message",
+            "value": {
+              "kind": "string",
+              "value": "message Привет🌍 \"\t\r\n\u0000\\"
+            }
+          }
+        ]
+      },
+      "platform": "portable"
+    }
+  ],
+  "integrity": {
+    "algorithm": "sha256",
+    "canonicalization": "ulog-json-v1",
+    "value": "02297345f1f89329c05317b72b1e5c86a53c9e3e521d7835192e9cd1b7c8c768"
+  },
+  "provenance": {
+    "baseline_document": "docs/migration/baseline.md",
+    "capture_tool": "ulog-baseline-corpus/3",
+    "normalization_profile": "ulog-baseline-normalization/1",
+    "repository": "userver",
+    "revision": "72e07f717ae46a17822776df21ebd73dbc4ce728"
+  },
+  "schema_version": 1
+}

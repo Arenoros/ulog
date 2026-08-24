@@ -20,9 +20,10 @@ CAPABILITY_MANIFEST_PATH = (
 )
 CORPUS_SCHEMA_VERSION = 1
 PROBE_SCHEMA_VERSION = 1
-CAPTURE_TOOL_VERSION = "ulog-baseline-corpus/2"
+CAPTURE_TOOL_VERSION = "ulog-baseline-corpus/3"
 SUPPORTED_CAPTURE_TOOL_VERSIONS = {
     "ulog-baseline-corpus/1",
+    "ulog-baseline-corpus/2",
     CAPTURE_TOOL_VERSION,
 }
 NORMALIZATION_VERSION = "ulog-baseline-normalization/1"
@@ -43,6 +44,17 @@ TEXT_FORMAT_FEATURE_IDS = {
     "ltsv": "FMT-003",
     "raw": "FMT-004",
 }
+JSON_FORMAT_FEATURE_IDS = {
+    "json": "FMT-005",
+    "json_yadeploy": "FMT-006",
+}
+JSON_STANDARD_FIELDS = {
+    "json": ("timestamp", "level", "module", "text"),
+    "json_yadeploy": ("@timestamp", "levelStr", "module", "message"),
+}
+JSON_NUMBER_PATTERN = re.compile(
+    r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"
+)
 LOCAL_TIMESTAMP_PATTERN = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}$"
 )
@@ -160,6 +172,14 @@ def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+class JsonObjectMembers(list[tuple[str, object]]):
+    pass
+
+
+class JsonNumber(str):
+    pass
+
+
 def parse_strict_json(contents: str) -> object:
     return json.loads(
         contents,
@@ -167,6 +187,132 @@ def parse_strict_json(contents: str) -> object:
         parse_constant=reject_nonstandard_json,
         parse_float=reject_floating_number,
     )
+
+
+def parse_json_log_line(contents: str) -> object:
+    return json.loads(
+        contents,
+        object_pairs_hook=JsonObjectMembers,
+        parse_constant=reject_nonstandard_json,
+        parse_float=JsonNumber,
+        parse_int=JsonNumber,
+    )
+
+
+def observed_has_format(observed: object, formats: dict[str, str]) -> bool:
+    if not isinstance(observed, dict):
+        return False
+    observed_format = observed.get("format")
+    return isinstance(observed_format, str) and observed_format in formats
+
+
+def validate_json_line_framing(value: object, case_id: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("{")
+        or not value.endswith("}\n")
+        or value.count("\n") != 1
+        or "\r" in value
+    ):
+        raise RuntimeError(
+            f"Probe case '{case_id}' observed value must be one compact "
+            "newline-terminated JSON object with an LF line ending."
+        )
+
+    in_string = False
+    escaped = False
+    for character in value[:-1]:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character.isspace():
+            raise RuntimeError(
+                f"Probe case '{case_id}' JSON log line contains whitespace outside "
+                "a string. Configure the compact JSON formatter and retry."
+            )
+    return value
+
+
+def make_json_value_node(
+    value: object, *, canonicalize_object: bool
+) -> dict[str, object]:
+    if isinstance(value, JsonNumber):
+        return {"kind": "number", "value": str(value)}
+    if isinstance(value, str):
+        return {"kind": "string", "value": value}
+    if type(value) is bool:
+        return {"kind": "boolean", "value": value}
+    if value is None:
+        return {"kind": "null"}
+    if isinstance(value, JsonObjectMembers):
+        members = [
+            {
+                "key": key,
+                "value": make_json_value_node(item, canonicalize_object=True),
+            }
+            for key, item in value
+        ]
+        if canonicalize_object:
+            members.sort(key=lambda member: str(member["key"]))
+        return {"kind": "object", "members": members}
+    if isinstance(value, list):
+        return {
+            "kind": "array",
+            "items": [
+                make_json_value_node(item, canonicalize_object=True) for item in value
+            ],
+        }
+    raise RuntimeError(f"Unsupported parsed JSON value type {type(value).__name__}.")
+
+
+def normalize_json_observation(
+    observed: dict[str, object], case_id: str
+) -> dict[str, object]:
+    if set(observed) != {"kind", "format", "value"}:
+        raise RuntimeError(
+            f"Probe case '{case_id}' JSON observed must contain exactly kind, "
+            "format, and value."
+        )
+    if observed["kind"] != "json-line":
+        raise RuntimeError(
+            f"Probe case '{case_id}' JSON observed kind must be 'json-line'; "
+            f"found {observed['kind']!r}."
+        )
+    observed_format = observed["format"]
+    if (
+        not isinstance(observed_format, str)
+        or observed_format not in JSON_FORMAT_FEATURE_IDS
+    ):
+        supported = ", ".join(sorted(JSON_FORMAT_FEATURE_IDS))
+        raise RuntimeError(
+            f"Probe case '{case_id}' JSON observed format must be one of: {supported}."
+        )
+
+    value = validate_json_line_framing(observed["value"], case_id)
+    try:
+        parsed_line = parse_json_log_line(value)
+    except (json.JSONDecodeError, ValueError) as error:
+        raise RuntimeError(
+            f"Probe case '{case_id}' observed value is not valid JSON: {error}."
+        ) from error
+    if not isinstance(parsed_line, JsonObjectMembers):
+        raise RuntimeError(
+            f"Probe case '{case_id}' JSON log line must contain one object."
+        )
+
+    structured = make_json_value_node(parsed_line, canonicalize_object=False)
+    return {
+        "kind": "json-object",
+        "format": observed_format,
+        "framing": "compact-lf",
+        "members": structured["members"],
+    }
 
 
 def load_probe_output(output: str) -> dict[str, object]:
@@ -298,6 +444,197 @@ def validate_id_list(
         )
 
 
+def validate_json_value_node(value: object, case_id: str, path: str) -> None:
+    if not isinstance(value, dict) or not isinstance(value.get("kind"), str):
+        raise RuntimeError(
+            f"Corpus case '{case_id}' JSON value at {path} must be a tagged object."
+        )
+
+    kind = value["kind"]
+    if kind == "string":
+        if set(value) != {"kind", "value"} or not isinstance(value["value"], str):
+            raise RuntimeError(
+                f"Corpus case '{case_id}' JSON string at {path} must contain "
+                "exactly kind and a string value."
+            )
+        return
+    if kind == "number":
+        if (
+            set(value) != {"kind", "value"}
+            or not isinstance(value["value"], str)
+            or not JSON_NUMBER_PATTERN.fullmatch(value["value"])
+        ):
+            raise RuntimeError(
+                f"Corpus case '{case_id}' JSON number at {path} must preserve one "
+                "valid JSON number lexeme as a string."
+            )
+        return
+    if kind == "boolean":
+        if set(value) != {"kind", "value"} or type(value["value"]) is not bool:
+            raise RuntimeError(
+                f"Corpus case '{case_id}' JSON boolean at {path} must contain "
+                "exactly kind and a boolean value."
+            )
+        return
+    if kind == "null":
+        if set(value) != {"kind"}:
+            raise RuntimeError(
+                f"Corpus case '{case_id}' JSON null at {path} must contain only kind."
+            )
+        return
+    if kind == "array":
+        if set(value) != {"kind", "items"} or not isinstance(value["items"], list):
+            raise RuntimeError(
+                f"Corpus case '{case_id}' JSON array at {path} must contain exactly "
+                "kind and items."
+            )
+        for index, item in enumerate(value["items"]):
+            validate_json_value_node(item, case_id, f"{path}/items/{index}")
+        return
+    if kind == "object":
+        if set(value) != {"kind", "members"}:
+            raise RuntimeError(
+                f"Corpus case '{case_id}' JSON object at {path} must contain exactly "
+                "kind and members."
+            )
+        validate_json_members(value["members"], case_id, f"{path}/members", nested=True)
+        return
+    raise RuntimeError(
+        f"Corpus case '{case_id}' JSON value at {path} has unknown kind {kind!r}."
+    )
+
+
+def validate_json_members(
+    members: object, case_id: str, path: str, *, nested: bool
+) -> list[str]:
+    if not isinstance(members, list):
+        raise RuntimeError(
+            f"Corpus case '{case_id}' JSON members at {path} must be a list."
+        )
+    keys = []
+    for index, member in enumerate(members):
+        member_path = f"{path}/{index}"
+        if (
+            not isinstance(member, dict)
+            or set(member) != {"key", "value"}
+            or not isinstance(member["key"], str)
+        ):
+            raise RuntimeError(
+                f"Corpus case '{case_id}' JSON member at {member_path} must contain "
+                "exactly a string key and tagged value."
+            )
+        keys.append(member["key"])
+        validate_json_value_node(member["value"], case_id, f"{member_path}/value")
+    if nested and keys != sorted(keys):
+        raise RuntimeError(
+            f"Corpus case '{case_id}' nested JSON object members at {path} must be "
+            "sorted by key. Recapture the corpus instead of editing it."
+        )
+    return keys
+
+
+def require_json_string_member(
+    member: dict[str, object], case_id: str, field_name: str
+) -> str:
+    value = member["value"]
+    if (
+        not isinstance(value, dict)
+        or value.get("kind") != "string"
+        or not isinstance(value.get("value"), str)
+    ):
+        raise RuntimeError(
+            f"Corpus case '{case_id}' standard JSON field '{field_name}' must be a string."
+        )
+    return value["value"]
+
+
+def validate_json_observation(
+    case_id: str,
+    observed: object,
+    feature_ids: list[str],
+    difference_ids: list[str],
+    claimed_format_ids: set[str],
+) -> None:
+    expected_observed_keys = {"kind", "format", "framing", "members"}
+    if not isinstance(observed, dict) or set(observed) != expected_observed_keys:
+        raise RuntimeError(
+            f"Corpus case '{case_id}' committed JSON observed must contain exactly "
+            "kind, format, framing, and members; recapture the raw probe output."
+        )
+    if observed["kind"] != "json-object":
+        raise RuntimeError(
+            f"Corpus case '{case_id}' committed JSON observed kind must be "
+            f"'json-object'; found {observed['kind']!r}. Recapture the corpus."
+        )
+    observed_format = observed["format"]
+    if (
+        not isinstance(observed_format, str)
+        or observed_format not in JSON_FORMAT_FEATURE_IDS
+    ):
+        supported = ", ".join(sorted(JSON_FORMAT_FEATURE_IDS))
+        raise RuntimeError(
+            f"Corpus case '{case_id}' JSON observed format must be one of: {supported}."
+        )
+    expected_format_id = JSON_FORMAT_FEATURE_IDS[observed_format]
+    actual_format_ids = sorted(claimed_format_ids)
+    if actual_format_ids != [expected_format_id]:
+        raise RuntimeError(
+            f"Corpus case '{case_id}' format '{observed_format}' must reference "
+            f"exactly {expected_format_id} among the JSON format IDs; found "
+            f"{actual_format_ids!r}."
+        )
+    if "API-010" not in feature_ids:
+        raise RuntimeError(
+            f"Corpus case '{case_id}' JSON observation must reference API-010 for "
+            "its normalized UTC timestamp."
+        )
+    if observed["framing"] != "compact-lf":
+        raise RuntimeError(
+            f"Corpus case '{case_id}' JSON framing must be 'compact-lf'."
+        )
+
+    members = observed["members"]
+    keys = validate_json_members(members, case_id, "/observed/members", nested=False)
+    standard_fields = JSON_STANDARD_FIELDS[observed_format]
+    if (
+        len(keys) < 4
+        or tuple(keys[:3]) != standard_fields[:3]
+        or keys[-1] != standard_fields[3]
+    ):
+        raise RuntimeError(
+            f"Corpus case '{case_id}' is missing standard fields in their required "
+            f"order: {', '.join(standard_fields)}."
+        )
+
+    timestamp = require_json_string_member(members[0], case_id, standard_fields[0])
+    if timestamp != NORMALIZATION_REPLACEMENTS["timestamp_utc"]:
+        raise RuntimeError(
+            f"Corpus case '{case_id}' standard JSON timestamp must use the "
+            "timestamp_utc normalization placeholder. Recapture the corpus."
+        )
+    require_json_string_member(members[1], case_id, standard_fields[1])
+    module = require_json_string_member(members[2], case_id, "module")
+    if NORMALIZATION_REPLACEMENTS["source_path"] not in module:
+        raise RuntimeError(
+            f"Corpus case '{case_id}' standard JSON module must contain the "
+            "normalized source path. Recapture the corpus."
+        )
+    require_json_string_member(members[-1], case_id, standard_fields[3])
+
+    has_duplicate_keys = len(keys) != len(set(keys))
+    declares_duplicate_defect = "DEF-004" in difference_ids
+    if has_duplicate_keys and not declares_duplicate_defect:
+        raise RuntimeError(
+            f"Corpus case '{case_id}' contains duplicate JSON keys but does not "
+            "reference DEF-004 in difference_ids."
+        )
+    if declares_duplicate_defect and not has_duplicate_keys:
+        raise RuntimeError(
+            f"Corpus case '{case_id}' references DEF-004 but contains no duplicate "
+            "JSON keys. Recapture or correct the feature mapping."
+        )
+
+
 def validate_committed_case(raw_case: object, manifest_ids: set[str]) -> str:
     if not isinstance(raw_case, dict):
         raise RuntimeError("Every committed corpus case must be a JSON object.")
@@ -345,12 +682,31 @@ def validate_committed_case(raw_case: object, manifest_ids: set[str]) -> str:
     observed = raw_case["observed"]
     text_format_ids = set(TEXT_FORMAT_FEATURE_IDS.values())
     claimed_text_format_ids = set(raw_case["feature_ids"]) & text_format_ids
-    is_text_observation = bool(claimed_text_format_ids) or (
-        isinstance(observed, dict) and observed.get("format") in TEXT_FORMAT_FEATURE_IDS
+    is_text_observation = bool(claimed_text_format_ids) or observed_has_format(
+        observed, TEXT_FORMAT_FEATURE_IDS
     )
-    if not is_text_observation:
+    json_format_ids = set(JSON_FORMAT_FEATURE_IDS.values())
+    claimed_json_format_ids = set(raw_case["feature_ids"]) & json_format_ids
+    is_json_observation = bool(claimed_json_format_ids) or observed_has_format(
+        observed, JSON_FORMAT_FEATURE_IDS
+    )
+    if is_text_observation and is_json_observation:
+        raise RuntimeError(
+            f"Corpus case '{case_id}' must not mix text and JSON format IDs."
+        )
+    if not is_text_observation and not is_json_observation:
         if not isinstance(observed, dict) or not observed:
             raise RuntimeError(f"Corpus case '{case_id}' observed must be a JSON object.")
+        return case_id
+
+    if is_json_observation:
+        validate_json_observation(
+            case_id,
+            observed,
+            raw_case["feature_ids"],
+            raw_case["difference_ids"],
+            claimed_json_format_ids,
+        )
         return case_id
 
     if not isinstance(observed, dict) or set(observed) != {"kind", "format", "value"}:
@@ -796,6 +1152,13 @@ def normalize_probe_case(raw_case: object) -> dict[str, object]:
     normalized_observed = normalize_observed(
         observed, raw_case["normalization"], case_id
     )
+    if (
+        normalized_observed.get("kind") == "json-line"
+        or observed_has_format(normalized_observed, JSON_FORMAT_FEATURE_IDS)
+    ):
+        normalized_observed = normalize_json_observation(
+            normalized_observed, case_id
+        )
 
     return {
         "id": case_id,

@@ -64,6 +64,8 @@ class UlogConan(ConanFile):
         "src/*",
         "tests/*",
         "benchmarks/*",
+        "tools/baseline_probe/*",
+        "tools/baseline_json_probe/*",
         "tools/baseline_text_probe/*",
         "!**/__pycache__/*",
         "!**/*.pyc",

@@ -33,7 +33,7 @@ foreach(_ulog_root IN LISTS _ulog_scan_roots)
     )
     list(FILTER _ulog_root_files EXCLUDE REGEX "/(build[^/]*|out|__pycache__)/")
     # Baseline probes are manual evidence generators, outside Ulog's build graph.
-    list(FILTER _ulog_root_files EXCLUDE REGEX "/tools/baseline_text_probe/")
+    list(FILTER _ulog_root_files EXCLUDE REGEX "/tools/baseline_(json_|text_)?probe/")
     list(FILTER _ulog_root_files EXCLUDE REGEX "/CMakeUserPresets\\.json$")
     list(APPEND _ulog_scan_files ${_ulog_root_files})
   endif()

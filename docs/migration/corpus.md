@@ -90,6 +90,37 @@ TSKV and LTSV normalize the actual local timestamp and compiled source path.
 Raw declares its observed line deterministic with an empty normalization list;
 the line itself proves that timestamp and source metadata are omitted.
 
+### JSON formatter probe
+
+Issue [#5](https://github.com/Arenoros/ulog/issues/5) provides a separate probe
+for the ordinary and YaDeploy JSON formatters. It uses the same isolated
+baseline build and real `LogHelper`/`TextLogger` path as the text probe:
+
+```text
+cmake -S tools/baseline_json_probe -B /temporary/ulog-baseline-json-probe \
+  -DULOG_BASELINE_SOURCE=/absolute/path/to/userver
+cmake --build /temporary/ulog-baseline-json-probe \
+  --target ulog-baseline-json-probe
+python scripts/baseline_corpus.py capture \
+  --baseline-source /absolute/path/to/userver \
+  --output docs/migration/corpus/json-v1.json \
+  --force \
+  -- /temporary/ulog-baseline-json-probe/ulog-baseline-json-probe
+```
+
+Two scenarios are mirrored across `json` and `json_yadeploy`:
+
+| Scenario | Contract |
+| --- | --- |
+| `typed-nested-escaping` | Ordered string, signed/unsigned, float/double, booleans, null, Unicode/control escaping, nested objects and arrays, UTC timestamp, and source metadata. |
+| `replacement-frozen-duplicate` | In-place replacement, rejected frozen replacement, repeated user keys, and duplicate format-specific standard names recorded as `DEF-004`. |
+
+The probe emits the complete raw JSON line. Capture first applies the declared
+UTC timestamp and source-path replacements, verifies compact single-LF framing,
+and then converts the line into the committed structured observation. This
+conversion uses a duplicate-preserving parser rather than an ordinary JSON
+object map.
+
 ## Probe envelope
 
 Probe schema version 1 is independent of the committed schema. Each case names
@@ -165,9 +196,10 @@ real behavioral difference.
 
 Capture executes the probe twice and compares the complete normalized corpus
 before writing anything. A mismatch reports the first JSON Pointer that changed
-and leaves the destination untouched. Capture-tool version 2 records this
-two-run guarantee. The validator continues to accept version 1 evidence that
-was truthfully produced by the original one-run tool, but rejects unknown tool
+and leaves the destination untouched. Capture-tool version 2 introduced this
+two-run guarantee; version 3 adds the structured, duplicate-preserving JSON
+normalization. The validator continues to accept version 1 and version 2
+evidence that was truthfully produced by those tools, but rejects unknown tool
 versions. Before publication, capture also validates sibling JSON corpus files
 under the output directory and refuses a case ID already owned by another file.
 
@@ -187,6 +219,27 @@ Every text observation has exactly `kind`, `format`, and `value`. `kind` is
 line as a string, including order and repeated fields, and ends with exactly one
 LF. Case IDs are unique across the whole corpus root, not merely within one
 file.
+
+Every committed JSON observation has exactly `kind`, `format`, `framing`, and
+`members`. `kind` is `json-object`; `format` is `json` or `json_yadeploy` and
+must agree with `FMT-005` or `FMT-006`; `framing` is `compact-lf`. `members` is
+an ordered list of `{key, value}` entries, so top-level formatter order and
+duplicate keys remain observable. Values use a tagged JSON tree:
+
+- strings and booleans retain their JSON type and decoded value;
+- numbers retain their exact JSON lexeme as a string;
+- null has only the `null` kind;
+- arrays retain item order; and
+- nested object members are sorted by decoded key while preserving duplicate
+  multiplicity.
+
+Only the documented top-level formatter order is therefore golden. Incidental
+ordering inside a raw nested `JsonString` is not. Strict parsing still proves
+that control characters were escaped, while decoded Unicode and control values
+remain explicit in the fixture. `compact-lf` is recorded only after capture has
+verified one object, no structural whitespace outside strings, no CR, and one
+final LF. JSON standard timestamps and source paths must use their normalization
+placeholders, and duplicate members require `DEF-004` in `difference_ids`.
 
 Integrity uses `sha256` and canonicalization `ulog-json-v1`:
 
