@@ -37,6 +37,13 @@ running the probe it requires:
 - an explicit probe command; and
 - `--force` before replacing existing evidence.
 
+After the probe exits, the tool checks the revision and worktree again. It also
+requires the probe's build-time baseline attestation to match the same repository
+and revision. The generated corpus is validated against the canonical capability
+manifest before it can replace committed evidence. Without `--force`, final
+publication fails atomically if another process creates the output while capture
+is running.
+
 The probe runs with the checkout as its working directory and with `LC_ALL=C`,
 `LANG=C`, and `TZ=UTC`. It must write one strict UTF-8 JSON object to stdout.
 Build probes out of tree. In particular, do not configure the baseline directly
@@ -52,10 +59,18 @@ committed-corpus validator remains platform-independent and runs on Windows.
 Probe schema version 1 is independent of the committed schema. Each case names
 the preserved feature IDs, any relevant `DEF-*` or `DIFF-*` IDs, its platform
 scope, the observed value, and only the volatile occurrences that must change.
+The top-level `baseline` values must be generated into the probe at build time
+from the same source snapshot used for its include and link paths. Do not infer
+them from the capture process's working directory or copy them manually: that
+would allow an accidentally stale probe to misidentify its observations.
 
 ```json
 {
   "probe_schema_version": 1,
+  "baseline": {
+    "repository": "userver",
+    "revision": "72e07f717ae46a17822776df21ebd73dbc4ce728"
+  },
   "cases": [
     {
       "id": "tskv-basic",
@@ -82,7 +97,10 @@ scope, the observed value, and only the volatile occurrences that must change.
 
 Case IDs use lowercase hyphenated words. `feature_ids` is non-empty;
 `difference_ids` may be empty. The platform is one of `portable`, `windows`,
-`linux`, or `macos`. Empty normalization is valid for deterministic formats.
+`linux`, or `macos`. The normalization list is exhaustive for the case: every
+volatile timestamp, source path, process ID, thread ID, and platform occurrence
+must have a rule. An empty list is an explicit assertion by the probe author that
+the observed payload is already deterministic.
 
 ## Deterministic normalization
 
@@ -115,7 +133,9 @@ Committed schema version 1 has exactly four top-level fields:
 `schema_version`, `provenance`, `cases`, and `integrity`. Provenance records the
 baseline document, repository, full revision, capture-tool version, and
 normalization-profile version. Cases are sorted by ID; both ID lists are unique
-and sorted, and every ID must exist in the capability manifest.
+and sorted, and every ID must exist in the capability manifest. Corpus filenames
+must end in lowercase `.json`, ensuring case-sensitive and case-insensitive hosts
+validate the same fixture set.
 
 Integrity uses `sha256` and canonicalization `ulog-json-v1`:
 

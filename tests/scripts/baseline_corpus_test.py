@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -10,14 +11,20 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CORPUS_TOOL = PROJECT_ROOT / "scripts" / "baseline_corpus.py"
 CAPABILITY_MANIFEST = PROJECT_ROOT / "docs" / "migration" / "capability-manifest.md"
+BASELINE_REPOSITORY = "user" + "ver"
+BASELINE_REVISION = "72e07f717ae46a17822776df21ebd73dbc4ce728"
+PROBE_BASELINE = {
+    "repository": BASELINE_REPOSITORY,
+    "revision": BASELINE_REVISION,
+}
 KNOWN_CORPUS = {
     "schema_version": 1,
     "provenance": {
         "baseline_document": "docs/migration/baseline.md",
         "capture_tool": "ulog-baseline-corpus/1",
         "normalization_profile": "ulog-baseline-normalization/1",
-        "repository": "user" + "ver",
-        "revision": "72e07f717ae46a17822776df21ebd73dbc4ce728",
+        "repository": BASELINE_REPOSITORY,
+        "revision": BASELINE_REVISION,
     },
     "cases": [
         {
@@ -40,8 +47,57 @@ KNOWN_CORPUS = {
 }
 
 
+def make_probe_document(
+    *,
+    schema_version: object = 1,
+    baseline: object = PROBE_BASELINE,
+    feature_ids: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "probe_schema_version": schema_version,
+        "baseline": baseline,
+        "cases": [
+            {
+                "id": "raw-basic",
+                "feature_ids": feature_ids or ["FMT-004", "VAL-006"],
+                "difference_ids": [],
+                "platform": "portable",
+                "observed": {
+                    "kind": "utf8",
+                    "format": "raw",
+                    "value": "tskv\tfoo=bar\ttext=test\n",
+                },
+                "normalization": [],
+            }
+        ],
+    }
+
+
+def probe_program(document: object) -> list[str]:
+    return [
+        sys.executable,
+        "-c",
+        f"print({json.dumps(json.dumps(document))})",
+    ]
+
+
+def recalculate_integrity(corpus: dict[str, object]) -> None:
+    material = json.loads(json.dumps(corpus))
+    del material["integrity"]["value"]
+    canonical = json.dumps(
+        material,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    corpus["integrity"]["value"] = hashlib.sha256(canonical).hexdigest()
+
+
 def make_fake_git(
-    temp_path: Path, revision: str, worktree_changes: str = ""
+    temp_path: Path,
+    revision: str,
+    worktree_changes: str = "",
+    dirty_marker: Path | None = None,
 ) -> dict[str, str]:
     driver = temp_path / "fake_git.py"
     driver.write_text(
@@ -61,11 +117,12 @@ if (
     len(arguments) >= 3
     and arguments[0] == "-C"
     and arguments[2:4] == ["status", "--short"]
-    and arguments[4] in {"--untracked-files=no", "--untracked-files=all"}
+    and arguments[4] == "--untracked-files=all"
 ):
     changes = os.environ["FAKE_GIT_WORKTREE_CHANGES"].splitlines()
-    if arguments[4] == "--untracked-files=no":
-        changes = [change for change in changes if not change.startswith("??")]
+    marker = os.environ.get("FAKE_GIT_DIRTY_MARKER")
+    if marker and os.path.exists(marker):
+        changes.append(" M universal/src/logging/changed_during_probe.cpp")
     print("\\n".join(changes))
     raise SystemExit(0)
 
@@ -95,6 +152,8 @@ raise SystemExit(9)
     environment["FAKE_GIT_PYTHON"] = sys.executable
     environment["FAKE_GIT_REVISION"] = revision
     environment["FAKE_GIT_WORKTREE_CHANGES"] = worktree_changes
+    if dirty_marker is not None:
+        environment["FAKE_GIT_DIRTY_MARKER"] = str(dirty_marker)
     if os.name == "nt":
         environment["PATHEXT"] = f".CMD;{environment.get('PATHEXT', '')}"
     return environment
@@ -102,7 +161,7 @@ raise SystemExit(9)
 
 class BaselineCorpusTest(unittest.TestCase):
     def run_validation_root(
-        self, corpus_root: Path
+        self, corpus_root: Path, manifest: Path = CAPABILITY_MANIFEST
     ) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
         environment["PATH"] = ""
@@ -114,7 +173,7 @@ class BaselineCorpusTest(unittest.TestCase):
                 "--corpus-root",
                 str(corpus_root),
                 "--manifest",
-                str(CAPABILITY_MANIFEST),
+                str(manifest),
             ],
             capture_output=True,
             check=False,
@@ -132,6 +191,35 @@ class BaselineCorpusTest(unittest.TestCase):
             encoding="utf-8",
         )
         return self.run_validation_root(corpus_root)
+
+    def run_capture(
+        self,
+        source_path: Path,
+        output_path: Path,
+        environment: dict[str, str],
+        command: list[str],
+        *,
+        force: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        arguments = [
+            sys.executable,
+            str(CORPUS_TOOL),
+            "capture",
+            "--baseline-source",
+            str(source_path),
+            "--output",
+            str(output_path),
+        ]
+        if force:
+            arguments.append("--force")
+        arguments.extend(["--", *command])
+        return subprocess.run(
+            arguments,
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
+        )
 
     def test_validate_accepts_known_corpus_without_external_checkout(self):
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -189,6 +277,46 @@ class BaselineCorpusTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("duplicate JSON key 'schema_version'", result.stderr)
 
+    def test_validate_rejects_boolean_schema_version(self):
+        corpus = json.loads(json.dumps(KNOWN_CORPUS))
+        corpus["schema_version"] = True
+        recalculate_integrity(corpus)
+        with tempfile.TemporaryDirectory() as temp_directory:
+            result = self.run_validation(corpus, Path(temp_directory))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unsupported schema_version True", result.stderr)
+
+    def test_validate_rejects_mixed_case_json_suffix(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            corpus_root = Path(temp_directory) / "corpus"
+            corpus_root.mkdir()
+            (corpus_root / "baseline-v1.json").write_text(
+                json.dumps(KNOWN_CORPUS) + "\n", encoding="utf-8"
+            )
+            (corpus_root / "ignored.JSON").write_text("{}\n", encoding="utf-8")
+            result = self.run_validation_root(corpus_root)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("must use the lowercase .json suffix", result.stderr)
+        self.assertIn("ignored.JSON", result.stderr)
+
+    def test_validate_reports_invalid_utf8_manifest_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            corpus_root = temp_path / "corpus"
+            corpus_root.mkdir()
+            (corpus_root / "baseline-v1.json").write_text(
+                json.dumps(KNOWN_CORPUS) + "\n", encoding="utf-8"
+            )
+            manifest = temp_path / "manifest.md"
+            manifest.write_bytes(b"\xff")
+            result = self.run_validation_root(corpus_root, manifest)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not valid UTF-8", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_capture_refuses_to_overwrite_corpus_without_force(self):
         with tempfile.TemporaryDirectory() as temp_directory:
             temp_path = Path(temp_directory)
@@ -200,24 +328,11 @@ class BaselineCorpusTest(unittest.TestCase):
                 temp_path, "72e07f717ae46a17822776df21ebd73dbc4ce728"
             )
 
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(CORPUS_TOOL),
-                    "capture",
-                    "--baseline-source",
-                    str(source_path),
-                    "--output",
-                    str(output_path),
-                    "--",
-                    sys.executable,
-                    "-c",
-                    "raise SystemExit(0)",
-                ],
-                capture_output=True,
-                check=False,
-                env=environment,
-                text=True,
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                [sys.executable, "-c", "raise SystemExit(0)"],
             )
 
             self.assertEqual(
@@ -236,24 +351,11 @@ class BaselineCorpusTest(unittest.TestCase):
             output_path = temp_path / "corpus.json"
             environment = make_fake_git(temp_path, "0" * 40)
 
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(CORPUS_TOOL),
-                    "capture",
-                    "--baseline-source",
-                    str(source_path),
-                    "--output",
-                    str(output_path),
-                    "--",
-                    sys.executable,
-                    "-c",
-                    "raise SystemExit(0)",
-                ],
-                capture_output=True,
-                check=False,
-                env=environment,
-                text=True,
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                [sys.executable, "-c", "raise SystemExit(0)"],
             )
 
             self.assertFalse(output_path.exists())
@@ -275,24 +377,11 @@ class BaselineCorpusTest(unittest.TestCase):
                 " M universal/src/logging/level.cpp",
             )
 
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(CORPUS_TOOL),
-                    "capture",
-                    "--baseline-source",
-                    str(source_path),
-                    "--output",
-                    str(output_path),
-                    "--",
-                    sys.executable,
-                    "-c",
-                    "raise SystemExit(0)",
-                ],
-                capture_output=True,
-                check=False,
-                env=environment,
-                text=True,
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                [sys.executable, "-c", "raise SystemExit(0)"],
             )
 
             self.assertFalse(output_path.exists())
@@ -314,24 +403,11 @@ class BaselineCorpusTest(unittest.TestCase):
                 "?? universal/src/logging/local_override.cpp",
             )
 
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(CORPUS_TOOL),
-                    "capture",
-                    "--baseline-source",
-                    str(source_path),
-                    "--output",
-                    str(output_path),
-                    "--",
-                    sys.executable,
-                    "-c",
-                    "raise SystemExit(0)",
-                ],
-                capture_output=True,
-                check=False,
-                env=environment,
-                text=True,
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                [sys.executable, "-c", "raise SystemExit(0)"],
             )
 
             self.assertFalse(output_path.exists())
@@ -339,6 +415,217 @@ class BaselineCorpusTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("untracked files", result.stderr)
         self.assertIn("local_override.cpp", result.stderr)
+
+    def test_capture_rejects_boolean_probe_schema_version(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                probe_program(make_probe_document(schema_version=True)),
+            )
+
+            self.assertFalse(output_path.exists())
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Unsupported probe_schema_version True", result.stderr)
+
+    def test_capture_accepts_explicitly_deterministic_case(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                probe_program(make_probe_document()),
+            )
+
+            self.assertTrue(output_path.is_file())
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_capture_rejects_stale_probe_baseline(self):
+        stale_baseline = {
+            "repository": BASELINE_REPOSITORY,
+            "revision": "0" * 40,
+        }
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                probe_program(make_probe_document(baseline=stale_baseline)),
+            )
+
+            self.assertFalse(output_path.exists())
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("probe baseline", result.stderr)
+        self.assertIn("0" * 40, result.stderr)
+        self.assertIn(BASELINE_REVISION, result.stderr)
+
+    def test_capture_rechecks_checkout_after_probe(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            dirty_marker = temp_path / "dirty"
+            environment = make_fake_git(
+                temp_path, BASELINE_REVISION, dirty_marker=dirty_marker
+            )
+            command = [
+                sys.executable,
+                "-c",
+                (
+                    "from pathlib import Path; "
+                    f"Path({str(dirty_marker)!r}).write_text('dirty'); "
+                    f"print({json.dumps(json.dumps(make_probe_document()))})"
+                ),
+            ]
+            result = self.run_capture(
+                source_path, output_path, environment, command
+            )
+
+            self.assertFalse(output_path.exists())
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("changed while the probe was running", result.stderr)
+        self.assertIn("changed_during_probe.cpp", result.stderr)
+
+    def test_capture_rejects_noncanonical_json_pointer(self):
+        probe = make_probe_document()
+        probe["cases"][0]["observed"] = {"items": ["AA BB"]}
+        probe["cases"][0]["normalization"] = [
+            {
+                "kind": "platform",
+                "path": "/items/0",
+                "value": "AA",
+                "occurrence": 0,
+            },
+            {
+                "kind": "process_id",
+                "path": "/items/00",
+                "value": "BB",
+                "occurrence": 0,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            result = self.run_capture(
+                source_path, output_path, environment, probe_program(probe)
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("non-canonical list index '00'", result.stderr)
+
+    def test_capture_rejects_invalid_json_pointer_escape(self):
+        probe = make_probe_document()
+        probe["cases"][0]["normalization"] = [
+            {
+                "kind": "process_id",
+                "path": "/value~2",
+                "value": "42",
+                "occurrence": 0,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            result = self.run_capture(
+                source_path, output_path, environment, probe_program(probe)
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("invalid JSON Pointer escape", result.stderr)
+
+    def test_capture_does_not_overwrite_output_created_while_probe_runs(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            command = [
+                sys.executable,
+                "-c",
+                (
+                    "from pathlib import Path; "
+                    f"Path({str(output_path)!r}).write_text('concurrent evidence\\n'); "
+                    f"print({json.dumps(json.dumps(make_probe_document()))})"
+                ),
+            ]
+            result = self.run_capture(
+                source_path, output_path, environment, command
+            )
+
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"), "concurrent evidence\n"
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("appeared while capture was running", result.stderr)
+        self.assertIn("--force", result.stderr)
+
+    def test_capture_rejects_unknown_manifest_id_before_write(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                probe_program(make_probe_document(feature_ids=["FMT-999"])),
+            )
+
+            self.assertFalse(output_path.exists())
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unknown manifest IDs: FMT-999", result.stderr)
+
+    def test_capture_reports_output_failure_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            source_path = temp_path / "baseline-source"
+            source_path.mkdir()
+            output_path = temp_path / "corpus.json"
+            output_path.mkdir()
+            environment = make_fake_git(temp_path, BASELINE_REVISION)
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                probe_program(make_probe_document()),
+                force=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Unable to write corpus", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_capture_normalizes_probe_output_and_records_integrity(self):
         raw_timestamp = "2026-08-24T09:30:12.123456"
@@ -348,6 +635,7 @@ class BaselineCorpusTest(unittest.TestCase):
         raw_platform = "Windows"
         raw_capture = {
             "probe_schema_version": 1,
+            "baseline": PROBE_BASELINE,
             "cases": [
                 {
                     "id": "tskv-basic",
@@ -417,23 +705,11 @@ class BaselineCorpusTest(unittest.TestCase):
                 temp_path, "72e07f717ae46a17822776df21ebd73dbc4ce728"
             )
 
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(CORPUS_TOOL),
-                    "capture",
-                    "--baseline-source",
-                    str(source_path),
-                    "--output",
-                    str(output_path),
-                    "--",
-                    sys.executable,
-                    str(probe_path),
-                ],
-                capture_output=True,
-                check=False,
-                env=environment,
-                text=True,
+            result = self.run_capture(
+                source_path,
+                output_path,
+                environment,
+                [sys.executable, str(probe_path)],
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)

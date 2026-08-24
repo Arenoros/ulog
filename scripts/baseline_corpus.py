@@ -15,6 +15,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_METADATA_PATH = PROJECT_ROOT / "docs" / "migration" / "baseline.md"
+CAPABILITY_MANIFEST_PATH = (
+    PROJECT_ROOT / "docs" / "migration" / "capability-manifest.md"
+)
 CORPUS_SCHEMA_VERSION = 1
 PROBE_SCHEMA_VERSION = 1
 CAPTURE_TOOL_VERSION = "ulog-baseline-corpus/1"
@@ -148,14 +151,18 @@ def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def parse_strict_json(contents: str) -> object:
+    return json.loads(
+        contents,
+        object_pairs_hook=reject_duplicate_keys,
+        parse_constant=reject_nonstandard_json,
+        parse_float=reject_floating_number,
+    )
+
+
 def load_probe_output(output: str) -> dict[str, object]:
     try:
-        document = json.loads(
-            output,
-            object_pairs_hook=reject_duplicate_keys,
-            parse_constant=reject_nonstandard_json,
-            parse_float=reject_floating_number,
-        )
+        document = parse_strict_json(output)
     except (json.JSONDecodeError, ValueError) as error:
         raise RuntimeError(
             f"Probe output is not valid strict JSON: {error}. "
@@ -200,12 +207,7 @@ def load_json_file(path: Path) -> dict[str, object]:
             f"Corpus file '{path}' is not valid UTF-8 at byte {error.start}."
         ) from error
     try:
-        document = json.loads(
-            contents,
-            object_pairs_hook=reject_duplicate_keys,
-            parse_constant=reject_nonstandard_json,
-            parse_float=reject_floating_number,
-        )
+        document = parse_strict_json(contents)
     except (json.JSONDecodeError, ValueError) as error:
         raise RuntimeError(f"Corpus file '{path}' is not strict JSON: {error}.") from error
     if not isinstance(document, dict):
@@ -238,6 +240,11 @@ def calculate_integrity(document: dict[str, object]) -> str:
 def load_manifest_ids(path: Path) -> set[str]:
     try:
         contents = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise RuntimeError(
+            f"Capability manifest '{path}' is not valid UTF-8 at byte "
+            f"{error.start}. Restore the manifest and retry."
+        ) from error
     except OSError as error:
         raise RuntimeError(
             f"Unable to read capability manifest '{path}': {error}. "
@@ -343,7 +350,10 @@ def validate_corpus_document(
             f"Corpus file '{path}' must contain exactly schema_version, provenance, "
             "cases, and integrity."
         )
-    if document["schema_version"] != CORPUS_SCHEMA_VERSION:
+    if (
+        type(document["schema_version"]) is not int
+        or document["schema_version"] != CORPUS_SCHEMA_VERSION
+    ):
         raise RuntimeError(
             f"Corpus file '{path}' uses unsupported schema_version "
             f"{document['schema_version']!r}; expected {CORPUS_SCHEMA_VERSION}."
@@ -409,17 +419,27 @@ def validate(args: argparse.Namespace) -> int:
             f"Corpus root '{args.corpus_root}' is not a directory. Restore the "
             "committed corpus and retry."
         )
-    unexpected_files = sorted(
-        path
-        for path in args.corpus_root.rglob("*")
-        if path.is_file() and path.suffix.lower() != ".json"
+    all_files = sorted(path for path in args.corpus_root.rglob("*") if path.is_file())
+    mixed_case_json = next(
+        (
+            path
+            for path in all_files
+            if path.suffix.lower() == ".json" and path.suffix != ".json"
+        ),
+        None,
     )
+    if mixed_case_json:
+        raise RuntimeError(
+            f"Corpus file '{mixed_case_json}' must use the lowercase .json suffix "
+            "so every supported platform validates the same fixture set."
+        )
+    unexpected_files = [path for path in all_files if path.suffix != ".json"]
     if unexpected_files:
         raise RuntimeError(
             f"Corpus root '{args.corpus_root}' contains unexpected file "
             f"'{unexpected_files[0]}'. Keep documentation outside the corpus directory."
         )
-    corpus_files = sorted(args.corpus_root.rglob("*.json"))
+    corpus_files = [path for path in all_files if path.suffix == ".json"]
     if not corpus_files:
         raise RuntimeError(
             f"Corpus root '{args.corpus_root}' contains no JSON files. Restore at "
@@ -446,7 +466,16 @@ def decode_json_pointer(path: str, case_id: str) -> list[str]:
             f"Probe case '{case_id}' normalization path {path!r} must be a non-root "
             "JSON Pointer beginning with '/'."
         )
-    return [segment.replace("~1", "/").replace("~0", "~") for segment in path[1:].split("/")]
+    for match in re.finditer("~", path):
+        if match.end() == len(path) or path[match.end()] not in {"0", "1"}:
+            raise RuntimeError(
+                f"Probe case '{case_id}' normalization path {path!r} contains an "
+                "invalid JSON Pointer escape; use only '~0' or '~1'."
+            )
+    return [
+        segment.replace("~1", "/").replace("~0", "~")
+        for segment in path[1:].split("/")
+    ]
 
 
 def resolve_json_pointer(value: object, path: list[str], case_id: str) -> str:
@@ -459,7 +488,13 @@ def resolve_json_pointer(value: object, path: list[str], case_id: str) -> str:
                 )
             current = current[segment]
         elif isinstance(current, list):
-            if not segment.isdecimal() or int(segment) >= len(current):
+            if not re.fullmatch(r"0|[1-9][0-9]*", segment):
+                raise RuntimeError(
+                    f"Probe case '{case_id}' normalization path uses non-canonical "
+                    f"list index {segment!r}; use 0 or a positive integer without "
+                    "leading zeroes."
+                )
+            if int(segment) >= len(current):
                 raise RuntimeError(
                     f"Probe case '{case_id}' normalization path has invalid list "
                     f"index {segment!r}."
@@ -515,8 +550,8 @@ def normalize_observed(
     if not isinstance(rules, list):
         raise RuntimeError(f"Probe case '{case_id}' normalization must be a list.")
 
-    edits_by_path: dict[str, list[tuple[int, int, str]]] = {}
-    decoded_paths: dict[str, list[str]] = {}
+    edits_by_path: dict[tuple[str, ...], list[tuple[int, int, str]]] = {}
+    display_paths: dict[tuple[str, ...], str] = {}
     for rule in rules:
         if not isinstance(rule, dict) or set(rule) != {
             "kind",
@@ -559,23 +594,25 @@ def normalize_observed(
                 f"{occurrence}, but {source!r} occurs {len(positions)} time(s)."
             )
         start = positions[occurrence]
-        edits_by_path.setdefault(path, []).append(
+        canonical_path = tuple(decoded_path)
+        edits_by_path.setdefault(canonical_path, []).append(
             (start, start + len(source), NORMALIZATION_REPLACEMENTS[kind])
         )
-        decoded_paths[path] = decoded_path
+        display_paths.setdefault(canonical_path, path)
 
     normalized = copy.deepcopy(observed)
-    for path, edits in edits_by_path.items():
+    for decoded_path, edits in edits_by_path.items():
         edits.sort(key=lambda edit: edit[0])
         for previous, current in zip(edits, edits[1:]):
             if previous[1] > current[0]:
                 raise RuntimeError(
-                    f"Probe case '{case_id}' normalization rules overlap at {path}."
+                    f"Probe case '{case_id}' normalization rules overlap at "
+                    f"{display_paths[decoded_path]}."
                 )
-        target = resolve_json_pointer(observed, decoded_paths[path], case_id)
+        target = resolve_json_pointer(observed, list(decoded_path), case_id)
         for start, end, replacement in reversed(edits):
             target = f"{target[:start]}{replacement}{target[end:]}"
-        set_json_pointer(normalized, decoded_paths[path], target)
+        set_json_pointer(normalized, list(decoded_path), target)
     return normalized
 
 
@@ -662,21 +699,45 @@ def normalize_probe_case(raw_case: object) -> dict[str, object]:
     }
 
 
-def build_corpus(
+def validate_probe_envelope(
     probe_document: dict[str, object], baseline: dict[str, str]
-) -> dict[str, object]:
-    if set(probe_document) != {"probe_schema_version", "cases"}:
+) -> list[object]:
+    if set(probe_document) != {"probe_schema_version", "baseline", "cases"}:
         raise RuntimeError(
-            "Probe output must contain exactly probe_schema_version and cases."
+            "Probe output must contain exactly probe_schema_version, baseline, "
+            "and cases."
         )
-    if probe_document["probe_schema_version"] != PROBE_SCHEMA_VERSION:
+    if (
+        type(probe_document["probe_schema_version"]) is not int
+        or probe_document["probe_schema_version"] != PROBE_SCHEMA_VERSION
+    ):
         raise RuntimeError(
             f"Unsupported probe_schema_version {probe_document['probe_schema_version']!r}; "
             f"emit version {PROBE_SCHEMA_VERSION}."
         )
+    probe_baseline = probe_document["baseline"]
+    if not isinstance(probe_baseline, dict) or set(probe_baseline) != {
+        "repository",
+        "revision",
+    }:
+        raise RuntimeError(
+            "The probe baseline must contain exactly repository and revision. "
+            "Generate both from the checkout used to build the probe."
+        )
+    if probe_baseline != baseline:
+        raise RuntimeError(
+            f"The probe baseline {probe_baseline!r} does not match the required "
+            f"baseline {baseline!r}. Rebuild the probe from the pinned checkout."
+        )
     raw_cases = probe_document["cases"]
     if not isinstance(raw_cases, list) or not raw_cases:
         raise RuntimeError("Probe output must contain at least one case.")
+    return raw_cases
+
+
+def build_corpus(
+    raw_cases: list[object], baseline: dict[str, str]
+) -> dict[str, object]:
 
     cases = [normalize_probe_case(raw_case) for raw_case in raw_cases]
     case_ids = [case["id"] for case in cases]
@@ -742,13 +803,13 @@ def run_probe(source_path: Path, command: list[str]) -> str:
         ) from error
 
 
-def write_corpus(path: Path, corpus: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def write_corpus(path: Path, corpus: dict[str, object], force: bool) -> None:
     contents = json.dumps(
         corpus, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True
     )
     temporary_path: Path | None = None
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             "w",
             delete=False,
@@ -759,10 +820,58 @@ def write_corpus(path: Path, corpus: dict[str, object]) -> None:
             output.write(contents)
             output.write("\n")
             temporary_path = Path(output.name)
-        temporary_path.replace(path)
+        if force:
+            os.replace(temporary_path, path)
+        else:
+            try:
+                os.link(temporary_path, path)
+            except FileExistsError as error:
+                raise RuntimeError(
+                    f"Output corpus '{path}' appeared while capture was running. "
+                    "It was preserved; review it and pass --force only if replacement "
+                    "is intended."
+                ) from error
+    except RuntimeError:
+        raise
+    except OSError as error:
+        raise RuntimeError(
+            f"Unable to write corpus '{path}': {error}. Check that the destination "
+            "parent is writable and the output is a file, then retry."
+        ) from error
     finally:
-        if temporary_path and temporary_path.exists():
-            temporary_path.unlink()
+        if temporary_path:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def verify_checkout(
+    source_path: Path, baseline: dict[str, str], *, after_probe: bool
+) -> None:
+    revision = read_checkout_revision(source_path)
+    worktree_changes = read_worktree_changes(source_path)
+    if after_probe and (revision != baseline["revision"] or worktree_changes):
+        details = worktree_changes or f"HEAD changed to {revision}"
+        raise RuntimeError(
+            "Baseline checkout changed while the probe was running:\n"
+            f"{details}\nRestore the pinned clean checkout, rebuild the probe, and "
+            "retry."
+        )
+    if revision != baseline["revision"]:
+        raise RuntimeError(
+            f"Baseline checkout revision is {revision}, but "
+            f"{baseline['revision']} is required. Run 'git checkout "
+            f"{baseline['revision']}' in '{source_path}' and retry."
+        )
+    if worktree_changes:
+        raise RuntimeError(
+            "Baseline checkout has tracked changes or untracked files:\n"
+            f"{worktree_changes}\n"
+            "Please commit, stash, or revert tracked changes and remove untracked "
+            "source files so the checkout exactly matches the pinned revision, "
+            "then retry."
+        )
 
 
 def capture(args: argparse.Namespace) -> int:
@@ -772,25 +881,15 @@ def capture(args: argparse.Namespace) -> int:
             "reviewing the intended evidence update."
         )
     baseline = read_baseline_metadata()
-    revision = read_checkout_revision(args.baseline_source)
-    if revision != baseline["revision"]:
-        raise RuntimeError(
-            f"Baseline checkout revision is {revision}, but "
-            f"{baseline['revision']} is required. Run 'git checkout "
-            f"{baseline['revision']}' in '{args.baseline_source}' and retry."
-        )
-    worktree_changes = read_worktree_changes(args.baseline_source)
-    if worktree_changes:
-        raise RuntimeError(
-            "Baseline checkout has tracked changes or untracked files:\n"
-            f"{worktree_changes}\n"
-            "Please commit, stash, or revert tracked changes and remove untracked "
-            "source files so the checkout exactly matches the pinned revision, "
-            "then retry."
-        )
+    verify_checkout(args.baseline_source, baseline, after_probe=False)
     probe_output = run_probe(args.baseline_source, args.probe_command)
-    corpus = build_corpus(load_probe_output(probe_output), baseline)
-    write_corpus(args.output, corpus)
+    probe_document = load_probe_output(probe_output)
+    raw_cases = validate_probe_envelope(probe_document, baseline)
+    verify_checkout(args.baseline_source, baseline, after_probe=True)
+    corpus = build_corpus(raw_cases, baseline)
+    manifest_ids = load_manifest_ids(CAPABILITY_MANIFEST_PATH)
+    validate_corpus_document(args.output, corpus, baseline, manifest_ids)
+    write_corpus(args.output, corpus, args.force)
     print(f"Captured {len(corpus['cases'])} case(s) in {args.output}")
     return 0
 
