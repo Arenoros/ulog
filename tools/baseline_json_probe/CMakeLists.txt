@@ -11,7 +11,5 @@ project(ulog-baseline-json-probe LANGUAGES CXX)
 
 include("${CMAKE_CURRENT_LIST_DIR}/../baseline_probe/UlogBaselineProbe.cmake")
 ulog_add_baseline_probe(
-  TARGET ulog-baseline-json-probe
-  SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}"
-  DESCRIPTION JSON
+  TARGET ulog-baseline-json-probe SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}" DESCRIPTION JSON
 )

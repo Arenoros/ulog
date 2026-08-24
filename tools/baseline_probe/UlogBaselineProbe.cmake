@@ -37,8 +37,7 @@ function(ulog_add_baseline_probe)
   endif()
 
   execute_process(
-    COMMAND "${GIT_EXECUTABLE}" -C "${ULOG_BASELINE_SOURCE}" status --short
-            --untracked-files=all
+    COMMAND "${GIT_EXECUTABLE}" -C "${ULOG_BASELINE_SOURCE}" status --short --untracked-files=all
     RESULT_VARIABLE ULOG_STATUS_RESULT
     OUTPUT_VARIABLE ULOG_WORKTREE_CHANGES
     ERROR_VARIABLE ULOG_STATUS_ERROR
@@ -63,9 +62,7 @@ function(ulog_add_baseline_probe)
                "${ULOG_BASELINE_METADATA}"
   )
   set(ULOG_BASELINE_REPOSITORY "${CMAKE_MATCH_1}")
-  string(REGEX MATCH "commit:[ \t]*([0-9a-f]+)" ULOG_REVISION_MATCH
-               "${ULOG_BASELINE_METADATA}"
-  )
+  string(REGEX MATCH "commit:[ \t]*([0-9a-f]+)" ULOG_REVISION_MATCH "${ULOG_BASELINE_METADATA}")
   set(ULOG_EXPECTED_REVISION "${CMAKE_MATCH_1}")
   string(LENGTH "${ULOG_EXPECTED_REVISION}" ULOG_EXPECTED_REVISION_LENGTH)
   if(ULOG_BASELINE_REPOSITORY STREQUAL "" OR NOT ULOG_EXPECTED_REVISION_LENGTH EQUAL 40)
@@ -108,7 +105,7 @@ function(ulog_add_baseline_probe)
     OUTPUT_STRIP_TRAILING_WHITESPACE
   )
   if(NOT ULOG_ARCHIVE_REVISION_RESULT EQUAL 0 OR NOT ULOG_ARCHIVE_REVISION STREQUAL
-                                                   ULOG_CHECKOUT_REVISION
+                                                 ULOG_CHECKOUT_REVISION
   )
     message(
       FATAL_ERROR
@@ -155,8 +152,8 @@ function(ulog_add_baseline_probe)
   add_executable(${ULOG_PROBE_TARGET} "${ULOG_PROBE_SOURCE_DIR}/main.cpp")
   target_compile_features(${ULOG_PROBE_TARGET} PRIVATE cxx_std_20)
   target_include_directories(
-    ${ULOG_PROBE_TARGET}
-    PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}"
+    ${ULOG_PROBE_TARGET} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated"
+                                 "${CMAKE_CURRENT_FUNCTION_LIST_DIR}"
   )
   target_link_libraries(${ULOG_PROBE_TARGET} PRIVATE userver::universal)
   set_target_properties(${ULOG_PROBE_TARGET} PROPERTIES CXX_EXTENSIONS OFF)

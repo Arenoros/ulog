@@ -11,7 +11,5 @@ project(ulog-baseline-text-probe LANGUAGES CXX)
 
 include("${CMAKE_CURRENT_LIST_DIR}/../baseline_probe/UlogBaselineProbe.cmake")
 ulog_add_baseline_probe(
-  TARGET ulog-baseline-text-probe
-  SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}"
-  DESCRIPTION text
+  TARGET ulog-baseline-text-probe SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}" DESCRIPTION text
 )
