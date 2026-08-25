@@ -848,7 +848,7 @@ class alignas(kRecordSlotAlignmentBytes) RecordSlot final {
           .value_high = value.empty() ? static_cast<std::uint32_t>(scalar_bits >> 32U)
                                       : static_cast<std::uint32_t>(value.size()),
           .kind = static_cast<std::uint8_t>(kind),
-          .flags = bool_value ? 1U : 0U,
+          .flags = bool_value ? std::uint8_t{1} : std::uint8_t{0},
           .reserved = 0};
       impl::WriteObject(slot_->storage_, field_offset, field);
 
