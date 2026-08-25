@@ -451,7 +451,7 @@ void TestConsumerClaimPreventsSlotReuseAndOverwrite() {
   Check(retry.status == composed::ProduceStatus::kAccepted && retry.admission_sequence == 2, kTest,
         "slot did not become reusable after the consumer callback returned");
 
-  for (const auto expected :
+  for (const auto& expected :
        {std::pair{std::uint64_t{1}, kSecondMessage}, std::pair{std::uint64_t{2}, kThirdMessage}}) {
     bool observed = false;
     const auto status =
