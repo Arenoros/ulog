@@ -32,8 +32,10 @@ target_link_libraries(my_target PRIVATE ulog::ulog)
 ```
 
 For the full Conan, unit, stress, dependency, and benchmark workflow, see
-[`docs/testing.md`](docs/testing.md). Dependency versions and promotion rules
-are in [`docs/dependencies.md`](docs/dependencies.md).
+[`docs/testing.md`](docs/testing.md). The shared performance workload and
+controlled-run procedure are in [`docs/benchmarking.md`](docs/benchmarking.md).
+Dependency versions and promotion rules are in
+[`docs/dependencies.md`](docs/dependencies.md).
 
 ## Architecture
 

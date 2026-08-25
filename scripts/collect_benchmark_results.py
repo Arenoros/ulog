@@ -5,6 +5,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from benchmark_results import BenchmarkResultsError, validate_result_file
+
 
 def main() -> int:
     if len(sys.argv) != 2:
@@ -18,6 +20,16 @@ def main() -> int:
         return 1
 
     newest_result = max(candidates, key=lambda path: path.stat().st_mtime_ns)
+    try:
+        validate_result_file(newest_result)
+    except BenchmarkResultsError as error:
+        print(
+            f"newest benchmark result '{newest_result}' is invalid: {error} "
+            "Fix the ulog-workload-results/1 output and retry.",
+            file=sys.stderr,
+        )
+        return 1
+
     destination = Path(sys.argv[1])
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(newest_result, destination)

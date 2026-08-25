@@ -13,12 +13,15 @@ The bootstrap establishes seven independent test categories:
 - `migration`: schema, provenance, manifest-ID, and integrity validation for
   the committed offline baseline corpus and non-format parity scenarios,
   without an external checkout;
-- `benchmark`: smoke-run Google Benchmark and emit JSON without a timing gate.
+- `benchmark`: run the complete short workload matrix, emit versioned Google
+  Benchmark JSON, and validate its deterministic counters without a timing gate.
 
 Hosted CI benchmark timing is advisory. It confirms that benchmark executables
 compile, run, and emit machine-readable output. Hard regression thresholds are
 allowed only on controlled hardware and must follow
-`docs/performance-contract.md`.
+`docs/performance-contract.md`. The exact workload matrix, metrics, candidate
+adapter seam, and controlled-run command are documented in
+`docs/benchmarking.md`.
 
 The dependency-free presets build the library, architecture check, and installed
 consumer:
