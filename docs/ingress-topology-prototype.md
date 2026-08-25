@@ -157,6 +157,11 @@ job limit and a 12-minute build/test-step limit. Benchmark smoke tests have a
 failure guards, not expected runtimes; the smoke matrix and stress path are
 intended to complete in seconds.
 
+The allocation-interposition record-storage unit test is excluded only from the
+TSan build because it replaces the process-wide `new`/`delete` symbols that the
+TSan runtime also defines. Ordinary and ASan/UBSan jobs retain that test. All
+ingress unit, model, smoke, and stress paths remain enabled under TSan.
+
 Before collecting controlled timing evidence, validate the complete registration
 schedule and run on a dedicated idle machine:
 
