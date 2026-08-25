@@ -96,8 +96,9 @@ class UlogConan(ConanFile):
             self.test_requires("gtest/1.17.0")
         if self.options.build_benchmarks:
             self.test_requires("benchmark/1.9.5")
-        if self.options.dependency_smoke:
+        if self.options.build_benchmarks or self.options.dependency_smoke:
             self.test_requires("fmt/12.1.0")
+        if self.options.dependency_smoke:
             self.test_requires("libuv/1.51.0")
 
     def package_id(self):

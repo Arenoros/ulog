@@ -71,12 +71,14 @@ jobs:
         run: conan create . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=True" -o "&:build_tests=True" -o "&:build_stress_tests=False" -o "&:build_benchmarks=False" -o "&:dependency_smoke=False" -o "&:warnings_as_errors=True" --lockfile=conan.lock --build=missing
       - name: Collect benchmark output
         if: steps.static-build.outcome == 'success'
-        run: python scripts/collect_benchmark_results.py out/benchmark-results.json
+        run: python scripts/collect_benchmark_results.py out/benchmark-results.json out/record-storage-results.json
       - uses: actions/upload-artifact@v6
         if: steps.static-build.outcome == 'success'
         with:
           name: benchmark-${{ matrix.platform }}
-          path: out/benchmark-results.json
+          path: |
+            out/benchmark-results.json
+            out/record-storage-results.json
           retention-days: 14
       - name: Trim Conan dependency cache
         if: always() && github.event_name == 'push' && steps.conan-dependencies.outcome == 'success' && steps.conan-cache.outputs.cache-hit != 'true'

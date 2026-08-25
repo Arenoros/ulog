@@ -113,6 +113,25 @@ validate it. Hosted-runner latency, throughput, and CPU values are advisory.
 Missing matrix cells, malformed or inconsistent accounting, allocation
 failures, and retained-bound violations fail CI.
 
+## Structured Record storage experiment
+
+The private Structured Record experiment reuses this matrix and measurement
+window for three physically distinct storage candidates. It emits the sibling
+`ulog-record-storage-results/1` protocol, keeps same-cell candidate rows adjacent
+in a six-permutation cycle, and reports logical Record footprint separately from
+candidate fragmentation and physical byte-budget charge. Its CI smoke result is
+`record-storage-results.json` and is validated independently:
+
+```shell
+python scripts/record_storage_results.py validate record-storage-results.json
+```
+
+See [Structured Record storage prototype](record-storage-prototype.md) for the
+ownership and immutability contract, exact candidate organizations and charge
+formulas, fmt/native write paths, UTF-8 truncation, controlled reproduction, and
+interpretation limits. The implementations and result protocol are benchmark
+infrastructure, not a selected production layout or public API.
+
 ## Controlled mode
 
 Use a dedicated, otherwise idle machine with a stable power policy and thermal

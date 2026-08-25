@@ -53,6 +53,21 @@ struct KernelSnapshot final {
   std::uint64_t physical_retained_limit_bytes;
 };
 
+struct RecordFootprint final {
+  std::uint64_t requested_message_bytes;
+  std::uint64_t stored_message_bytes;
+  std::uint64_t owned_payload_bytes;
+  std::uint64_t metadata_bytes;
+  std::uint64_t fragmentation_bytes;
+  std::uint64_t accounting_charge_bytes;
+  std::uint64_t minimum_accounting_charge_bytes;
+  bool truncated;
+
+  [[nodiscard]] constexpr std::uint64_t SerializedBytes() const noexcept {
+    return owned_payload_bytes + metadata_bytes;
+  }
+};
+
 struct LatencySummary final {
   std::uint64_t sample_count;
   std::uint64_t p50_nanoseconds;
@@ -63,6 +78,9 @@ struct LatencySummary final {
 struct WorkloadResult final {
   WorkloadCase workload;
   LatencySummary latency;
+  LatencySummary accepted_latency;
+  LatencySummary rejected_latency;
+  RecordFootprint record_footprint;
   std::chrono::nanoseconds wall_time;
   std::chrono::nanoseconds process_cpu_time;
   double cpu_utilization_percent;
@@ -76,6 +94,7 @@ struct WorkloadResult final {
   std::uint64_t rejected_bytes;
   std::uint64_t allocation_count;
   std::uint64_t allocation_failure_count;
+  std::uint64_t truncated_records;
   std::uint64_t logical_retained_initial_bytes;
   std::uint64_t logical_retained_high_water_bytes;
   std::uint64_t logical_retained_final_bytes;
@@ -93,9 +112,13 @@ struct WorkloadResult final {
 [[nodiscard]] std::vector<WorkloadCase> MakeWorkloadMatrix(Mode mode);
 [[nodiscard]] std::size_t InitialOccupancyBytes(const WorkloadCase& workload);
 [[nodiscard]] std::size_t ExpectedAcceptedPerRound(const WorkloadCase& workload);
+[[nodiscard]] std::size_t ExpectedAcceptedPerRound(const WorkloadCase& workload,
+                                                   std::size_t accounting_charge_bytes);
+[[nodiscard]] RecordFootprint MakePayloadOnlyRecordFootprint(std::size_t payload_bytes) noexcept;
 [[nodiscard]] LatencySummary ComputeLatencySummary(
     std::span<const std::uint64_t> latency_nanoseconds);
 void ValidateWorkloadCase(const WorkloadCase& workload);
+void ValidateRecordFootprint(const WorkloadCase& workload, const RecordFootprint& footprint);
 
 template <typename Kernel>
 concept WorkloadKernel =
@@ -108,6 +131,7 @@ concept WorkloadKernel =
       { kernel.BeginMeasurement() } noexcept -> std::same_as<void>;
       { kernel.ObserveRetainedHighWater() } noexcept -> std::same_as<void>;
       { kernel.EndMeasurement() } -> std::same_as<void>;
+      { const_kernel.DescribeRecord(payload) } noexcept -> std::same_as<RecordFootprint>;
       {
         kernel.TryProduce(std::size_t{}, payload)
       } noexcept -> std::same_as<typename Kernel::Attempt>;
@@ -148,9 +172,16 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
   std::vector<impl::LatencySample> samples(sample_count);
   std::vector<std::byte> payload(workload.record_size_bytes);
   for (std::size_t index = 0; index < payload.size(); ++index) {
-    payload[index] = std::byte{static_cast<unsigned char>(index % 251U)};
+    constexpr unsigned char kFirstPayloadCharacter = 'a';
+    constexpr std::size_t kPayloadAlphabetSize = 26;
+    payload[index] = std::byte{
+        static_cast<unsigned char>(kFirstPayloadCharacter + index % kPayloadAlphabetSize)};
   }
   const std::span<const std::byte> payload_view{payload};
+  const RecordFootprint record_footprint = std::as_const(kernel).DescribeRecord(payload_view);
+  ValidateRecordFootprint(workload, record_footprint);
+  const std::size_t expected_accepted_per_round = ExpectedAcceptedPerRound(
+      workload, static_cast<std::size_t>(record_footprint.accounting_charge_bytes));
 
   const auto producer_count = static_cast<std::ptrdiff_t>(workload.producer_count);
   std::barrier initial_start{producer_count + 1};
@@ -261,7 +292,11 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
   const auto measured_cpu_time = cpu_finished_at - cpu_started_at;
 
   std::vector<std::uint64_t> latency_nanoseconds;
+  std::vector<std::uint64_t> accepted_latency_nanoseconds;
+  std::vector<std::uint64_t> rejected_latency_nanoseconds;
   latency_nanoseconds.reserve(samples.size());
+  accepted_latency_nanoseconds.reserve(samples.size());
+  rejected_latency_nanoseconds.reserve(samples.size());
   std::uint64_t accepted_records = 0;
   std::uint64_t rejected_records = 0;
   std::uint64_t observed_allocation_failures = 0;
@@ -269,8 +304,10 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
     latency_nanoseconds.push_back(sample.nanoseconds);
     if (sample.status == AttemptStatus::kAccepted) {
       ++accepted_records;
+      accepted_latency_nanoseconds.push_back(sample.nanoseconds);
     } else {
       ++rejected_records;
+      rejected_latency_nanoseconds.push_back(sample.nanoseconds);
       if (sample.status == AttemptStatus::kAllocationFailure) {
         ++observed_allocation_failures;
       }
@@ -282,7 +319,7 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
   const auto accepted_bytes = accepted_records * record_size_bytes;
   const auto rejected_bytes = rejected_records * record_size_bytes;
   const auto expected_accepted_records =
-      static_cast<std::uint64_t>(ExpectedAcceptedPerRound(workload) * workload.measured_rounds);
+      static_cast<std::uint64_t>(expected_accepted_per_round * workload.measured_rounds);
 
   std::uint64_t accounting_error_count = 0;
   impl::CountErrorIf(attempted_records != accepted_records + rejected_records,
@@ -297,7 +334,7 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
   const auto expected_initial = static_cast<std::uint64_t>(InitialOccupancyBytes(workload));
   const auto expected_logical_high_water =
       expected_initial +
-      static_cast<std::uint64_t>(ExpectedAcceptedPerRound(workload)) * record_size_bytes;
+      static_cast<std::uint64_t>(expected_accepted_per_round) * record_footprint.SerializedBytes();
   std::uint64_t retained_bound_error_count = 0;
   impl::CountErrorIf(snapshot.logical_retained_initial_bytes != expected_initial,
                      retained_bound_error_count);
@@ -328,6 +365,9 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
   return WorkloadResult{
       .workload = workload,
       .latency = ComputeLatencySummary(latency_nanoseconds),
+      .accepted_latency = ComputeLatencySummary(accepted_latency_nanoseconds),
+      .rejected_latency = ComputeLatencySummary(rejected_latency_nanoseconds),
+      .record_footprint = record_footprint,
       .wall_time = measured_wall_time,
       .process_cpu_time = measured_cpu_time,
       .cpu_utilization_percent = cpu_seconds / wall_seconds * 100.0,
@@ -342,6 +382,7 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
       .rejected_bytes = rejected_bytes,
       .allocation_count = snapshot.allocation_count,
       .allocation_failure_count = snapshot.allocation_failure_count,
+      .truncated_records = record_footprint.truncated ? accepted_records : 0U,
       .logical_retained_initial_bytes = snapshot.logical_retained_initial_bytes,
       .logical_retained_high_water_bytes = snapshot.logical_retained_high_water_bytes,
       .logical_retained_final_bytes = snapshot.logical_retained_current_bytes,

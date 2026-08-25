@@ -130,10 +130,37 @@ bool TestOccupancyAndExpectedAdmission() {
   };
   success &= Check(ulog::benchmark_support::ExpectedAcceptedPerRound(near_full) == 1U,
                    "near-full 16KiB workload must admit one producer per wave");
+  success &= Check(ulog::benchmark_support::ExpectedAcceptedPerRound(near_full, 16'448U) == 0U,
+                   "candidate-specific charge must control near-full admission");
   near_full.occupancy = Occupancy::kSaturated;
   success &= Check(ulog::benchmark_support::ExpectedAcceptedPerRound(near_full) == 0U,
                    "saturated workload must reject every producer");
   return success;
+}
+
+bool TestRecordFootprintValidation() {
+  WorkloadCase workload{
+      .producer_count = 1,
+      .record_size_bytes = 64,
+      .occupancy = Occupancy::kEmpty,
+      .capacity_bytes = 1'048'576,
+      .warmup_rounds = 1,
+      .measured_rounds = 1,
+      .repetition = 0,
+  };
+  const auto valid = ulog::benchmark_support::MakePayloadOnlyRecordFootprint(64);
+  ulog::benchmark_support::ValidateRecordFootprint(workload, valid);
+
+  auto invalid = valid;
+  invalid.fragmentation_bytes = 64;
+  bool mismatch_rejected = false;
+  try {
+    ulog::benchmark_support::ValidateRecordFootprint(workload, invalid);
+  } catch (const std::invalid_argument&) {
+    mismatch_rejected = true;
+  }
+  return Check(mismatch_rejected,
+               "footprint validation must reject a charge that omits fragmentation");
 }
 
 bool TestNearestRankPercentiles() {
@@ -181,6 +208,14 @@ bool TestBarrieredReferenceRun() {
                    "reference run retained-bound checks must pass");
   success &= Check(result.latency.sample_count == result.attempted_records,
                    "latency sample count must equal producer attempts");
+  success &= Check(result.accepted_latency.sample_count == result.accepted_records,
+                   "accepted latency count must equal accepted attempts");
+  success &= Check(result.rejected_latency.sample_count == result.rejected_records,
+                   "rejected latency count must equal rejected attempts");
+  success &= Check(result.record_footprint.accounting_charge_bytes == 16'384U,
+                   "reference footprint charge must equal the payload size");
+  success &= Check(result.truncated_records == 0U,
+                   "the reference payload-only kernel must not report truncation");
   success &= Check(result.latency.p50_nanoseconds <= result.latency.p99_nanoseconds &&
                        result.latency.p99_nanoseconds <= result.latency.p999_nanoseconds,
                    "producer latency percentiles must be monotonic");
@@ -221,7 +256,7 @@ bool TestPartialThreadLaunchFailure() {
 
 int main() {
   const bool success = TestMatrix() && TestOccupancyAndExpectedAdmission() &&
-                       TestNearestRankPercentiles() && TestBarrieredReferenceRun() &&
-                       TestPartialThreadLaunchFailure();
+                       TestRecordFootprintValidation() && TestNearestRankPercentiles() &&
+                       TestBarrieredReferenceRun() && TestPartialThreadLaunchFailure();
   return success ? 0 : 1;
 }

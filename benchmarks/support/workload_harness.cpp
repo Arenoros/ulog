@@ -4,7 +4,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
+#include <string>
 
 namespace ulog::benchmark_support {
 namespace {
@@ -108,10 +110,34 @@ std::size_t InitialOccupancyBytes(const WorkloadCase& workload) {
 }
 
 std::size_t ExpectedAcceptedPerRound(const WorkloadCase& workload) {
+  return ExpectedAcceptedPerRound(workload, workload.record_size_bytes);
+}
+
+std::size_t ExpectedAcceptedPerRound(const WorkloadCase& workload,
+                                     std::size_t accounting_charge_bytes) {
   ValidateWorkloadCase(workload);
+  if (accounting_charge_bytes == 0U) {
+    throw std::invalid_argument(
+        "Workload accounting_charge_bytes must be positive. Report the candidate's minimum "
+        "physical Record charge and retry.");
+  }
   const std::size_t initial_occupancy = InitialOccupancyBytes(workload);
   const std::size_t free_bytes = workload.capacity_bytes - initial_occupancy;
-  return std::min(workload.producer_count, free_bytes / workload.record_size_bytes);
+  return std::min(workload.producer_count, free_bytes / accounting_charge_bytes);
+}
+
+RecordFootprint MakePayloadOnlyRecordFootprint(std::size_t payload_bytes) noexcept {
+  const auto bytes = static_cast<std::uint64_t>(payload_bytes);
+  return RecordFootprint{
+      .requested_message_bytes = bytes,
+      .stored_message_bytes = bytes,
+      .owned_payload_bytes = bytes,
+      .metadata_bytes = 0,
+      .fragmentation_bytes = 0,
+      .accounting_charge_bytes = bytes,
+      .minimum_accounting_charge_bytes = 1,
+      .truncated = false,
+  };
 }
 
 LatencySummary ComputeLatencySummary(std::span<const std::uint64_t> latency_nanoseconds) {
@@ -153,6 +179,51 @@ void ValidateWorkloadCase(const WorkloadCase& workload) {
       initial_occupancy % workload.record_size_bytes != 0U) {
     throw std::invalid_argument(
         "Workload occupancy must fit the capacity and align to the selected Record size.");
+  }
+}
+
+void ValidateRecordFootprint(const WorkloadCase& workload, const RecordFootprint& footprint) {
+  ValidateWorkloadCase(workload);
+  const auto invalid = [](const char* reason) {
+    throw std::invalid_argument(
+        std::string{"Kernel Record footprint is invalid: "} + reason +
+        " Fix DescribeRecord so payload, metadata, fragmentation, and accounting charge are "
+        "exact and retry.");
+  };
+
+  if (footprint.requested_message_bytes != workload.record_size_bytes) {
+    invalid("requested_message_bytes does not match the workload Record size.");
+  }
+  if (footprint.stored_message_bytes > footprint.requested_message_bytes) {
+    invalid("stored_message_bytes exceeds requested_message_bytes.");
+  }
+  if (footprint.owned_payload_bytes < footprint.stored_message_bytes) {
+    invalid("owned_payload_bytes does not cover the stored message.");
+  }
+  if (footprint.truncated != (footprint.stored_message_bytes < footprint.requested_message_bytes)) {
+    invalid("the truncated flag disagrees with the stored message size.");
+  }
+  if (footprint.owned_payload_bytes >
+      std::numeric_limits<std::uint64_t>::max() - footprint.metadata_bytes) {
+    invalid("payload plus metadata overflows uint64_t.");
+  }
+  const std::uint64_t serialized_bytes = footprint.SerializedBytes();
+  if (serialized_bytes >
+      std::numeric_limits<std::uint64_t>::max() - footprint.fragmentation_bytes) {
+    invalid("serialized bytes plus fragmentation overflows uint64_t.");
+  }
+  if (serialized_bytes + footprint.fragmentation_bytes != footprint.accounting_charge_bytes) {
+    invalid("payload + metadata + fragmentation does not equal accounting_charge_bytes.");
+  }
+  if (footprint.minimum_accounting_charge_bytes == 0U ||
+      footprint.minimum_accounting_charge_bytes > footprint.accounting_charge_bytes) {
+    invalid("minimum_accounting_charge_bytes is zero or exceeds this Record's charge.");
+  }
+  if (footprint.accounting_charge_bytes > std::numeric_limits<std::size_t>::max()) {
+    invalid("accounting_charge_bytes cannot be represented by size_t on this platform.");
+  }
+  if (footprint.accounting_charge_bytes > workload.capacity_bytes) {
+    invalid("accounting_charge_bytes exceeds the common workload capacity.");
   }
 }
 

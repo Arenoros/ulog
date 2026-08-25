@@ -1,18 +1,14 @@
 #include <benchmark/benchmark.h>
 
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <exception>
-#include <iostream>
-#include <optional>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 
 #include "prototypes/reservation/central_reservation_kernel.hpp"
 #include "prototypes/reservation/producer_credit_reservation_kernel.hpp"
+#include "support/benchmark_driver.hpp"
 #include "support/workload_harness.hpp"
 
 namespace {
@@ -26,52 +22,8 @@ using ulog::benchmark_support::reservation::ProducerCreditReservationKernel;
 std::atomic<bool> deterministic_failure{false};
 inline constexpr std::string_view kCandidateSchedule = "paired-alternating";
 
-Mode ExtractModeArgument(int& argument_count, char** arguments) {
-  constexpr std::string_view kModePrefix = "--ulog_mode=";
-  Mode mode = Mode::kSmoke;
-  bool found_mode = false;
-  int output_index = 1;
-  for (int input_index = 1; input_index < argument_count; ++input_index) {
-    const std::string_view argument{arguments[input_index]};
-    if (!argument.starts_with(kModePrefix)) {
-      arguments[output_index] = arguments[input_index];
-      ++output_index;
-      continue;
-    }
-    if (found_mode) {
-      throw std::invalid_argument(
-          "--ulog_mode may be specified only once; use --ulog_mode=smoke or "
-          "--ulog_mode=controlled.");
-    }
-    found_mode = true;
-    const std::string_view value = argument.substr(kModePrefix.size());
-    if (value == "smoke") {
-      mode = Mode::kSmoke;
-    } else if (value == "controlled") {
-      mode = Mode::kControlled;
-    } else {
-      throw std::invalid_argument(
-          "Unknown --ulog_mode value; use --ulog_mode=smoke or --ulog_mode=controlled.");
-    }
-  }
-  argument_count = output_index;
-  return mode;
-}
-
-template <typename Kernel>
-std::string WorkloadName(const WorkloadCase& workload) {
-  return "UlogWorkload/" + std::string{Kernel::Name()} +
-         "/producers:" + std::to_string(workload.producer_count) +
-         "/record_bytes:" + std::to_string(workload.record_size_bytes) +
-         "/occupancy:" + std::string{ulog::benchmark_support::ToString(workload.occupancy)} +
-         "/repetition:" + std::to_string(workload.repetition);
-}
-
-void SetCounter(benchmark::State& state, const char* name, std::uint64_t value) {
-  state.counters[name] = static_cast<double>(value);
-}
-
 void PublishResult(benchmark::State& state, const WorkloadResult& result) {
+  using ulog::benchmark_support::benchmark_driver::SetCounter;
   SetCounter(state, "producer_count", result.workload.producer_count);
   SetCounter(state, "record_size_bytes", result.workload.record_size_bytes);
   SetCounter(state, "workload_repetition_index", result.workload.repetition);
@@ -109,36 +61,23 @@ void PublishResult(benchmark::State& state, const WorkloadResult& result) {
 }
 
 template <typename Kernel>
-void RunCandidateWorkload(benchmark::State& state, WorkloadCase workload) {
-  Kernel kernel;
-  std::optional<WorkloadResult> result;
-  try {
-    for ([[maybe_unused]] const auto iteration : state) {
-      result.emplace(ulog::benchmark_support::RunWorkload(workload, kernel));
-      state.SetIterationTime(std::chrono::duration<double>{result->wall_time}.count());
-    }
-  } catch (const std::exception& error) {
-    deterministic_failure.store(true, std::memory_order_relaxed);
-    state.SkipWithError(error.what());
-    return;
-  }
+void PublishCandidateResult(benchmark::State& state, const WorkloadResult& result, const Kernel&) {
+  PublishResult(state, result);
+}
 
-  PublishResult(state, *result);
-  if (result->accounting_error_count != 0U || result->retained_bound_error_count != 0U ||
-      result->allocation_failure_count != 0U) {
-    deterministic_failure.store(true, std::memory_order_relaxed);
-    state.SkipWithError(
-        "Deterministic workload checks failed; inspect accounting, allocation, and retained "
-        "counters in the JSON result.");
-  }
+template <typename Kernel>
+bool HasDeterministicFailure(const WorkloadResult& result, const Kernel&) {
+  return result.accounting_error_count != 0U || result.retained_bound_error_count != 0U ||
+         result.allocation_failure_count != 0U;
 }
 
 template <typename Kernel>
 void RegisterCandidateWorkload(const WorkloadCase& workload) {
-  benchmark::RegisterBenchmark(WorkloadName<Kernel>(workload).c_str(), RunCandidateWorkload<Kernel>,
-                               workload)
-      ->Iterations(1)
-      ->UseManualTime();
+  ulog::benchmark_support::benchmark_driver::RegisterSingleIterationWorkload<Kernel>(
+      "UlogWorkload", workload, deterministic_failure, PublishCandidateResult<Kernel>,
+      HasDeterministicFailure<Kernel>,
+      "Deterministic workload checks failed; inspect accounting, allocation, and retained "
+      "counters in the JSON result.");
 }
 
 void RegisterWorkloads(Mode mode) {
@@ -164,20 +103,6 @@ void RegisterWorkloads(Mode mode) {
 }  // namespace
 
 int main(int argument_count, char** arguments) {
-  Mode mode = Mode::kSmoke;
-  try {
-    mode = ExtractModeArgument(argument_count, arguments);
-  } catch (const std::invalid_argument& error) {
-    std::cerr << "error: " << error.what() << '\n';
-    return 2;
-  }
-
-  benchmark::Initialize(&argument_count, arguments);
-  if (benchmark::ReportUnrecognizedArguments(argument_count, arguments)) {
-    return 2;
-  }
-  RegisterWorkloads(mode);
-  benchmark::RunSpecifiedBenchmarks();
-  benchmark::Shutdown();
-  return deterministic_failure.load(std::memory_order_relaxed) ? 1 : 0;
+  return ulog::benchmark_support::benchmark_driver::RunMain(
+      argument_count, arguments, deterministic_failure, RegisterWorkloads);
 }

@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from conan_cache_key import hash_profile
 from benchmark_results_test import make_document
+from record_storage_results_test import make_document as make_record_storage_document
 
 
 def make_fake_conan_environment(temp_path: Path, profile: object) -> dict[str, str]:
@@ -254,6 +255,52 @@ class ScriptToolsTest(unittest.TestCase):
             self.assertIn("retry", result.stderr)
             self.assertNotIn("Traceback", result.stderr)
             self.assertEqual(destination.read_text(encoding="utf-8"), "preserve-me")
+
+    def test_benchmark_collector_publishes_both_result_protocols(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            temp_path = Path(temp_directory)
+            conan_home = temp_path / "conan-home"
+            result_root = conan_home / "p" / "b" / "latest"
+            reservation_source = result_root / "benchmark-results.json"
+            record_storage_source = result_root / "record-storage-results.json"
+            reservation_destination = temp_path / "reservation.json"
+            record_storage_destination = temp_path / "record-storage.json"
+            result_root.mkdir(parents=True)
+            reservation_source.write_text(
+                json.dumps(make_document()), encoding="utf-8"
+            )
+            record_storage_source.write_text(
+                json.dumps(make_record_storage_document()), encoding="utf-8"
+            )
+
+            environment = os.environ.copy()
+            environment["CONAN_HOME"] = str(conan_home)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PROJECT_ROOT / "scripts" / "collect_benchmark_results.py"),
+                    str(reservation_destination),
+                    str(record_storage_destination),
+                ],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                json.loads(reservation_destination.read_text(encoding="utf-8"))[
+                    "context"
+                ]["ulog_result_protocol"],
+                "ulog-workload-results/3",
+            )
+            self.assertEqual(
+                json.loads(record_storage_destination.read_text(encoding="utf-8"))[
+                    "context"
+                ]["ulog_result_protocol"],
+                "ulog-record-storage-results/1",
+            )
 
 
 if __name__ == "__main__":

@@ -41,6 +41,9 @@ class ProducerCreditReservationKernel final {
   void BeginMeasurement() noexcept;
   void ObserveRetainedHighWater() noexcept;
   void EndMeasurement();
+  [[nodiscard]] RecordFootprint DescribeRecord(std::span<const std::byte> payload) const noexcept {
+    return MakePayloadOnlyRecordFootprint(payload.size());
+  }
   [[nodiscard]] Attempt TryProduce(std::size_t producer_index,
                                    std::span<const std::byte> payload) noexcept;
   void Release(Attempt& attempt) noexcept;
