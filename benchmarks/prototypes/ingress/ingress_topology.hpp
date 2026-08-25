@@ -21,7 +21,7 @@ enum class PublishStatus : std::uint8_t { kAccepted, kFull, kContended, kInvalid
 
 struct PublishResult final {
   PublishStatus status{PublishStatus::kInvalid};
-  std::optional<std::uint64_t> admission_sequence;
+  std::optional<std::uint64_t> admission_sequence{};
   std::size_t publication_actions{0};
 };
 
@@ -34,7 +34,7 @@ struct ConsumedRecord final {
 
 struct ConsumeResult final {
   ConsumeStatus status{ConsumeStatus::kEmpty};
-  std::optional<ConsumedRecord> record;
+  std::optional<ConsumedRecord> record{};
 };
 
 struct TopologySnapshot final {
