@@ -165,6 +165,33 @@ incomplete candidate inventory or matrix, the wrong schedule, cross-candidate
 logical differences, invalid footprint or charge arithmetic, unexpected
 allocations, retained-bound failures, and Record validation failures.
 
+## Controlled evidence for the kernel decision
+
+The complete controlled matrix at direct implementation revision
+`2da97030ea3b2dcb779c3acde5fcc4fe3c90260f` finished in 46 minutes 41 seconds
+and passed strict validation for all 2,520
+rows and seven repetitions. The raw JSON SHA-256 is
+`6733634d9716ca13b519e1cb80cd493cf1d2456f7bad631c9e2a126bb7c3f8ba`.
+The result predates a later publication-charge refinement that recomputes the
+actual charge at commit. The controlled workload and its canonical published
+footprints are unchanged, so the size and fragmentation comparisons remain
+applicable. Current unit, allocation, accounting, and composed controlled
+validation cover the refined commit semantics; historical timing remains
+advisory for that revision only.
+
+No ownership, allocation, footprint, accounting, retained-bound, truncation, or
+Record-validation error was reported. For requested messages of 64, 256, 1,024,
+4,096, and 16,384 bytes, the canonical serialized sizes were 352, 544, 1,312,
+4,384, and 16,384 bytes. Contiguous fragmentation was 0-32 bytes, compared with
+0-224 for chunked storage and 0-992 for hybrid storage; minimum charges were 64,
+256, and 512 bytes respectively. Advisory latency and throughput crossed over
+between layouts and did not establish a timing winner.
+
+Accordingly, [ADR 0017](adr/0017-use-producer-credits-contiguous-records-and-producer-lanes.md)
+selects contiguous storage for its deterministic minimum charge, fragmentation,
+simple traversal, and implementation locality. It does not claim a universal
+timing advantage or expose the private layout.
+
 ## Reproduction
 
 Configure a Release build with `ULOG_BUILD_BENCHMARKS=ON`; the Conan workflow in
@@ -193,13 +220,19 @@ schedule, then run on a dedicated, otherwise idle machine:
 ```shell
 python scripts/check_record_storage_schedule.py \
   <build-dir>/bin/ulog-record-storage-benchmarks
-<build-dir>/bin/ulog-record-storage-benchmarks --ulog_mode=controlled \
+timeout --signal=TERM --kill-after=30s 3600s \
+  <build-dir>/bin/ulog-record-storage-benchmarks --ulog_mode=controlled \
   --benchmark_color=false \
   --benchmark_out=controlled-record-storage-results.json \
   --benchmark_out_format=json
 python scripts/record_storage_results.py validate \
   controlled-record-storage-results.json
 ```
+
+The controlled body is forbidden in hosted CI. The historical 46-minute run did
+not retain external-timeout provenance; future reproductions use the one-hour
+cap above rather than copying that omission. A timeout or partial JSON is
+diagnostic only and must not be treated as evidence.
 
 On a multi-config Windows build, the executable is normally
 `<build-dir>/bin/Release/ulog-record-storage-benchmarks.exe`. Archive the raw

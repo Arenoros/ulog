@@ -95,6 +95,11 @@ ordered typed fields, and producer-captured context. Its compact binary storage
 is private implementation rather than a public wire format.
 _Avoid_: encoded log line, borrowed formatting arguments
 
+**Producer kernel**:
+The private bounded part of a Runtime that admits, completes, and transfers one
+Structured Record from an application producer into the asynchronous pipeline.
+_Avoid_: public queue, producer backend
+
 **Encoding**:
 Route-specific serialization of a Structured Record into TSKV, LTSV, JSON,
 raw text, OTLP, or another sink payload after ingress admission. Message

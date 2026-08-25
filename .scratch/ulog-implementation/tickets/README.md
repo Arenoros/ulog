@@ -47,6 +47,7 @@ Active status, claims, blockers, and completion live in GitHub.
 | 17 | [Operation state and control reserve](17-operation-state-and-control-reserve.md) | [#18](https://github.com/Arenoros/ulog/issues/18) | Production bounded producer path |
 | 18 | [In-memory Runtime tracer](18-in-memory-runtime-tracer.md) | [#19](https://github.com/Arenoros/ulog/issues/19) | Frontend performance gate; Operation state and control reserve |
 
-The current frontier is Baseline capability manifest. Performance work begins
-after that manifest defines the representative workload, while corpus and
-benchmark tickets may then progress along their independent dependency edges.
+Resolving the producer-kernel decision enables the Minimal native frontend and
+then the Production bounded producer path; both consume the private kernel
+contract without exposing its prototype types or Record layout. GitHub issues
+and the Project remain canonical for the active frontier and blocker state.

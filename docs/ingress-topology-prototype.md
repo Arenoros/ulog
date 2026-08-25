@@ -184,11 +184,14 @@ Within this prototype's maintained workload, `per-producer-lanes` is therefore
 the best bounded producer handoff: it combines the minimum published producer
 bound with lossless topology admission. That recommendation rests on the
 deterministic bound and rejection behavior, not on noisy timing. It is not the
-final production topology. Lanes require a stable producer identity, partition
-capacity, and move selection work to the single consumer. The ring remains the
-stronger fallback when shared spare capacity matters more than its larger
-producer bound. Chunk mapping did not produce a durable timing advantage that
-offsets its high-concurrency contention rejections.
+final production decision by itself. Lanes require a stable producer identity,
+partition capacity, and move selection work to the single consumer. The ring
+remains the stronger fallback when shared spare capacity matters more than its
+larger producer bound. Chunk mapping did not produce a durable timing advantage
+that offsets its high-concurrency contention rejections.
+[ADR 0017](adr/0017-use-producer-credits-contiguous-records-and-producer-lanes.md)
+subsequently selects producer lanes after combining this result with reservation,
+storage, and composed-kernel evidence.
 
 ## Reproduction and CI limits
 
@@ -229,5 +232,6 @@ python scripts/ingress_results.py validate controlled-ingress-results.json
 Archive the JSON with the exact revision, compiler, dependency lockfile,
 operating system, and machine configuration. Hosted-runner timing remains
 advisory. Correctness, bounded work, protocol validation, and sanitizer results
-are acceptance evidence; performance measurements compare trade-offs but do not
-choose the production topology.
+are acceptance evidence. The prototype measurements compare trade-offs but do
+not choose the production topology in isolation; ADR 0017 records the combined
+decision.

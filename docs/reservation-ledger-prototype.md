@@ -109,21 +109,30 @@ occupancy. The performance evidence therefore shows a workload-dependent
 crossover rather than a universal winner: cached credit reduces tail cost when
 many producers can consume it, while refill/rejection bookkeeping and retained
 idle credit dominate small or rejected waves. Final design selection remains a
-later architecture decision.
+separate architecture decision. [ADR 0017](adr/0017-use-producer-credits-contiguous-records-and-producer-lanes.md)
+subsequently selects producer credits for the initial private kernel while
+retaining this crossover as an explicit trade-off.
 
 The raw result SHA-256 values are
 `fda06db02777972d69d88f20c4dce353e38d079d13ed9ec1e5f8f0ecb25f0127`
 and `c7057d36921fd013106a3c49e328c4e112746ad118d5674061b7395155dad2b9`.
+Those historical runs did not retain external-timeout provenance; future
+reproductions use the 1,800-second limit below rather than copying that omission.
 
 Use a controlled result only for performance comparison:
 
 ```shell
-ulog-workload-benchmarks --ulog_mode=controlled --benchmark_color=false \
+timeout --signal=TERM --kill-after=30s 1800s \
+  ulog-workload-benchmarks --ulog_mode=controlled --benchmark_color=false \
   --benchmark_out=controlled-results.json --benchmark_out_format=json
 python scripts/benchmark_results.py validate controlled-results.json
 ```
 
+The controlled body is forbidden in hosted CI. A timeout or partial JSON is
+diagnostic only; validate and retain results only after a complete bounded run.
+
 Compare the seven repetitions per cell, with particular attention to p99.9 for
 16 and 32 producers under near-full and saturated occupancy. Keep raw JSON with
-the source revision and machine details. Timing evidence informs the later
-architecture decision; this prototype deliberately leaves that decision open.
+the source revision and machine details. This prototype evidence alone did not
+select a design; ADR 0017 combines it with storage, ingress, and composed stress
+evidence.

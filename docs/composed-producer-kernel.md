@@ -6,6 +6,11 @@ owned Record storage, per-producer ingress lanes, publication ordering, and a
 single consuming thread. It does not define `Logger`, `Runtime`, encoder, sink,
 route, or I/O APIs.
 
+[ADR 0017](adr/0017-use-producer-credits-contiguous-records-and-producer-lanes.md)
+selects this composition for the initial private production kernel. The
+prototype types and layout remain benchmark-only evidence rather than production
+or public API.
+
 ## Composition and admission order
 
 The maintained path combines:
@@ -22,8 +27,8 @@ claim one producer-lane cell
 -> reserve the worst-case serialized byte budget
 -> invoke the context callback
 -> invoke the message callback
--> publish one immutable Record and transfer byte ownership
--> assign the admission sequence
+-> finalize one immutable Record and commit its actual charge
+-> assign the admission sequence, publish, and transfer ownership at one point
 ```
 
 Lane-full, contended, invalid-producer, and byte-budget rejection therefore
@@ -32,6 +37,11 @@ topology counters and consumes no sequence until `Publish`; abandoning it after
 a byte-budget rejection only releases the lane guard. Once callbacks begin,
 the fixed Record slot, physical charge, and lane cell are already held, so the
 remaining publication path is infallible for a valid internal Record.
+
+Finalizing the private Record makes its view immutable but does not yet expose
+it to the pipeline. The successful sequence fetch inside topology `Publish` is
+the admission linearization point and transfers Record and charge ownership;
+all following cell-publication operations are infallible.
 
 The prototype requires one stable exclusive producer thread per producer
 index. This is the same ownership rule as the producer-credit ledger and avoids
@@ -145,7 +155,27 @@ ulog-composed-producer-benchmarks --ulog_mode=smoke --benchmark_min_time=0.001s 
 python scripts/composed_producer_results.py validate composed-producer-results.json
 ```
 
-The complete controlled mode must not be added to hosted CI. When evidence is
-needed for the following producer-kernel decision, run the exact committed
-revision on the controlled VM under an external 3,600-second hard timeout and
-retain the JSON, hash, toolchain, machine, and elapsed-time provenance.
+## Controlled decision evidence
+
+One complete controlled run was collected from exact code revision
+`28858895cc197ffa748baa2426720b0e9320ee82` on `dockervm`: Debian x86-64, two
+11th-generation Intel Core i7-11800H vCPUs, GCC 12.2, and Google Benchmark
+1.9.5. The process ran at reduced scheduling priority with a 768 MiB virtual
+memory bound and an external 1,200-second TERM/KILL deadline. Starting load
+average in the benchmark context was 0.87/0.33/0.11; the earlier pre-pilot host
+sample was 0.00/0.01/0.00. It finished in 7 minutes 47 seconds.
+
+The validator accepted all 840 rows, seven repetitions, and 84,000,000 measured
+attempts. Exactly 57,662,500 were accepted and 26,337,500 were rejected by the
+byte model before callbacks. Allocation, allocation-failure, accounting,
+retained-bound, FIFO, Record-validation, publication, lifecycle, and topology
+rejection counters were all zero. The 3,686,018-byte raw JSON SHA-256 is
+`0412a92d3b8b214d13e76d9e5cb25895748b1a14dacbc248bf2887331273f3ae`.
+Representative timing medians and the component alternatives are recorded in
+[ADR 0017](adr/0017-use-producer-credits-contiguous-records-and-producer-lanes.md).
+
+The complete controlled mode must never be added to hosted CI. Future composed
+evidence runs must use the exact committed revision on the controlled VM under
+an external 1,200-second hard timeout and retain JSON, hash, toolchain, machine,
+and elapsed-time provenance. A timeout invalidates the run and requires
+diagnosis; it is not permission to raise the limit or retry blindly.

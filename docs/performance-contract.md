@@ -10,6 +10,42 @@ system, compiler, adapters, and workload.
 2. Maximize sustained record and byte throughput without violating memory or
    ordering invariants.
 
+## Initial producer kernel profile
+
+The first production producer kernel follows
+[ADR 0017](adr/0017-use-producer-credits-contiguous-records-and-producer-lanes.md).
+Its configurable initial profile uses a 64-byte accounting quantum and minimum
+Record charge, a 16,384-byte maximum serialized Record, 32 producer slots, and
+64 ingress cells. The 1 MiB prototype workload capacity is not a production
+pipeline-budget default.
+
+One active application producer exclusively owns a registered producer slot.
+Slot exhaustion is a drop-newest rejection before caller evaluation. A slot is
+not reused until its writer is closed, its lane is drained, and its credit is
+reconciled; stale producer-local registrations cannot address a reused slot.
+The default two cells per slot allow one cell to remain held by the consumer
+while its producer uses the other.
+
+An admission attempt claims its producer-lane cell and reserves the complete
+worst-case Record charge before context or message callbacks. Open-writer
+logical accounting uses that worst-case serialized size. Physical accounting
+uses `max(64, round_up(serialized_size, 64))` and includes cached or returned
+producer credit. Commit shrinks logical ownership to the actual immutable
+Record and assigns its actual rounded charge; unused physical credit remains
+accounted until reclamation. Lane, slot, or byte exhaustion invokes no callback
+and consumes no admission sequence.
+
+The admission sequence is assigned by the successful global fetch inside
+publication. That operation is the linearization point and transfers Record
+and charge ownership to the pipeline; no fallible work follows it. The consumer
+holds its read-only Record claim until ownership is released and private storage
+is reset, then acknowledges the lane cell.
+
+Fixed preallocated Record backing is not live retained payload and is reported
+separately from logical and physical retained counters. Runtime configuration
+must nevertheless declare a maximum that includes this backing, producer state,
+all payload pools, and the independent control and progress reserves.
+
 ## Deterministic hot-path invariants
 
 - Compile-time-erased, runtime-filtered, and admission-rejected records do not
@@ -42,6 +78,10 @@ system, compiler, adapters, and workload.
 - Drop-newest is the default. Priority-aware drop-oldest evicts only equal- or
   lower-priority eligible Records, and adaptive sampling uses stateless hashing
   rather than dynamic per-site state.
+- The initial producer kernel does not steal credit or cells from another
+  producer on the calling thread. A hot producer may therefore reject while
+  another bounded producer slot has idle capacity; this remains an explicit
+  accounted trade-off rather than hidden blocking or scanning.
 - Error and Critical Records have a configurable reserved byte budget and are
   shed last without introducing synchronous producer-side I/O.
 - Explicit `Block(deadline)` is supported separately, is never the default, and
@@ -55,6 +95,10 @@ system, compiler, adapters, and workload.
   their own output so a slow destination cannot stall independent routes.
 - Route batching is bounded by configurable record count, encoded bytes, and
   maximum delay. Configured high-severity levels wake the pipeline immediately.
+- Producer payload credits never consume the independently bounded control or
+  progress reserves. Future drop and routing policies may extend private
+  ingress metadata without exposing the private Record layout or adding route
+  work to the producer path.
 
 The zero-allocation guarantee covers Ulog's native scalar, string, and fmt
 paths. It cannot cover allocations performed while evaluating caller values,

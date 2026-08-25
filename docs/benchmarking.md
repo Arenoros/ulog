@@ -163,8 +163,11 @@ python scripts/composed_producer_results.py validate composed-producer-results.j
 
 See [Composed producer kernel](composed-producer-kernel.md) for callback ordering,
 publication and consumption linearization points, ownership lifetime, accounting,
-stress coverage, and the bounded CI/controlled-run policy. This remains benchmark
-infrastructure rather than a public logging API.
+stress coverage, and the bounded CI/controlled-run policy. The composition is
+selected in
+[ADR 0017](adr/0017-use-producer-credits-contiguous-records-and-producer-lanes.md),
+but this executable remains benchmark infrastructure rather than public logging
+API.
 
 ## Controlled mode
 
@@ -176,7 +179,8 @@ result and compare like-for-like runs only.
 Run the Release executable directly so it selects the longer workload:
 
 ```shell
-<build-dir>/bin/ulog-workload-benchmarks --ulog_mode=controlled \
+timeout --signal=TERM --kill-after=30s 1800s \
+  <build-dir>/bin/ulog-workload-benchmarks --ulog_mode=controlled \
   --benchmark_color=false \
   --benchmark_out=controlled-results.json \
   --benchmark_out_format=json
@@ -187,4 +191,14 @@ On a multi-config Windows build, the executable is normally
 `<build-dir>/bin/Release/ulog-workload-benchmarks.exe`. Archive the raw JSON, use
 all seven repetitions for comparisons, and confirm a suspected regression with
 a fresh rerun before applying a hard latency or throughput gate. The rules in
-`docs/performance-contract.md` remain authoritative.
+`docs/performance-contract.md` remain authoritative. On Windows, run through an
+equivalent external supervisor with the same TERM/KILL semantics and wall-clock
+limit; the benchmark binary is not its own timeout guard.
+
+Every future controlled execution must have an external wall-clock limit chosen
+from a short pilot and recorded with the result. Historical evidence that did
+not retain timeout provenance must say so explicitly. The composed producer
+matrix uses a 1,200-second hard limit and normally finishes in under eight
+minutes on `dockervm`. A timed-out or partial JSON file is diagnostic only and
+must never be merged, published, or treated as evidence. Full controlled bodies
+are forbidden in GitHub-hosted workflows.
