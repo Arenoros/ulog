@@ -139,6 +139,57 @@ publication actions, and the candidate's action limit.
 schedule, inconsistent workload or topology accounting, retained state after
 drain, validation errors, or an action-bound violation.
 
+## Controlled evidence and prototype recommendation
+
+One controlled run was collected for exact revision
+`f3c7e017f71546c6e41ed6d99b89908fcd10d15c` on `dockervm`: a Debian VM with two
+11th-generation Intel Core i7-11800H vCPUs, 4 GiB assigned to the benchmark
+container, GCC 12.2, and Google Benchmark 1.9.5. Starting load average was
+0.02/0.11/0.08. The run completed in 35 minutes 22 seconds under an external
+3,600-second deadline. The validator accepted all 2,520 rows and 252,000,000
+measured attempts with zero accounting, retained-bound, allocation-failure,
+FIFO, sequence, or Record-validation errors. The raw JSON SHA-256 is
+`913021da09bb280117e808446ab86785efe08cbbb7ccacc2b74a53ab48c377f0`.
+The exact-revision
+[GitHub Actions run](https://github.com/Arenoros/ulog/actions/runs/32883565599)
+completed all five jobs in 3 minutes 47 seconds. Its Clang 18 TSan job ran and
+passed 22 of 22 tests, including every ingress unit, schedule, smoke, validator,
+and stress check.
+
+Saturated cells remain part of the correctness evidence but are excluded from
+the handoff comparison because the common byte budget rejects them before the
+topology is called. Repetitions 0-5 form 540 balanced paired active cells;
+repetition 6 supplies 90 holdout cells. Effects below are median paired ratios
+relative to producer lanes. Positive p99 means slower, while positive delivered
+Records/s means faster.
+
+| Candidate | Observed / published actions | Balanced topology acceptance | Balanced p99 | Balanced Records/s | Holdout p99 | Holdout Records/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `bounded-mpsc-ring` | 12 / 70 | 100% | +0.98% | +0.37% | +0.93% | -0.93% |
+| `chunked-mpsc` | 11 / 11 | 99.8876% | +0.34% | -0.22% | +0.45% | -0.62% |
+| `per-producer-lanes` | 11 / 11 | 100% | baseline | baseline | baseline | baseline |
+
+The ring and lanes accepted all 49,425,000 balanced topology attempts. Chunked
+admitted 49,377,473 of 49,433,054 attempts and rejected the other 55,581 on its
+mapped-chunk guard. Those rejections appeared only at 16 and 32 producers, at
+0.3650% and 0.3647% respectively; the holdout repeated the deficit. Lanes had
+the lower p99 in 319 of 540 balanced comparisons against the ring and 283 of 540
+against chunked, but only 51 of 90 and 47 of 90 holdout comparisons. Delivered
+throughput differences were small and changed direction for the ring in the
+holdout. Position-normalized timing also drifted by about one percent. With
+advisory timing on two vCPUs and no independent confirmation run, this evidence
+does not establish a latency or throughput winner.
+
+Within this prototype's maintained workload, `per-producer-lanes` is therefore
+the best bounded producer handoff: it combines the minimum published producer
+bound with lossless topology admission. That recommendation rests on the
+deterministic bound and rejection behavior, not on noisy timing. It is not the
+final production topology. Lanes require a stable producer identity, partition
+capacity, and move selection work to the single consumer. The ring remains the
+stronger fallback when shared spare capacity matters more than its larger
+producer bound. Chunk mapping did not produce a durable timing advantage that
+offsets its high-concurrency contention rejections.
+
 ## Reproduction and CI limits
 
 Configure a Release build with `ULOG_BUILD_BENCHMARKS=ON` and
