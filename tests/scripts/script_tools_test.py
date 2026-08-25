@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from conan_cache_key import hash_profile
 from benchmark_results_test import make_document
+from ingress_results_test import make_document as make_ingress_document
 from record_storage_results_test import make_document as make_record_storage_document
 
 
@@ -256,21 +257,26 @@ class ScriptToolsTest(unittest.TestCase):
             self.assertNotIn("Traceback", result.stderr)
             self.assertEqual(destination.read_text(encoding="utf-8"), "preserve-me")
 
-    def test_benchmark_collector_publishes_both_result_protocols(self):
+    def test_benchmark_collector_publishes_all_result_protocols(self):
         with tempfile.TemporaryDirectory() as temp_directory:
             temp_path = Path(temp_directory)
             conan_home = temp_path / "conan-home"
             result_root = conan_home / "p" / "b" / "latest"
             reservation_source = result_root / "benchmark-results.json"
             record_storage_source = result_root / "record-storage-results.json"
+            ingress_source = result_root / "ingress-results.json"
             reservation_destination = temp_path / "reservation.json"
             record_storage_destination = temp_path / "record-storage.json"
+            ingress_destination = temp_path / "ingress.json"
             result_root.mkdir(parents=True)
             reservation_source.write_text(
                 json.dumps(make_document()), encoding="utf-8"
             )
             record_storage_source.write_text(
                 json.dumps(make_record_storage_document()), encoding="utf-8"
+            )
+            ingress_source.write_text(
+                json.dumps(make_ingress_document()), encoding="utf-8"
             )
 
             environment = os.environ.copy()
@@ -281,6 +287,7 @@ class ScriptToolsTest(unittest.TestCase):
                     str(PROJECT_ROOT / "scripts" / "collect_benchmark_results.py"),
                     str(reservation_destination),
                     str(record_storage_destination),
+                    str(ingress_destination),
                 ],
                 capture_output=True,
                 check=False,
@@ -300,6 +307,12 @@ class ScriptToolsTest(unittest.TestCase):
                     "context"
                 ]["ulog_result_protocol"],
                 "ulog-record-storage-results/2",
+            )
+            self.assertEqual(
+                json.loads(ingress_destination.read_text(encoding="utf-8"))["context"][
+                    "ulog_result_protocol"
+                ],
+                "ulog-ingress-results/1",
             )
 
 

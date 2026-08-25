@@ -27,6 +27,10 @@ class ReferenceLedgerKernel final {
 
   [[nodiscard]] static constexpr std::string_view Name() noexcept { return "reference-ledger"; }
 
+  [[nodiscard]] static constexpr WorkloadAdmissionModel AdmissionModel() noexcept {
+    return WorkloadAdmissionModel::kExactCapacity;
+  }
+
   void Prepare(const WorkloadCase& workload);
   void BeginMeasurement() noexcept;
   void ObserveRetainedHighWater() noexcept;

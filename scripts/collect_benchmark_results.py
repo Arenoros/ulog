@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from benchmark_results import BenchmarkResultsError, validate_result_file
+from ingress_results import validate_result_file as validate_ingress_result_file
 from record_storage_results import validate_result_file as validate_record_storage_result_file
 
 
@@ -43,10 +44,10 @@ def collect_newest_result(
 
 
 def main() -> int:
-    if len(sys.argv) not in (2, 3):
+    if len(sys.argv) not in (2, 3, 4):
         print(
             "usage: collect_benchmark_results.py <reservation-destination.json> "
-            "[record-storage-destination.json]",
+            "[record-storage-destination.json] [ingress-destination.json]",
             file=sys.stderr,
         )
         return 2
@@ -61,7 +62,7 @@ def main() -> int:
     ):
         return 1
 
-    if len(sys.argv) == 3 and not collect_newest_result(
+    if len(sys.argv) >= 3 and not collect_newest_result(
         conan_home,
         "record-storage-results.json",
         Path(sys.argv[2]),
@@ -69,6 +70,15 @@ def main() -> int:
         "ulog-record-storage-results/2",
     ):
         return 1
+    if len(sys.argv) == 4:
+        if not collect_newest_result(
+            conan_home,
+            "ingress-results.json",
+            Path(sys.argv[3]),
+            validate_ingress_result_file,
+            "ulog-ingress-results/1",
+        ):
+            return 1
     return 0
 
 

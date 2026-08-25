@@ -37,6 +37,10 @@ class ProducerCreditReservationKernel final {
     return "producer-credit-reservation";
   }
 
+  [[nodiscard]] static constexpr WorkloadAdmissionModel AdmissionModel() noexcept {
+    return WorkloadAdmissionModel::kExactCapacity;
+  }
+
   void Prepare(const WorkloadCase& workload);
   void BeginMeasurement() noexcept;
   void ObserveRetainedHighWater() noexcept;

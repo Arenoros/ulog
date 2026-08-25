@@ -39,6 +39,13 @@ target_link_libraries(
 )
 ulog_configure_target(ulog-record-storage-benchmarks)
 
+add_executable(ulog-ingress-topology-benchmarks ingress_topology_benchmark.cpp)
+target_compile_features(ulog-ingress-topology-benchmarks PRIVATE cxx_std_20)
+target_link_libraries(
+  ulog-ingress-topology-benchmarks PRIVATE ulog-record-storage-support benchmark::benchmark
+)
+ulog_configure_target(ulog-ingress-topology-benchmarks)
+
 add_executable(ulog-workload-harness-test workload_harness_test.cpp)
 target_compile_features(ulog-workload-harness-test PRIVATE cxx_std_20)
 target_link_libraries(ulog-workload-harness-test PRIVATE ulog-workload-support)
@@ -54,9 +61,36 @@ target_compile_features(ulog-record-storage-test PRIVATE cxx_std_20)
 target_link_libraries(ulog-record-storage-test PRIVATE ulog-record-storage-support)
 ulog_configure_target(ulog-record-storage-test)
 
+add_executable(ulog-ingress-topology-test ingress_topology_test.cpp)
+target_compile_features(ulog-ingress-topology-test PRIVATE cxx_std_20)
+target_link_libraries(ulog-ingress-topology-test PRIVATE ulog-record-storage-support)
+ulog_configure_target(ulog-ingress-topology-test)
+
+add_executable(ulog-chunked-mpsc-test chunked_mpsc_test.cpp)
+target_compile_features(ulog-chunked-mpsc-test PRIVATE cxx_std_20)
+target_link_libraries(ulog-chunked-mpsc-test PRIVATE ulog-record-storage-support)
+ulog_configure_target(ulog-chunked-mpsc-test)
+
+add_executable(ulog-per-producer-lanes-test per_producer_lanes_test.cpp)
+target_compile_features(ulog-per-producer-lanes-test PRIVATE cxx_std_20)
+target_link_libraries(ulog-per-producer-lanes-test PRIVATE ulog-record-storage-support)
+ulog_configure_target(ulog-per-producer-lanes-test)
+
+if(ULOG_BUILD_STRESS_TESTS)
+  add_executable(ulog-ingress-topology-stress ingress_topology_stress.cpp)
+  target_compile_features(ulog-ingress-topology-stress PRIVATE cxx_std_20)
+  target_link_libraries(
+    ulog-ingress-topology-stress PRIVATE ulog-record-storage-support Threads::Threads
+  )
+  ulog_configure_target(ulog-ingress-topology-stress)
+endif()
+
 add_test(NAME ulog.workload-harness-unit COMMAND ulog-workload-harness-test)
 add_test(NAME ulog.reservation-ledger-unit COMMAND ulog-reservation-ledger-test)
 add_test(NAME ulog.record-storage-unit COMMAND ulog-record-storage-test)
+add_test(NAME ulog.ingress-topology-unit COMMAND ulog-ingress-topology-test)
+add_test(NAME ulog.chunked-mpsc-unit COMMAND ulog-chunked-mpsc-test)
+add_test(NAME ulog.per-producer-lanes-unit COMMAND ulog-per-producer-lanes-test)
 add_test(
   NAME ulog.benchmark-schedule
   COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check_benchmark_schedule.py"
@@ -91,15 +125,36 @@ add_test(NAME ulog.record-storage-benchmark-results
          COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/record_storage_results.py"
                  validate "${PROJECT_BINARY_DIR}/record-storage-results.json"
 )
+add_test(NAME ulog.ingress-topology-schedule
+         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check_ingress_schedule.py"
+                 "$<TARGET_FILE:ulog-ingress-topology-benchmarks>"
+)
+add_test(
+  NAME ulog.ingress-topology-benchmark-smoke
+  COMMAND
+    ulog-ingress-topology-benchmarks --ulog_mode=smoke --benchmark_min_time=0.001s
+    --benchmark_color=false "--benchmark_out=${PROJECT_BINARY_DIR}/ingress-results.json"
+    --benchmark_out_format=json
+)
+add_test(NAME ulog.ingress-topology-benchmark-results
+         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/ingress_results.py"
+                 validate "${PROJECT_BINARY_DIR}/ingress-results.json"
+)
+if(ULOG_BUILD_STRESS_TESTS)
+  add_test(NAME ulog.ingress-topology-stress COMMAND ulog-ingress-topology-stress)
+endif()
 set_tests_properties(ulog.workload-harness-unit PROPERTIES LABELS "benchmark;unit")
 set_tests_properties(ulog.reservation-ledger-unit PROPERTIES LABELS "benchmark;unit")
 set_tests_properties(ulog.record-storage-unit PROPERTIES LABELS "benchmark;unit")
+set_tests_properties(ulog.ingress-topology-unit PROPERTIES LABELS "benchmark;unit")
+set_tests_properties(ulog.chunked-mpsc-unit PROPERTIES LABELS "benchmark;unit")
+set_tests_properties(ulog.per-producer-lanes-unit PROPERTIES LABELS "benchmark;unit")
 set_tests_properties(
   ulog.benchmark-schedule PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS
                                      "benchmark;tooling"
 )
-set_tests_properties(ulog.version-benchmark-smoke PROPERTIES LABELS "benchmark")
-set_tests_properties(ulog.benchmark-smoke PROPERTIES LABELS "benchmark")
+set_tests_properties(ulog.version-benchmark-smoke PROPERTIES LABELS "benchmark" TIMEOUT 120)
+set_tests_properties(ulog.benchmark-smoke PROPERTIES LABELS "benchmark" TIMEOUT 120)
 set_tests_properties(
   ulog.benchmark-results PROPERTIES DEPENDS ulog.benchmark-smoke ENVIRONMENT
                                     "PYTHONDONTWRITEBYTECODE=1" LABELS "benchmark;tooling"
@@ -108,9 +163,26 @@ set_tests_properties(
   ulog.record-storage-schedule PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS
                                           "benchmark;tooling"
 )
-set_tests_properties(ulog.record-storage-benchmark-smoke PROPERTIES LABELS "benchmark")
+set_tests_properties(ulog.record-storage-benchmark-smoke PROPERTIES LABELS "benchmark" TIMEOUT 120)
 set_tests_properties(
   ulog.record-storage-benchmark-results
   PROPERTIES DEPENDS ulog.record-storage-benchmark-smoke ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
              LABELS "benchmark;tooling"
 )
+set_tests_properties(
+  ulog.ingress-topology-schedule PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS
+                                            "benchmark;tooling"
+)
+set_tests_properties(
+  ulog.ingress-topology-benchmark-smoke PROPERTIES LABELS "benchmark" TIMEOUT 120
+)
+set_tests_properties(
+  ulog.ingress-topology-benchmark-results
+  PROPERTIES DEPENDS ulog.ingress-topology-benchmark-smoke ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+             LABELS "benchmark;tooling"
+)
+if(ULOG_BUILD_STRESS_TESTS)
+  set_tests_properties(
+    ulog.ingress-topology-stress PROPERTIES LABELS "benchmark;stress;concurrency" TIMEOUT 10
+  )
+endif()

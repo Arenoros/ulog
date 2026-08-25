@@ -132,6 +132,24 @@ formulas, fmt/native write paths, UTF-8 truncation, controlled reproduction, and
 interpretation limits. The implementations and result protocol are benchmark
 infrastructure, not a selected production layout or public API.
 
+## Ingress topology experiment
+
+The private ingress experiment reuses the same matrix with fully owned prototype
+Records. It compares bounded MPSC ring, chunked MPSC, and per-producer-lane
+handoff, emits `ulog-ingress-results/1`, and publishes topology accounting,
+FIFO/sequence validation, and bounded producer-action counters. Its CI smoke
+artifact is `ingress-results.json`:
+
+```shell
+python scripts/ingress_results.py validate ingress-results.json
+```
+
+See [Ingress topology prototype](ingress-topology-prototype.md) for the common
+publication seam, candidate linearization points and action bounds, randomized
+model and saturated stress checks, ThreadSanitizer path, controlled reproduction,
+and interpretation limits. The experiment does not select or expose a production
+queue.
+
 ## Controlled mode
 
 Use a dedicated, otherwise idle machine with a stable power policy and thermal

@@ -86,6 +86,10 @@ class RecordStorageKernel final {
     return impl::CandidateName<Policy>();
   }
 
+  [[nodiscard]] static constexpr WorkloadAdmissionModel AdmissionModel() noexcept {
+    return WorkloadAdmissionModel::kExactCapacity;
+  }
+
   void Prepare(const WorkloadCase& workload) {
     if (workload.producer_count > kMaxProducerCount) {
       throw std::invalid_argument(

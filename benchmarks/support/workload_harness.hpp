@@ -27,6 +27,8 @@ enum class Occupancy { kEmpty, kPartial, kNearFull, kSaturated };
 
 enum class AttemptStatus { kAccepted, kRejected, kAllocationFailure };
 
+enum class WorkloadAdmissionModel { kExactCapacity, kCapacityUpperBound };
+
 struct WorkloadCase final {
   std::size_t producer_count;
   std::size_t record_size_bytes;
@@ -90,6 +92,7 @@ struct WorkloadResult final {
   std::uint64_t attempted_records;
   std::uint64_t accepted_records;
   std::uint64_t rejected_records;
+  std::uint64_t maximum_accepted_per_round;
   std::uint64_t accepted_bytes;
   std::uint64_t rejected_bytes;
   std::uint64_t allocation_count;
@@ -127,6 +130,7 @@ concept WorkloadKernel =
              const typename Kernel::Attempt& const_attempt) {
       typename Kernel::Attempt;
       { Kernel::Name() } -> std::convertible_to<std::string_view>;
+      { Kernel::AdmissionModel() } -> std::same_as<WorkloadAdmissionModel>;
       { kernel.Prepare(workload) } -> std::same_as<void>;
       { kernel.BeginMeasurement() } noexcept -> std::same_as<void>;
       { kernel.ObserveRetainedHighWater() } noexcept -> std::same_as<void>;
@@ -191,7 +195,7 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
   std::barrier round_start{producer_count};
   std::size_t completed_round_count = 0;
   std::barrier round_attempted{producer_count, [&]() noexcept {
-                                 if (completed_round_count == workload.warmup_rounds) {
+                                 if (completed_round_count >= workload.warmup_rounds) {
                                    kernel.ObserveRetainedHighWater();
                                  }
                                  ++completed_round_count;
@@ -314,6 +318,16 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
     }
   }
 
+  std::uint64_t maximum_accepted_per_round = 0;
+  for (std::size_t round = 0; round < workload.measured_rounds; ++round) {
+    std::uint64_t accepted_this_round = 0;
+    for (std::size_t producer = 0; producer < workload.producer_count; ++producer) {
+      const std::size_t sample_index = producer * workload.measured_rounds + round;
+      accepted_this_round += samples[sample_index].status == AttemptStatus::kAccepted ? 1U : 0U;
+    }
+    maximum_accepted_per_round = std::max(maximum_accepted_per_round, accepted_this_round);
+  }
+
   const auto attempted_records = static_cast<std::uint64_t>(samples.size());
   const auto record_size_bytes = static_cast<std::uint64_t>(workload.record_size_bytes);
   const auto accepted_bytes = accepted_records * record_size_bytes;
@@ -324,7 +338,15 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
   std::uint64_t accounting_error_count = 0;
   impl::CountErrorIf(attempted_records != accepted_records + rejected_records,
                      accounting_error_count);
-  impl::CountErrorIf(accepted_records != expected_accepted_records, accounting_error_count);
+  if constexpr (Kernel::AdmissionModel() == WorkloadAdmissionModel::kExactCapacity) {
+    impl::CountErrorIf(accepted_records != expected_accepted_records, accounting_error_count);
+    impl::CountErrorIf(maximum_accepted_per_round != expected_accepted_per_round,
+                       accounting_error_count);
+  } else {
+    impl::CountErrorIf(accepted_records > expected_accepted_records, accounting_error_count);
+    impl::CountErrorIf(maximum_accepted_per_round > expected_accepted_per_round,
+                       accounting_error_count);
+  }
   impl::CountErrorIf(snapshot.attempted_records != attempted_records, accounting_error_count);
   impl::CountErrorIf(snapshot.accepted_records != accepted_records, accounting_error_count);
   impl::CountErrorIf(snapshot.rejected_records != rejected_records, accounting_error_count);
@@ -333,8 +355,7 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
 
   const auto expected_initial = static_cast<std::uint64_t>(InitialOccupancyBytes(workload));
   const auto expected_logical_high_water =
-      expected_initial +
-      static_cast<std::uint64_t>(expected_accepted_per_round) * record_footprint.SerializedBytes();
+      expected_initial + maximum_accepted_per_round * record_footprint.SerializedBytes();
   std::uint64_t retained_bound_error_count = 0;
   impl::CountErrorIf(snapshot.logical_retained_initial_bytes != expected_initial,
                      retained_bound_error_count);
@@ -378,6 +399,7 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
       .attempted_records = attempted_records,
       .accepted_records = accepted_records,
       .rejected_records = rejected_records,
+      .maximum_accepted_per_round = maximum_accepted_per_round,
       .accepted_bytes = accepted_bytes,
       .rejected_bytes = rejected_bytes,
       .allocation_count = snapshot.allocation_count,

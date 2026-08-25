@@ -199,6 +199,8 @@ bool TestBarrieredReferenceRun() {
   success &=
       Check(result.accepted_records == 3U, "each near-full wave must admit exactly one record");
   success &= Check(result.rejected_records == 9U, "remaining near-full attempts must be rejected");
+  success &= Check(result.maximum_accepted_per_round == 1U,
+                   "per-round accepted maximum must match the barriered waves");
   success &= Check(result.accepted_bytes == 49'152U,
                    "accepted byte accounting must match accepted records");
   success &=
