@@ -11,6 +11,7 @@ from benchmark_results import (
     require_close,
     require_equal,
     require_integer,
+    require_latency_summary,
     require_number,
 )
 
@@ -212,26 +213,6 @@ def expected_measured_rounds(mode: str, producers: int) -> int:
 
 def round_up(value: int, quantum: int) -> int:
     return ((value + quantum - 1) // quantum) * quantum
-
-
-def require_latency_summary(
-    row_name: str,
-    description: str,
-    sample_count: int,
-    p50: float,
-    p99: float,
-    p999: float,
-) -> None:
-    if not p50 <= p99 <= p999:
-        raise BenchmarkResultsError(
-            f"Ingress row '{row_name}' {description} latency percentiles must satisfy "
-            f"p50 <= p99 <= p99.9; found {p50}, {p99}, {p999}."
-        )
-    if sample_count == 0 and (p50 != 0 or p99 != 0 or p999 != 0):
-        raise BenchmarkResultsError(
-            f"Ingress row '{row_name}' zero-sample {description} latency "
-            "percentiles must all be zero."
-        )
 
 
 def validate_row(
@@ -498,6 +479,7 @@ def validate_row(
         numbers["producer_latency_p50_ns"],
         numbers["producer_latency_p99_ns"],
         numbers["producer_latency_p999_ns"],
+        row_kind="Ingress",
     )
     require_latency_summary(
         row_name,
@@ -506,6 +488,7 @@ def validate_row(
         numbers["accepted_latency_p50_ns"],
         numbers["accepted_latency_p99_ns"],
         numbers["accepted_latency_p999_ns"],
+        row_kind="Ingress",
     )
     require_latency_summary(
         row_name,
@@ -514,6 +497,7 @@ def validate_row(
         numbers["rejected_latency_p50_ns"],
         numbers["rejected_latency_p99_ns"],
         numbers["rejected_latency_p999_ns"],
+        row_kind="Ingress",
     )
 
     wall_time = numbers["wall_time_ns"]

@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from conan_cache_key import hash_profile
 from benchmark_results_test import make_document
+from composed_producer_results_test import make_document as make_composed_document
 from ingress_results_test import make_document as make_ingress_document
 from record_storage_results_test import make_document as make_record_storage_document
 
@@ -265,9 +266,11 @@ class ScriptToolsTest(unittest.TestCase):
             reservation_source = result_root / "benchmark-results.json"
             record_storage_source = result_root / "record-storage-results.json"
             ingress_source = result_root / "ingress-results.json"
+            composed_source = result_root / "composed-producer-results.json"
             reservation_destination = temp_path / "reservation.json"
             record_storage_destination = temp_path / "record-storage.json"
             ingress_destination = temp_path / "ingress.json"
+            composed_destination = temp_path / "composed.json"
             result_root.mkdir(parents=True)
             reservation_source.write_text(
                 json.dumps(make_document()), encoding="utf-8"
@@ -277,6 +280,9 @@ class ScriptToolsTest(unittest.TestCase):
             )
             ingress_source.write_text(
                 json.dumps(make_ingress_document()), encoding="utf-8"
+            )
+            composed_source.write_text(
+                json.dumps(make_composed_document()), encoding="utf-8"
             )
 
             environment = os.environ.copy()
@@ -288,6 +294,7 @@ class ScriptToolsTest(unittest.TestCase):
                     str(reservation_destination),
                     str(record_storage_destination),
                     str(ingress_destination),
+                    str(composed_destination),
                 ],
                 capture_output=True,
                 check=False,
@@ -313,6 +320,12 @@ class ScriptToolsTest(unittest.TestCase):
                     "ulog_result_protocol"
                 ],
                 "ulog-ingress-results/1",
+            )
+            self.assertEqual(
+                json.loads(composed_destination.read_text(encoding="utf-8"))["context"][
+                    "ulog_result_protocol"
+                ],
+                "ulog-composed-producer-results/1",
             )
 
 

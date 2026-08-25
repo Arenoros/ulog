@@ -737,13 +737,20 @@ class alignas(kRecordSlotAlignmentBytes) RecordSlot final {
           impl::ToUint64(kSerializedRecordMetadataBytes +
                          static_cast<std::size_t>(field_count_) * kSerializedFieldMetadataBytes);
       const std::uint64_t serialized_bytes = owned_payload_bytes + metadata_bytes;
+      const std::uint64_t accounting_charge_bytes =
+          Policy::AccountingCharge(static_cast<std::size_t>(serialized_bytes));
+      if (accounting_charge_bytes > accounting_charge_limit_bytes_) {
+        slot_->Reset();
+        slot_ = nullptr;
+        return {};
+      }
       const RecordFootprint footprint{
           .requested_message_bytes = requested_message_bytes_,
           .stored_message_bytes = impl::ToUint64(message_size_),
           .owned_payload_bytes = owned_payload_bytes,
           .metadata_bytes = metadata_bytes,
-          .fragmentation_bytes = accounting_charge_bytes_ - serialized_bytes,
-          .accounting_charge_bytes = accounting_charge_bytes_,
+          .fragmentation_bytes = accounting_charge_bytes - serialized_bytes,
+          .accounting_charge_bytes = accounting_charge_bytes,
           .minimum_accounting_charge_bytes = Policy::kMinimumAccountingChargeBytes,
           .truncated = truncated};
       slot_->state_ = State::kPublished;
@@ -755,13 +762,13 @@ class alignas(kRecordSlotAlignmentBytes) RecordSlot final {
     friend class RecordSlot;
     Writer() noexcept = default;
     Writer(RecordSlot& slot, std::size_t serialized_limit, std::size_t message_offset,
-           std::size_t source_payload_bytes, std::uint64_t accounting_charge_bytes) noexcept
+           std::size_t source_payload_bytes, std::uint64_t accounting_charge_limit_bytes) noexcept
         : slot_(&slot),
           front_end_(message_offset),
           field_tail_(serialized_limit),
           message_offset_(message_offset),
           source_payload_bytes_(source_payload_bytes),
-          accounting_charge_bytes_(accounting_charge_bytes) {}
+          accounting_charge_limit_bytes_(accounting_charge_limit_bytes) {}
 
     void MoveFrom(Writer& other) noexcept {
       slot_ = std::exchange(other.slot_, nullptr);
@@ -775,7 +782,7 @@ class alignas(kRecordSlotAlignmentBytes) RecordSlot final {
       field_count_ = other.field_count_;
       first_field_offset_ = other.first_field_offset_;
       last_field_offset_ = other.last_field_offset_;
-      accounting_charge_bytes_ = other.accounting_charge_bytes_;
+      accounting_charge_limit_bytes_ = other.accounting_charge_limit_bytes_;
     }
 
     [[nodiscard]] WriteResult AppendBytes(std::span<const std::byte> value) noexcept {
@@ -877,7 +884,7 @@ class alignas(kRecordSlotAlignmentBytes) RecordSlot final {
     std::uint32_t field_count_{0};
     std::uint32_t first_field_offset_{0};
     std::uint32_t last_field_offset_{0};
-    std::uint64_t accounting_charge_bytes_{0};
+    std::uint64_t accounting_charge_limit_bytes_{0};
   };
 
   RecordSlot() noexcept = default;
@@ -959,15 +966,23 @@ class alignas(kRecordSlotAlignmentBytes) RecordSlot final {
   std::array<std::byte, kRecordSlotAlignmentBytes - sizeof(State)> state_cache_line_padding_{};
 };
 
-template <typename Policy>
-[[nodiscard]] RecordView BuildBenchmarkRecord(typename RecordSlot<Policy>::Writer&& writer,
-                                              std::span<const std::byte> message) noexcept {
-  bool fields_stored = writer.AddField(kBenchmarkStringFieldKey, kBenchmarkStringFieldValue);
+template <typename Writer>
+[[nodiscard]] bool AddBenchmarkFields(
+    Writer& writer, std::string_view string_key = kBenchmarkStringFieldKey,
+    std::string_view string_value = kBenchmarkStringFieldValue) noexcept {
+  bool fields_stored = writer.AddField(string_key, string_value);
   fields_stored = writer.AddField(kBenchmarkInt64FieldKey, std::int64_t{-7}) && fields_stored;
   fields_stored = writer.AddField(kBenchmarkUInt64FieldKey, std::uint64_t{42}) && fields_stored;
   fields_stored = writer.AddField(kBenchmarkDoubleFieldKey, 1.25) && fields_stored;
   fields_stored = writer.AddField(kBenchmarkBoolFieldKey, true) && fields_stored;
   fields_stored = writer.AddField(kBenchmarkNullFieldKey, kNull) && fields_stored;
+  return fields_stored;
+}
+
+template <typename Policy>
+[[nodiscard]] RecordView BuildBenchmarkRecord(typename RecordSlot<Policy>::Writer&& writer,
+                                              std::span<const std::byte> message) noexcept {
+  const bool fields_stored = AddBenchmarkFields(writer);
 
   const std::string_view format_argument{reinterpret_cast<const char*>(message.data()),
                                          message.size()};

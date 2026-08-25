@@ -359,6 +359,21 @@ void TestNativeAndFmtEquivalence(std::string_view candidate) {
 }
 
 template <typename Policy>
+void TestPublishedChargeShrinksToActualRecord(std::string_view candidate) {
+  const std::string test = std::string{candidate} + " published charge shrink";
+  storage::RecordSlot<Policy> slot;
+  auto writer = slot.Begin({}, FullCapacityPlan<Policy>());
+  static_cast<void>(writer.Append("short"));
+  const RecordView view = std::move(writer).Publish();
+  const std::uint64_t expected_charge =
+      Policy::AccountingCharge(static_cast<std::size_t>(view.footprint().SerializedBytes()));
+
+  Check(view.footprint().accounting_charge_bytes == expected_charge, test,
+        "published Record kept the worst-case reservation charge instead of its actual charge");
+  CheckAccounting(view.footprint(), test);
+}
+
+template <typename Policy>
 void TestUtf8Truncation(std::string_view candidate, std::size_t boundary_prefix) {
   const std::string test = std::string{candidate} + " UTF-8 truncation";
   const std::string acute = "\xC3\xA9";
@@ -432,6 +447,7 @@ void RunPolicyTests(std::string_view candidate, std::size_t boundary_prefix) {
   TestOwnershipTypesAndSegmentBoundaries<Policy>(candidate);
   TestConsumerAfterProducerJoin<Policy>(candidate);
   TestNativeAndFmtEquivalence<Policy>(candidate);
+  TestPublishedChargeShrinksToActualRecord<Policy>(candidate);
   TestUtf8Truncation<Policy>(candidate, boundary_prefix);
   TestNoWarmAllocation<Policy>(candidate);
   TestMalformedFootprintRejected<Policy>(candidate);

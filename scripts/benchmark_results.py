@@ -267,6 +267,28 @@ def require_close(row_name: str, field: str, actual: float, expected: float) -> 
         )
 
 
+def require_latency_summary(
+    row_name: str,
+    description: str,
+    sample_count: int,
+    p50: float,
+    p99: float,
+    p999: float,
+    *,
+    row_kind: str = "Workload",
+) -> None:
+    if not p50 <= p99 <= p999:
+        raise BenchmarkResultsError(
+            f"{row_kind} row '{row_name}' {description} latency percentiles must "
+            f"satisfy p50 <= p99 <= p99.9; found {p50}, {p99}, {p999}."
+        )
+    if sample_count == 0 and (p50 != 0 or p99 != 0 or p999 != 0):
+        raise BenchmarkResultsError(
+            f"{row_kind} row '{row_name}' zero-sample {description} latency "
+            "percentiles must all be zero."
+        )
+
+
 def validate_row(
     row: object, row_index: int, mode: str, repetitions: int
 ) -> tuple[str, int, int, str, int]:
@@ -425,14 +447,14 @@ def validate_row(
                 f"{limit}: initial={initial}, high-water={high_water}, final={final}."
             )
 
-    p50 = numbers["producer_latency_p50_ns"]
-    p99 = numbers["producer_latency_p99_ns"]
-    p999 = numbers["producer_latency_p999_ns"]
-    if not p50 <= p99 <= p999:
-        raise BenchmarkResultsError(
-            f"Workload row '{row_name}' producer latency percentiles must satisfy "
-            f"p50 <= p99 <= p99.9; found {p50}, {p99}, {p999}."
-        )
+    require_latency_summary(
+        row_name,
+        "producer",
+        integers["sample_count"],
+        numbers["producer_latency_p50_ns"],
+        numbers["producer_latency_p99_ns"],
+        numbers["producer_latency_p999_ns"],
+    )
 
     wall_time_ns = numbers["wall_time_ns"]
     if wall_time_ns == 0:

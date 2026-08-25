@@ -11,6 +11,7 @@ from benchmark_results import (
     require_close,
     require_equal,
     require_integer,
+    require_latency_summary,
     require_number,
 )
 
@@ -206,26 +207,6 @@ def expected_charge(candidate: str, serialized_bytes: int) -> tuple[int, int]:
         overflow_bytes = serialized_bytes - minimum
         return minimum + round_up(overflow_bytes, 1_024), minimum
     return 16_384, minimum
-
-
-def require_latency_summary(
-    row_name: str,
-    description: str,
-    sample_count: int,
-    p50: float,
-    p99: float,
-    p999: float,
-) -> None:
-    if not p50 <= p99 <= p999:
-        raise BenchmarkResultsError(
-            f"Record-storage row '{row_name}' {description} latency percentiles "
-            f"must satisfy p50 <= p99 <= p99.9; found {p50}, {p99}, {p999}."
-        )
-    if sample_count == 0 and (p50 != 0 or p99 != 0 or p999 != 0):
-        raise BenchmarkResultsError(
-            f"Record-storage row '{row_name}' zero-sample {description} latency "
-            "percentiles must all be zero."
-        )
 
 
 def validate_row(
@@ -424,6 +405,7 @@ def validate_row(
         numbers["producer_latency_p50_ns"],
         numbers["producer_latency_p99_ns"],
         numbers["producer_latency_p999_ns"],
+        row_kind="Record-storage",
     )
     require_latency_summary(
         row_name,
@@ -432,6 +414,7 @@ def validate_row(
         numbers["accepted_latency_p50_ns"],
         numbers["accepted_latency_p99_ns"],
         numbers["accepted_latency_p999_ns"],
+        row_kind="Record-storage",
     )
     require_latency_summary(
         row_name,
@@ -440,6 +423,7 @@ def validate_row(
         numbers["rejected_latency_p50_ns"],
         numbers["rejected_latency_p99_ns"],
         numbers["rejected_latency_p999_ns"],
+        row_kind="Record-storage",
     )
 
     wall_time = numbers["wall_time_ns"]

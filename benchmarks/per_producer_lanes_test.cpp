@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string_view>
+#include <utility>
 
 namespace {
 
@@ -182,11 +183,141 @@ bool TestInvalidPublicationsAreBoundedAndDoNotConsumeSequences() {
   return success;
 }
 
+bool TestAbandonedPublicationClaimIsInvisibleToTopologyAccounting() {
+  ingress::PerProducerLanes<1> topology{1};
+  bool success = true;
+
+  {
+    auto abandoned = topology.TryClaimPublication(0);
+    success &= Check(static_cast<bool>(abandoned),
+                     "an available lane cell must produce an abandonable claim");
+    success &=
+        Check(abandoned.cell_index() == 0, "an abandonable claim must identify its held cell");
+    success &= Check(abandoned.publication_actions() <= topology.MaximumPublicationActions(),
+                     "claiming publication exceeded the documented action bound");
+  }
+
+  const auto after_abandon = topology.GetSnapshot();
+  success &= Check(after_abandon.attempted_records == 0 && after_abandon.enqueued_records == 0 &&
+                       after_abandon.rejected_records == 0 && after_abandon.retained_records == 0,
+                   "abandoning a pre-publication claim must not change topology accounting");
+
+  auto replacement_claim = topology.TryClaimPublication(0);
+  success &=
+      Check(static_cast<bool>(replacement_claim), "abandoning a claim must release its lane cell");
+  const auto replacement = topology.Publish(std::move(replacement_claim), Handle(9));
+  success &= CheckPublication(topology, replacement, ingress::PublishStatus::kAccepted,
+                              "a released lane claim must be publishable again");
+  success &= Check(replacement.admission_sequence == 0,
+                   "abandoning a publication claim must not consume a sequence");
+  return success;
+}
+
+bool TestLaneFullPublicationClaimDoesNotConsumeASequence() {
+  ingress::PerProducerLanes<2> topology{1};
+  bool success = true;
+
+  auto first_claim = topology.TryClaimPublication(0);
+  success &= Check(static_cast<bool>(first_claim),
+                   "an available lane cell must produce a publication claim");
+  success &= Check(first_claim.cell_index() == 0,
+                   "the first publication claim must identify its reserved cell");
+  const auto first = topology.Publish(std::move(first_claim), Handle(10));
+  success &= CheckPublication(topology, first, ingress::PublishStatus::kAccepted,
+                              "the first claimed publication must succeed");
+  success &= Check(first.admission_sequence == 0,
+                   "the first claimed publication must receive sequence zero");
+
+  auto second_claim = topology.TryClaimPublication(0);
+  success &= Check(static_cast<bool>(second_claim),
+                   "the second available lane cell must produce a publication claim");
+  success &= Check(second_claim.cell_index() == 1,
+                   "the second publication claim must identify its reserved cell");
+  const auto second = topology.Publish(std::move(second_claim), Handle(11));
+  success &= CheckPublication(topology, second, ingress::PublishStatus::kAccepted,
+                              "the second claimed publication must succeed");
+  success &= Check(second.admission_sequence == 1,
+                   "claimed publications must receive consecutive sequences");
+
+  const auto full_claim = topology.TryClaimPublication(0);
+  success &= Check(!full_claim, "a full lane must not produce a publication claim");
+  success &= Check(full_claim.status() == ingress::PublishStatus::kFull,
+                   "a failed lane claim must report full");
+  success &=
+      Check(!full_claim.cell_index(), "a failed lane claim must not identify a reusable cell");
+  success &= Check(full_claim.publication_actions() <= topology.MaximumPublicationActions(),
+                   "a failed lane claim exceeded the documented action bound");
+  const auto after_full_claim = topology.GetSnapshot();
+  success &=
+      Check(after_full_claim.attempted_records == 3 && after_full_claim.enqueued_records == 2 &&
+                after_full_claim.rejected_records == 1 && after_full_claim.full_rejections == 1,
+            "a failed lane claim must contribute one exact rejected attempt");
+
+  const auto consumed = topology.TryConsume();
+  success &= Check(consumed.status == ingress::ConsumeStatus::kRecord && consumed.record,
+                   "the first claimed publication must be consumable");
+
+  auto wrapped_claim = topology.TryClaimPublication(0);
+  success &= Check(static_cast<bool>(wrapped_claim),
+                   "acknowledged lane capacity must become claimable again");
+  success &= Check(wrapped_claim.cell_index() == 0,
+                   "the wrapped publication claim must identify the released cell");
+  const auto wrapped = topology.Publish(std::move(wrapped_claim), Handle(12));
+  success &= CheckPublication(topology, wrapped, ingress::PublishStatus::kAccepted,
+                              "publication through a wrapped claim must succeed");
+  success &= Check(wrapped.admission_sequence == 2,
+                   "a lane-full claim must not consume an admission sequence");
+  return success;
+}
+
+bool TestHeldConsumptionClaimPreventsCellReuseUntilAcknowledged() {
+  ingress::PerProducerLanes<1> topology{1};
+  bool success = true;
+
+  const auto published = topology.TryPublish(0, Handle(20));
+  success &= CheckPublication(topology, published, ingress::PublishStatus::kAccepted,
+                              "the single lane cell must accept its first Record");
+
+  auto consumption = topology.TryClaimConsumption();
+  success &= Check(consumption.status() == ingress::ConsumeStatus::kRecord && consumption.record(),
+                   "a ready Record must produce a held consumption claim");
+  if (consumption.record()) {
+    success &= Check(consumption.record()->record.slot_index == 20,
+                     "the consumption claim must expose the claimed Record");
+  }
+
+  const auto while_held = topology.TryClaimPublication(0);
+  success &= Check(!while_held && while_held.status() == ingress::PublishStatus::kFull,
+                   "a held consumption claim must keep its lane cell unavailable");
+  const auto held_snapshot = topology.GetSnapshot();
+  success &= Check(held_snapshot.dequeued_records == 0 && held_snapshot.retained_records == 1,
+                   "claiming consumption must not dequeue before acknowledgement");
+
+  consumption.Acknowledge();
+  const auto acknowledged_snapshot = topology.GetSnapshot();
+  success &= Check(
+      acknowledged_snapshot.dequeued_records == 1 && acknowledged_snapshot.retained_records == 0,
+      "acknowledgement must dequeue and release the held lane cell");
+
+  auto reusable = topology.TryClaimPublication(0);
+  success &= Check(static_cast<bool>(reusable),
+                   "an acknowledged consumption claim must make its cell reusable");
+  const auto republished = topology.Publish(std::move(reusable), Handle(21));
+  success &= CheckPublication(topology, republished, ingress::PublishStatus::kAccepted,
+                              "the acknowledged cell must accept a later publication");
+  success &= Check(republished.admission_sequence == 1,
+                   "a publication rejected while consumption was held must not consume a sequence");
+  return success;
+}
+
 }  // namespace
 
 int main() {
   const bool success = TestPartitionedCapacityRejectsWithoutConsumingASequence() &&
                        TestConsumerMergesLanesInCallerOrder() && TestLaneStorageWrapsAfterDrain() &&
-                       TestInvalidPublicationsAreBoundedAndDoNotConsumeSequences();
+                       TestInvalidPublicationsAreBoundedAndDoNotConsumeSequences() &&
+                       TestAbandonedPublicationClaimIsInvisibleToTopologyAccounting() &&
+                       TestLaneFullPublicationClaimDoesNotConsumeASequence() &&
+                       TestHeldConsumptionClaimPreventsCellReuseUntilAcknowledged();
   return success ? 0 : 1;
 }

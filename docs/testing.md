@@ -23,6 +23,16 @@ allowed only on controlled hardware and must follow
 adapter seam, and controlled-run command are documented in
 `docs/benchmarking.md`.
 
+Hosted jobs are fail-closed against hangs and accidental long workloads. The
+platform build/package jobs and ThreadSanitizer job have 20-minute hard limits;
+quality has 15 minutes. Dependency preparation, static/shared package builds,
+formatting, result collection, cache operations, and artifact upload also have
+shorter per-step limits. Every maintained CTest has its own timeout, including
+the standalone Conan package consumer. Full controlled benchmark execution is
+never part of hosted CI. A timeout is a diagnosable failure, not permission to
+silently raise the limit: first identify the stalled phase or move intentional
+long-running evidence collection to the externally bounded controlled runner.
+
 The dependency-free presets build the library, architecture check, and installed
 consumer:
 

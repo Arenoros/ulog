@@ -2,7 +2,7 @@ add_test(NAME ulog.independence
          COMMAND "${CMAKE_COMMAND}" "-DULOG_SOURCE_DIR=${PROJECT_SOURCE_DIR}" -P
                  "${PROJECT_SOURCE_DIR}/cmake/CheckIndependence.cmake"
 )
-set_tests_properties(ulog.independence PROPERTIES LABELS "architecture")
+set_tests_properties(ulog.independence PROPERTIES LABELS "architecture" TIMEOUT 30)
 
 if(PROJECT_IS_TOP_LEVEL)
   find_package(
@@ -30,13 +30,15 @@ if(PROJECT_IS_TOP_LEVEL)
   )
   set_tests_properties(
     ulog.script-tools PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS "tooling;unit"
+                                 TIMEOUT 90
   )
   set_tests_properties(
     ulog.corpus PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS "migration;tooling"
+                           TIMEOUT 30
   )
   set_tests_properties(
     ulog.parity-scenarios PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS
-                                     "migration;tooling"
+                                     "migration;tooling" TIMEOUT 30
   )
 endif()
 
@@ -48,7 +50,7 @@ if(ULOG_BUILD_UNIT_TESTS)
   target_link_libraries(ulog-unit-tests PRIVATE ulog::ulog GTest::gtest_main)
   ulog_configure_target(ulog-unit-tests)
   add_test(NAME ulog.unit COMMAND ulog-unit-tests)
-  set_tests_properties(ulog.unit PROPERTIES LABELS "unit")
+  set_tests_properties(ulog.unit PROPERTIES LABELS "unit" TIMEOUT 20)
 endif()
 
 if(ULOG_BUILD_STRESS_TESTS)
@@ -59,7 +61,7 @@ if(ULOG_BUILD_STRESS_TESTS)
   target_link_libraries(ulog-stress-tests PRIVATE ulog::ulog Threads::Threads)
   ulog_configure_target(ulog-stress-tests)
   add_test(NAME ulog.stress COMMAND ulog-stress-tests)
-  set_tests_properties(ulog.stress PROPERTIES LABELS "stress")
+  set_tests_properties(ulog.stress PROPERTIES LABELS "stress" TIMEOUT 10)
 endif()
 
 if(ULOG_BUILD_DEPENDENCY_SMOKE_TESTS)
@@ -86,7 +88,7 @@ if(ULOG_BUILD_DEPENDENCY_SMOKE_TESTS)
   target_link_libraries(ulog-dependency-smoke PRIVATE ulog::ulog fmt::fmt ${_ulog_libuv_target})
   ulog_configure_target(ulog-dependency-smoke)
   add_test(NAME ulog.dependencies COMMAND ulog-dependency-smoke)
-  set_tests_properties(ulog.dependencies PROPERTIES LABELS "dependencies")
+  set_tests_properties(ulog.dependencies PROPERTIES LABELS "dependencies" TIMEOUT 20)
 endif()
 
 if(ULOG_BUILD_PACKAGE_TESTS)
@@ -105,5 +107,5 @@ if(ULOG_BUILD_PACKAGE_TESTS)
       "-DULOG_TEST_MSVC_RUNTIME_LIBRARY=$<GENEX_EVAL:$<TARGET_PROPERTY:ulog,MSVC_RUNTIME_LIBRARY>>"
       -P "${CMAKE_CURRENT_BINARY_DIR}/RunInstalledConsumer.cmake"
   )
-  set_tests_properties(ulog.package-consumer PROPERTIES LABELS "integration;package")
+  set_tests_properties(ulog.package-consumer PROPERTIES LABELS "integration;package" TIMEOUT 120)
 endif()

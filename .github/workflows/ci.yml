@@ -32,27 +32,35 @@ jobs:
             runner: windows-2022
     steps:
       - uses: actions/checkout@v6
+        timeout-minutes: 3
       - uses: actions/setup-python@v6
+        timeout-minutes: 3
         with:
           python-version: "3.12"
       - name: Install Conan
+        timeout-minutes: 3
         run: python -m pip install "conan==${{ env.CONAN_VERSION }}"
       - name: Detect toolchain
+        timeout-minutes: 2
         run: conan profile detect --force
       - name: Compute Conan cache identity
         id: conan-profile
+        timeout-minutes: 2
         run: python scripts/conan_cache_key.py Release
       - name: Restore Conan dependency cache
         id: conan-cache
         uses: actions/cache/restore@v5
+        timeout-minutes: 3
         with:
           path: |
             ~/.conan2/p
             ~/.conan2/cache.sqlite3
           key: conan-v1-${{ env.CONAN_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.conan-profile.outputs.hash }}-${{ hashFiles('conan.lock', 'conanfile.py', 'conan/profiles/**') }}
       - name: Check source boundary
+        timeout-minutes: 2
         run: cmake -DULOG_SOURCE_DIR=. -P cmake/CheckIndependence.cmake
       - name: Resolve and check dependency graphs
+        timeout-minutes: 3
         run: |
           cmake -E make_directory out
           conan graph info . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=False" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:build_benchmarks=True" -o "&:dependency_smoke=True" --lockfile=conan.lock --format=json --out-file=out/conan-graph-static.json
@@ -61,6 +69,7 @@ jobs:
           python scripts/check_conan_graph.py out/conan-graph-shared.json
       - name: Prepare dependencies
         id: conan-dependencies
+        timeout-minutes: 7
         run: conan install . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=False" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:build_benchmarks=True" -o "&:dependency_smoke=True" --lockfile=conan.lock --build=missing --output-folder=out/conan-install
       - name: Build and test static package
         id: static-build
@@ -74,24 +83,29 @@ jobs:
         run: conan create . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release -o "&:shared=True" -o "&:build_tests=True" -o "&:build_stress_tests=False" -o "&:build_benchmarks=False" -o "&:dependency_smoke=False" -o "&:warnings_as_errors=True" --lockfile=conan.lock --build=missing
       - name: Collect benchmark output
         if: steps.static-build.outcome == 'success'
-        run: python scripts/collect_benchmark_results.py out/benchmark-results.json out/record-storage-results.json out/ingress-results.json
+        timeout-minutes: 2
+        run: python scripts/collect_benchmark_results.py out/benchmark-results.json out/record-storage-results.json out/ingress-results.json out/composed-producer-results.json
       - uses: actions/upload-artifact@v6
         if: steps.static-build.outcome == 'success'
+        timeout-minutes: 3
         with:
           name: benchmark-${{ matrix.platform }}
           path: |
             out/benchmark-results.json
             out/record-storage-results.json
             out/ingress-results.json
+            out/composed-producer-results.json
           retention-days: 14
       - name: Trim Conan dependency cache
         if: always() && github.event_name == 'push' && steps.conan-dependencies.outcome == 'success' && steps.conan-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 3
         run: |
           conan remove "ulog/*" --confirm
           conan cache clean "*"
       - name: Save Conan dependency cache
         if: always() && github.event_name == 'push' && steps.conan-dependencies.outcome == 'success' && steps.conan-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
+        timeout-minutes: 3
         with:
           path: |
             ~/.conan2/p
@@ -99,6 +113,7 @@ jobs:
           key: ${{ steps.conan-cache.outputs.cache-primary-key }}
       - name: Check package build outcomes
         if: always() && (steps.static-build.outcome != 'success' || steps.shared-build.outcome != 'success')
+        timeout-minutes: 2
         run: |
           echo "static build: ${{ steps.static-build.outcome }}"
           echo "shared build: ${{ steps.shared-build.outcome }}"
@@ -112,26 +127,33 @@ jobs:
       CXX: clang++
     steps:
       - uses: actions/checkout@v6
+        timeout-minutes: 3
       - uses: actions/setup-python@v6
+        timeout-minutes: 3
         with:
           python-version: "3.12"
       - name: Install quality tools
+        timeout-minutes: 5
         run: |
           sudo apt-get update
           sudo apt-get install --yes clang-format clang-tidy
           python -m pip install "conan==${{ env.CONAN_VERSION }}" cmakelang
       - name: Check formatting
+        timeout-minutes: 3
         run: |
           cmake -DULOG_SOURCE_DIR=. -DULOG_FORMAT_MODE=check -P cmake/RunClangFormat.cmake
           cmake-format --check CMakeLists.txt cmake/*.cmake cmake/*.cmake.in tests/CMakeLists.txt tests/cmake/*.cmake.in benchmarks/CMakeLists.txt tests/consumer/CMakeLists.txt test_package/CMakeLists.txt tools/baseline_probe/*.cmake tools/baseline_*_probe/CMakeLists.txt
       - name: Detect Clang toolchain
+        timeout-minutes: 2
         run: conan profile detect --force
       - name: Compute Conan cache identity
         id: conan-profile
+        timeout-minutes: 2
         run: python scripts/conan_cache_key.py Debug
       - name: Restore Conan dependency cache
         id: conan-cache
         uses: actions/cache/restore@v5
+        timeout-minutes: 3
         with:
           path: |
             ~/.conan2/p
@@ -139,18 +161,21 @@ jobs:
           key: conan-v1-${{ env.CONAN_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.conan-profile.outputs.hash }}-${{ hashFiles('conan.lock', 'conanfile.py', 'conan/profiles/**') }}
       - name: Prepare dependencies
         id: conan-dependencies
+        timeout-minutes: 5
         run: conan install . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Debug -o "&:shared=False" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:dependency_smoke=True" -o "&:warnings_as_errors=True" -o "&:enable_asan=True" -o "&:enable_ubsan=True" -o "&:enable_clang_tidy=True" --lockfile=conan.lock --build=missing --output-folder=out/conan-install
       - name: Clang analysis and sanitizers
         timeout-minutes: 10
         run: conan create . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Debug -o "&:shared=False" -o "&:build_tests=True" -o "&:build_stress_tests=True" -o "&:dependency_smoke=True" -o "&:warnings_as_errors=True" -o "&:enable_asan=True" -o "&:enable_ubsan=True" -o "&:enable_clang_tidy=True" --lockfile=conan.lock --build=missing
       - name: Trim Conan dependency cache
         if: always() && github.event_name == 'push' && steps.conan-dependencies.outcome == 'success' && steps.conan-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 3
         run: |
           conan remove "ulog/*" --confirm
           conan cache clean "*"
       - name: Save Conan dependency cache
         if: always() && github.event_name == 'push' && steps.conan-dependencies.outcome == 'success' && steps.conan-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
+        timeout-minutes: 3
         with:
           path: |
             ~/.conan2/p
@@ -167,19 +192,25 @@ jobs:
       TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
     steps:
       - uses: actions/checkout@v6
+        timeout-minutes: 3
       - uses: actions/setup-python@v6
+        timeout-minutes: 3
         with:
           python-version: "3.12"
       - name: Install Conan
+        timeout-minutes: 3
         run: python -m pip install "conan==${{ env.CONAN_VERSION }}"
       - name: Detect Clang toolchain
+        timeout-minutes: 2
         run: conan profile detect --force
       - name: Compute Conan cache identity
         id: conan-profile
+        timeout-minutes: 2
         run: python scripts/conan_cache_key.py RelWithDebInfo
       - name: Restore Conan dependency cache
         id: conan-cache
         uses: actions/cache/restore@v5
+        timeout-minutes: 3
         with:
           path: |
             ~/.conan2/p
@@ -194,12 +225,14 @@ jobs:
         run: conan create . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=RelWithDebInfo -o "&:shared=False" -o "&:build_tests=False" -o "&:build_stress_tests=True" -o "&:build_benchmarks=True" -o "&:dependency_smoke=False" -o "&:warnings_as_errors=True" -o "&:enable_asan=False" -o "&:enable_ubsan=False" -o "&:enable_tsan=True" -o "&:enable_clang_tidy=False" --lockfile=conan.lock --build=missing
       - name: Trim Conan dependency cache
         if: always() && github.event_name == 'push' && steps.conan-dependencies.outcome == 'success' && steps.conan-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 3
         run: |
           conan remove "ulog/*" --confirm
           conan cache clean "*"
       - name: Save Conan dependency cache
         if: always() && github.event_name == 'push' && steps.conan-dependencies.outcome == 'success' && steps.conan-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
+        timeout-minutes: 3
         with:
           path: |
             ~/.conan2/p

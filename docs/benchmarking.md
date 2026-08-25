@@ -150,6 +150,22 @@ model and saturated stress checks, ThreadSanitizer path, controlled reproduction
 and interpretation limits. The experiment does not select or expose a production
 queue.
 
+## Composed producer kernel
+
+The private composed-producer experiment connects the selected producer-credit
+ledger, contiguous Record slot, and per-producer lanes behind one lazy producer
+path. Its CI smoke artifact is `composed-producer-results.json` and is validated
+independently:
+
+```shell
+python scripts/composed_producer_results.py validate composed-producer-results.json
+```
+
+See [Composed producer kernel](composed-producer-kernel.md) for callback ordering,
+publication and consumption linearization points, ownership lifetime, accounting,
+stress coverage, and the bounded CI/controlled-run policy. This remains benchmark
+infrastructure rather than a public logging API.
+
 ## Controlled mode
 
 Use a dedicated, otherwise idle machine with a stable power policy and thermal
