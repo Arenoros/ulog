@@ -10,7 +10,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "prototypes/reservation/central_reservation_kernel.hpp"
 #include "prototypes/reservation/producer_credit_reservation_kernel.hpp"
@@ -25,6 +24,7 @@ using ulog::benchmark_support::reservation::CentralReservationKernel;
 using ulog::benchmark_support::reservation::ProducerCreditReservationKernel;
 
 std::atomic<bool> deterministic_failure{false};
+inline constexpr std::string_view kCandidateSchedule = "paired-alternating";
 
 Mode ExtractModeArgument(int& argument_count, char** arguments) {
   constexpr std::string_view kModePrefix = "--ulog_mode=";
@@ -134,22 +134,28 @@ void RunCandidateWorkload(benchmark::State& state, WorkloadCase workload) {
 }
 
 template <typename Kernel>
-void RegisterCandidate(const std::vector<WorkloadCase>& workloads) {
-  for (const auto& workload : workloads) {
-    benchmark::RegisterBenchmark(WorkloadName<Kernel>(workload).c_str(),
-                                 RunCandidateWorkload<Kernel>, workload)
-        ->Iterations(1)
-        ->UseManualTime();
-  }
+void RegisterCandidateWorkload(const WorkloadCase& workload) {
+  benchmark::RegisterBenchmark(WorkloadName<Kernel>(workload).c_str(), RunCandidateWorkload<Kernel>,
+                               workload)
+      ->Iterations(1)
+      ->UseManualTime();
 }
 
 void RegisterWorkloads(Mode mode) {
   const auto workloads = ulog::benchmark_support::MakeWorkloadMatrix(mode);
-  RegisterCandidate<CentralReservationKernel>(workloads);
-  RegisterCandidate<ProducerCreditReservationKernel>(workloads);
+  for (const auto& workload : workloads) {
+    if (workload.repetition % 2U == 0U) {
+      RegisterCandidateWorkload<CentralReservationKernel>(workload);
+      RegisterCandidateWorkload<ProducerCreditReservationKernel>(workload);
+    } else {
+      RegisterCandidateWorkload<ProducerCreditReservationKernel>(workload);
+      RegisterCandidateWorkload<CentralReservationKernel>(workload);
+    }
+  }
   const std::size_t repetitions = workloads.empty() ? 0U : workloads.back().repetition + 1U;
-  benchmark::AddCustomContext("ulog_result_protocol", "ulog-workload-results/2");
+  benchmark::AddCustomContext("ulog_result_protocol", "ulog-workload-results/3");
   benchmark::AddCustomContext("ulog_candidates", "central-reservation,producer-credit-reservation");
+  benchmark::AddCustomContext("ulog_candidate_schedule", std::string{kCandidateSchedule});
   benchmark::AddCustomContext("ulog_mode", std::string{ulog::benchmark_support::ToString(mode)});
   benchmark::AddCustomContext("ulog_timing_policy", "advisory");
   benchmark::AddCustomContext("ulog_repetitions", std::to_string(repetitions));

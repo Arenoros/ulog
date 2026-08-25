@@ -8,13 +8,14 @@ import sys
 from pathlib import Path
 
 
-RESULT_PROTOCOL = "ulog-workload-results/2"
+RESULT_PROTOCOL = "ulog-workload-results/3"
 TIMING_POLICY = "advisory"
 EXPECTED_CANDIDATES = (
     "central-reservation",
     "producer-credit-reservation",
 )
 EXPECTED_CANDIDATE_DECLARATION = ",".join(EXPECTED_CANDIDATES)
+CANDIDATE_SCHEDULE = "paired-alternating"
 MODE_REPETITIONS = {"controlled": 7, "smoke": 1}
 MODE_WARMUP_ROUNDS = {"controlled": 64, "smoke": 8}
 SMOKE_MEASURED_ROUNDS = 64
@@ -149,6 +150,7 @@ def require_context(document: dict[str, object]) -> tuple[str, int, tuple[str, .
 
     expected_context = {
         "ulog_result_protocol": RESULT_PROTOCOL,
+        "ulog_candidate_schedule": CANDIDATE_SCHEDULE,
         "ulog_timing_policy": TIMING_POLICY,
     }
     for key, expected in expected_context.items():
@@ -304,7 +306,7 @@ def validate_row(
     if missing:
         raise BenchmarkResultsError(
             f"Workload row '{row_name}' is missing required counters: "
-            f"{', '.join(missing)}. Emit every ulog-workload-results/2 counter."
+            f"{', '.join(missing)}. Emit every ulog-workload-results/3 counter."
         )
 
     integers = {
@@ -465,6 +467,39 @@ def validate_row(
     return candidate, producers, record_size, occupancy, repetition
 
 
+def validate_candidate_schedule(
+    ordered_rows: list[tuple[str, int, int, str, int]],
+    declared_candidates: tuple[str, ...],
+) -> None:
+    candidate_count = len(declared_candidates)
+    if candidate_count == 0 or len(ordered_rows) % candidate_count != 0:
+        raise BenchmarkResultsError(
+            "Benchmark candidate rows must form complete adjacent matrix-cell groups."
+        )
+
+    for group_start in range(0, len(ordered_rows), candidate_count):
+        group = ordered_rows[group_start : group_start + candidate_count]
+        first = group[0]
+        if any(row[1:] != first[1:] for row in group[1:]):
+            raise BenchmarkResultsError(
+                f"Benchmark rows {group_start}..{group_start + candidate_count - 1} "
+                "must describe adjacent candidates for the same matrix cell."
+            )
+
+        expected_order = (
+            declared_candidates
+            if first[4] % 2 == 0
+            else tuple(reversed(declared_candidates))
+        )
+        actual_order = tuple(row[0] for row in group)
+        if actual_order != expected_order:
+            raise BenchmarkResultsError(
+                f"Benchmark rows {group_start}..{group_start + candidate_count - 1} "
+                f"have candidate order {actual_order!r}; expected "
+                f"{expected_order!r} for the paired-alternating schedule."
+            )
+
+
 def validate_document(document: dict[str, object]) -> tuple[int, int, int]:
     mode, repetitions, declared_candidates = require_context(document)
     rows = document.get("benchmarks")
@@ -475,6 +510,7 @@ def validate_document(document: dict[str, object]) -> tuple[int, int, int]:
         )
 
     observed: set[tuple[str, int, int, str, int]] = set()
+    observed_order: list[tuple[str, int, int, str, int]] = []
     candidates: set[str] = set()
     for row_index, row in enumerate(rows):
         key = validate_row(row, row_index, mode, repetitions)
@@ -484,6 +520,7 @@ def validate_document(document: dict[str, object]) -> tuple[int, int, int]:
                 f"{key!r}. Emit each candidate/matrix/repetition cell once."
             )
         observed.add(key)
+        observed_order.append(key)
         candidates.add(key[0])
 
     declared_candidate_set = set(declared_candidates)
@@ -524,6 +561,8 @@ def validate_document(document: dict[str, object]) -> tuple[int, int, int]:
         raise BenchmarkResultsError(
             "Benchmark workload matrix is incomplete: " + "; ".join(details) + "."
         )
+
+    validate_candidate_schedule(observed_order, declared_candidates)
 
     return len(rows), len(candidates), repetitions
 

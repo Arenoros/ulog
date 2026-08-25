@@ -39,6 +39,11 @@ ulog_configure_target(ulog-reservation-ledger-test)
 
 add_test(NAME ulog.workload-harness-unit COMMAND ulog-workload-harness-test)
 add_test(NAME ulog.reservation-ledger-unit COMMAND ulog-reservation-ledger-test)
+add_test(
+  NAME ulog.benchmark-schedule
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check_benchmark_schedule.py"
+          "$<TARGET_FILE:ulog-workload-benchmarks>"
+)
 add_test(NAME ulog.version-benchmark-smoke COMMAND ulog-benchmarks --benchmark_min_time=0.001s
                                                    --benchmark_color=false
 )
@@ -54,6 +59,10 @@ add_test(NAME ulog.benchmark-results
 )
 set_tests_properties(ulog.workload-harness-unit PROPERTIES LABELS "benchmark;unit")
 set_tests_properties(ulog.reservation-ledger-unit PROPERTIES LABELS "benchmark;unit")
+set_tests_properties(
+  ulog.benchmark-schedule PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS
+                                     "benchmark;tooling"
+)
 set_tests_properties(ulog.version-benchmark-smoke PROPERTIES LABELS "benchmark")
 set_tests_properties(ulog.benchmark-smoke PROPERTIES LABELS "benchmark")
 set_tests_properties(

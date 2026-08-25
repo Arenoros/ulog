@@ -61,16 +61,59 @@ allocation call site, so their allocation counters are structurally zero.
 ## Evidence rules
 
 Both candidates run every cell of the shared producer-count, Record-size, and
-occupancy matrix. Protocol `ulog-workload-results/2` requires both candidate
+occupancy matrix. Protocol `ulog-workload-results/3` requires both candidate
 names, so a missing implementation or matrix cell fails validation. Exact
 admission, accounting conservation, bounds, allocation failures, and callback
 suppression are deterministic gates. Hosted timing remains advisory.
+
+Candidates execute as adjacent pairs for each matrix cell, with the first
+candidate alternating by repetition. This prevents a full candidate block from
+receiving a systematically different machine phase than the other candidate;
+the result validator enforces the paired-alternating schedule.
 
 The randomized oracle applies reserve, partial/full commit, abandon, release,
 credit refill, and credit return transitions and compares every resulting
 snapshot with a simple sequential model. Hand-written boundary tests cover
 zero, capacity, over-capacity, and integer-overflow requests, callback rejection,
 builder failure, move-only ownership, and cross-thread credit return.
+
+## Advisory controlled observations
+
+Two independent paired protocol-v3 runs were collected on `WORKPC` with 16
+logical CPUs, an MSVC Release build, and Google Benchmark 1.9.5. The validator
+accepted all 1,680 rows in each run with no accounting, retained-bound,
+allocation, or allocation-failure errors. Timing remains advisory, but the
+direction below was consistent in both AB and BA order strata in all 20 primary
+16/32-producer near-full and saturated cells.
+
+The table reports the range across both runs of the median
+`producer-credit-reservation` p99.9 divided by the median
+`central-reservation` p99.9. Values below one favor producer credits.
+
+| Producers and occupancy | Record bytes | Accepted per wave | Credit / central p99.9 |
+| --- | ---: | ---: | ---: |
+| 16, near-full | 64-1024 | 16 | 0.32-0.56 |
+| 16, near-full | 4096 | 4 | 0.60-0.91 |
+| 16, near-full | 16384 | 1 | 1.67-1.90 |
+| 16, saturated | 64-16384 | 0 | 1.50-2.67 |
+| 32, near-full | 64-256 | 32 | 0.84-0.88 |
+| 32, near-full | 1024 | 16 | 0.95 |
+| 32, near-full | 4096 | 4 | 1.06-1.16 |
+| 32, near-full | 16384 | 1 | 2.38-4.22 |
+| 32, saturated | 64-16384 | 0 | 2.31-4.63 |
+
+Central reservation had zero physical-minus-logical retained overhead at every
+observation. Producer credits also had zero overhead at logical high-water, but
+cached between zero and 524,288 physical bytes above logical initial and final
+occupancy. The performance evidence therefore shows a workload-dependent
+crossover rather than a universal winner: cached credit reduces tail cost when
+many producers can consume it, while refill/rejection bookkeeping and retained
+idle credit dominate small or rejected waves. Final design selection remains a
+later architecture decision.
+
+The raw result SHA-256 values are
+`fda06db02777972d69d88f20c4dce353e38d079d13ed9ec1e5f8f0ecb25f0127`
+and `c7057d36921fd013106a3c49e328c4e112746ad118d5674061b7395155dad2b9`.
 
 Use a controlled result only for performance comparison:
 

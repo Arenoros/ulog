@@ -24,6 +24,7 @@ EXPECTED_CANDIDATES = (
     "producer-credit-reservation",
 )
 EXPECTED_CANDIDATE_DECLARATION = "central-reservation,producer-credit-reservation"
+CANDIDATE_SCHEDULE = "paired-alternating"
 MODE_REPETITIONS = {"controlled": 7, "smoke": 1}
 MODE_WARMUP_ROUNDS = {"controlled": 64, "smoke": 8}
 SMOKE_MEASURED_ROUNDS = 64
@@ -118,18 +119,21 @@ def make_document(
     repetitions = MODE_REPETITIONS[mode]
     rows = [
         make_row(candidate, producers, record_size, occupancy, repetition, mode)
-        for candidate in candidates
         for repetition in range(repetitions)
         for producers in PRODUCER_COUNTS
         for record_size in RECORD_SIZES
         for occupancy in OCCUPANCY_BYTES
+        for candidate in (
+            candidates if repetition % 2 == 0 else tuple(reversed(candidates))
+        )
     ]
     return {
         "context": {
             "date": "2026-08-24T00:00:00+00:00",
             "host_name": "fixture",
-            "ulog_result_protocol": "ulog-workload-results/2",
+            "ulog_result_protocol": "ulog-workload-results/3",
             "ulog_candidates": EXPECTED_CANDIDATE_DECLARATION,
+            "ulog_candidate_schedule": CANDIDATE_SCHEDULE,
             "ulog_mode": mode,
             "ulog_timing_policy": "advisory",
             "ulog_repetitions": str(repetitions),
@@ -182,6 +186,38 @@ class BenchmarkResultsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("1680 workload row(s)", result.stdout)
         self.assertIn("2 candidate(s) and 7 repetition(s)", result.stdout)
+
+    def test_candidate_schedule_is_paired_and_alternates_first_candidate(self):
+        nonadjacent = make_document()
+        nonadjacent["benchmarks"][1], nonadjacent["benchmarks"][3] = (
+            nonadjacent["benchmarks"][3],
+            nonadjacent["benchmarks"][1],
+        )
+
+        wrong_odd_order = make_document(mode="controlled")
+        odd_pair_start = next(
+            index
+            for index, row in enumerate(wrong_odd_order["benchmarks"])
+            if row["workload_repetition_index"] == 1
+        )
+        wrong_odd_order["benchmarks"][odd_pair_start : odd_pair_start + 2] = reversed(
+            wrong_odd_order["benchmarks"][odd_pair_start : odd_pair_start + 2]
+        )
+
+        wrong_context = make_document()
+        wrong_context["context"]["ulog_candidate_schedule"] = "candidate-blocks"
+
+        cases = (
+            (nonadjacent, "same matrix cell"),
+            (wrong_odd_order, "candidate order"),
+            (wrong_context, "ulog_candidate_schedule"),
+        )
+        for document, expected_message in cases:
+            with self.subTest(expected_message=expected_message):
+                result = self.run_validator(document)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(expected_message, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_declared_candidate_inventory_is_exact(self):
         missing_candidate = make_document(candidates=(EXPECTED_CANDIDATES[0],))

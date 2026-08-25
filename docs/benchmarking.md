@@ -55,8 +55,9 @@ installed or exposed as Ulog API.
 
 The executable emits Google Benchmark JSON with these context fields:
 
-- `ulog_result_protocol`: `ulog-workload-results/2`;
+- `ulog_result_protocol`: `ulog-workload-results/3`;
 - `ulog_candidates`: `central-reservation,producer-credit-reservation`;
+- `ulog_candidate_schedule`: `paired-alternating`;
 - `ulog_mode`: `smoke` or `controlled`;
 - `ulog_timing_policy`: `advisory`;
 - `ulog_repetitions`: the number of workload repetitions.
@@ -65,6 +66,12 @@ The candidate inventory is canonical and mandatory, so omitting an entire
 implementation cannot accidentally produce a valid result. Each workload row is named
 `UlogWorkload/<candidate>/producers:<count>/record_bytes:<bytes>/occupancy:<state>/repetition:<index>`.
 Google Benchmark may append `/iterations:1/manual_time`.
+
+Both candidates for one matrix cell execute next to each other. The central
+candidate runs first on even repetitions and the producer-credit candidate runs
+first on odd repetitions. The validator rejects any other row schedule. Pairing
+limits long-lived machine drift, while alternating which candidate starts avoids
+giving either implementation a permanent first-run advantage.
 
 The custom counters include:
 
@@ -84,10 +91,11 @@ Some operating systems expose process CPU clocks at a coarser resolution than
 the smoke workload; those timing fields remain valid advisory observations.
 
 `scripts/benchmark_results.py` strictly validates the protocol, exact candidate
-inventory, complete matrix, finite values, exact admission arithmetic, rates,
-allocation failures, and retained bounds. Physical retained values must cover
-their corresponding logical values. `scripts/collect_benchmark_results.py`
-validates the newest Conan result before publishing it as a CI artifact.
+inventory, paired-alternating schedule, complete matrix, finite values, exact
+admission arithmetic, rates, allocation failures, and retained bounds. Physical
+retained values must cover their corresponding logical values.
+`scripts/collect_benchmark_results.py` validates the newest Conan result before
+publishing it as a CI artifact.
 
 ## Smoke mode
 

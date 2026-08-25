@@ -25,7 +25,7 @@ def main() -> int:
     except BenchmarkResultsError as error:
         print(
             f"newest benchmark result '{newest_result}' is invalid: {error} "
-            "Fix the ulog-workload-results/2 output and retry.",
+            "Fix the ulog-workload-results/3 output and retry.",
             file=sys.stderr,
         )
         return 1
