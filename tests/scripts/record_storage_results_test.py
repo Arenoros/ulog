@@ -34,13 +34,17 @@ OCCUPANCY_BYTES = {
 }
 CAPACITY_BYTES = 1_048_576
 MODE_REPETITIONS = {"controlled": 7, "smoke": 1}
-MODE_WARMUP_ROUNDS = {"controlled": 64, "smoke": 8}
+MODE_WARMUP_ROUNDS = {"controlled": 64, "smoke": 1}
+CONTROLLED_MINIMUM_MEASURED_ROUNDS = 64
 
 
 def measured_rounds(mode: str, producers: int) -> int:
     if mode == "smoke":
-        return 64
-    return max(64, (100_000 + producers - 1) // producers)
+        return 1
+    return max(
+        CONTROLLED_MINIMUM_MEASURED_ROUNDS,
+        (100_000 + producers - 1) // producers,
+    )
 
 
 def logical_footprint(record_size: int) -> tuple[int, int, int, int, int, int]:
@@ -166,7 +170,7 @@ def make_document(mode: str = "smoke") -> dict[str, object]:
     ]
     return {
         "context": {
-            "ulog_result_protocol": "ulog-record-storage-results/1",
+            "ulog_result_protocol": "ulog-record-storage-results/2",
             "ulog_candidates": ",".join(CANDIDATES),
             "ulog_candidate_schedule": "six-permutation-cycle",
             "ulog_mode": mode,
@@ -213,7 +217,7 @@ class RecordStorageResultsTest(unittest.TestCase):
 
     def test_context_and_candidate_inventory_are_exact(self):
         mutations = {
-            "ulog_result_protocol": "ulog-record-storage-results/2",
+            "ulog_result_protocol": "ulog-record-storage-results/1",
             "ulog_candidates": "chunked-record,contiguous-record,hybrid-record",
             "ulog_candidate_schedule": "candidate-blocks",
             "ulog_mode": "fast",

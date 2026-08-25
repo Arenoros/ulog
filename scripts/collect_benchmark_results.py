@@ -57,7 +57,7 @@ def main() -> int:
         "benchmark-results.json",
         Path(sys.argv[1]),
         validate_result_file,
-        "ulog-workload-results/3",
+        "ulog-workload-results/4",
     ):
         return 1
 
@@ -66,7 +66,7 @@ def main() -> int:
         "record-storage-results.json",
         Path(sys.argv[2]),
         validate_record_storage_result_file,
-        "ulog-record-storage-results/1",
+        "ulog-record-storage-results/2",
     ):
         return 1
     return 0

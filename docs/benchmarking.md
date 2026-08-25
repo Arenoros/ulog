@@ -24,10 +24,10 @@ then starts. Consequently, deterministic admission for each round is:
 accepted = min(producers, floor((capacity - initial occupancy) / record size))
 ```
 
-Smoke mode uses 8 warm-up rounds, 64 measured rounds, and one repetition. It is
-short enough for every supported CI platform. Controlled mode uses 64 warm-up
-rounds, at least 100,000 measured attempts per matrix cell, and seven
-repetitions.
+Smoke mode uses one warm-up round, one measured round, and one repetition. It
+checks the complete matrix and protocol shape without producing timing evidence.
+Controlled mode uses 64 warm-up rounds, at least 100,000 measured attempts per
+matrix cell, and seven repetitions.
 
 ## Candidate adapter seam
 
@@ -55,7 +55,7 @@ installed or exposed as Ulog API.
 
 The executable emits Google Benchmark JSON with these context fields:
 
-- `ulog_result_protocol`: `ulog-workload-results/3`;
+- `ulog_result_protocol`: `ulog-workload-results/4`;
 - `ulog_candidates`: `central-reservation,producer-credit-reservation`;
 - `ulog_candidate_schedule`: `paired-alternating`;
 - `ulog_mode`: `smoke` or `controlled`;
@@ -117,7 +117,7 @@ failures, and retained-bound violations fail CI.
 
 The private Structured Record experiment reuses this matrix and measurement
 window for three physically distinct storage candidates. It emits the sibling
-`ulog-record-storage-results/1` protocol, keeps same-cell candidate rows adjacent
+`ulog-record-storage-results/2` protocol, keeps same-cell candidate rows adjacent
 in a six-permutation cycle, and reports logical Record footprint separately from
 candidate fragmentation and physical byte-budget charge. Its CI smoke result is
 `record-storage-results.json` and is validated independently:

@@ -61,7 +61,7 @@ allocation call site, so their allocation counters are structurally zero.
 ## Evidence rules
 
 Both candidates run every cell of the shared producer-count, Record-size, and
-occupancy matrix. Protocol `ulog-workload-results/3` requires both candidate
+occupancy matrix. Protocol `ulog-workload-results/4` requires both candidate
 names, so a missing implementation or matrix cell fails validation. Exact
 admission, accounting conservation, bounds, allocation failures, and callback
 suppression are deterministic gates. Hosted timing remains advisory.

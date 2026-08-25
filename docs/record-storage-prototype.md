@@ -123,7 +123,7 @@ workload expose candidate fragmentation without changing the logical Record.
 ## Benchmark protocol
 
 The executable emits Google Benchmark JSON under the sibling protocol
-`ulog-record-storage-results/1`. Its canonical candidates are
+`ulog-record-storage-results/2`. Its canonical candidates are
 `contiguous-record,chunked-record,hybrid-record`, its timing policy is
 `advisory`, and its schedule is `six-permutation-cycle`.
 

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 
-RESULT_PROTOCOL = "ulog-workload-results/3"
+RESULT_PROTOCOL = "ulog-workload-results/4"
 TIMING_POLICY = "advisory"
 EXPECTED_CANDIDATES = (
     "central-reservation",
@@ -17,8 +17,9 @@ EXPECTED_CANDIDATES = (
 EXPECTED_CANDIDATE_DECLARATION = ",".join(EXPECTED_CANDIDATES)
 CANDIDATE_SCHEDULE = "paired-alternating"
 MODE_REPETITIONS = {"controlled": 7, "smoke": 1}
-MODE_WARMUP_ROUNDS = {"controlled": 64, "smoke": 8}
-SMOKE_MEASURED_ROUNDS = 64
+MODE_WARMUP_ROUNDS = {"controlled": 64, "smoke": 1}
+SMOKE_MEASURED_ROUNDS = 1
+CONTROLLED_MINIMUM_MEASURED_ROUNDS = 64
 CONTROLLED_MINIMUM_SAMPLES_PER_CELL = 100_000
 MODES = set(MODE_REPETITIONS)
 PRODUCER_COUNTS = (1, 2, 4, 8, 16, 32)
@@ -200,7 +201,7 @@ def expected_measured_rounds(mode: str, producers: int) -> int:
     if mode == "smoke":
         return SMOKE_MEASURED_ROUNDS
     return max(
-        SMOKE_MEASURED_ROUNDS,
+        CONTROLLED_MINIMUM_MEASURED_ROUNDS,
         (CONTROLLED_MINIMUM_SAMPLES_PER_CELL + producers - 1) // producers,
     )
 
@@ -306,7 +307,7 @@ def validate_row(
     if missing:
         raise BenchmarkResultsError(
             f"Workload row '{row_name}' is missing required counters: "
-            f"{', '.join(missing)}. Emit every ulog-workload-results/3 counter."
+            f"{', '.join(missing)}. Emit every ulog-workload-results/4 counter."
         )
 
     integers = {

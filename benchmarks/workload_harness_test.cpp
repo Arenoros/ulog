@@ -64,10 +64,16 @@ bool Check(bool condition, const char* message) {
 }
 
 bool TestMatrix() {
+  constexpr std::size_t kExpectedSmokeWarmupRounds = 1;
+  constexpr std::size_t kExpectedSmokeMeasuredRounds = 1;
   const auto workloads = ulog::benchmark_support::MakeWorkloadMatrix(Mode::kSmoke);
   std::set<std::tuple<std::size_t, std::size_t, Occupancy>> cells;
+  bool smoke_warmup_rounds_are_bounded = true;
+  bool smoke_measured_rounds_are_bounded = true;
   for (const auto& workload : workloads) {
     cells.emplace(workload.producer_count, workload.record_size_bytes, workload.occupancy);
+    smoke_warmup_rounds_are_bounded &= workload.warmup_rounds == kExpectedSmokeWarmupRounds;
+    smoke_measured_rounds_are_bounded &= workload.measured_rounds == kExpectedSmokeMeasuredRounds;
   }
 
   if (!Check(!workloads.empty(), "smoke matrix must not be empty")) {
@@ -78,6 +84,9 @@ bool TestMatrix() {
   success &= Check(cells.size() == 120U, "smoke matrix cells must be unique");
   success &= Check(workloads.front().producer_count == 1U, "matrix must start with one producer");
   success &= Check(workloads.back().producer_count == 32U, "matrix must end with 32 producers");
+  success &= Check(smoke_warmup_rounds_are_bounded, "smoke workloads must use one warmup round");
+  success &=
+      Check(smoke_measured_rounds_are_bounded, "smoke workloads must use one measured round");
 
   const auto controlled = ulog::benchmark_support::MakeWorkloadMatrix(Mode::kControlled);
   success &= Check(controlled.size() == 840U,

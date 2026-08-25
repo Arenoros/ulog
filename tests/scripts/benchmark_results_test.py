@@ -26,8 +26,9 @@ EXPECTED_CANDIDATES = (
 EXPECTED_CANDIDATE_DECLARATION = "central-reservation,producer-credit-reservation"
 CANDIDATE_SCHEDULE = "paired-alternating"
 MODE_REPETITIONS = {"controlled": 7, "smoke": 1}
-MODE_WARMUP_ROUNDS = {"controlled": 64, "smoke": 8}
-SMOKE_MEASURED_ROUNDS = 64
+MODE_WARMUP_ROUNDS = {"controlled": 64, "smoke": 1}
+SMOKE_MEASURED_ROUNDS = 1
+CONTROLLED_MINIMUM_MEASURED_ROUNDS = 64
 CONTROLLED_MINIMUM_SAMPLES_PER_CELL = 100_000
 
 
@@ -43,7 +44,7 @@ def make_row(
         SMOKE_MEASURED_ROUNDS
         if mode == "smoke"
         else max(
-            SMOKE_MEASURED_ROUNDS,
+            CONTROLLED_MINIMUM_MEASURED_ROUNDS,
             (CONTROLLED_MINIMUM_SAMPLES_PER_CELL + producers - 1) // producers,
         )
     )
@@ -131,7 +132,7 @@ def make_document(
         "context": {
             "date": "2026-08-24T00:00:00+00:00",
             "host_name": "fixture",
-            "ulog_result_protocol": "ulog-workload-results/3",
+            "ulog_result_protocol": "ulog-workload-results/4",
             "ulog_candidates": EXPECTED_CANDIDATE_DECLARATION,
             "ulog_candidate_schedule": CANDIDATE_SCHEDULE,
             "ulog_mode": mode,
@@ -446,18 +447,17 @@ class BenchmarkResultsTest(unittest.TestCase):
                 self.assertNotIn("Traceback", result.stderr)
 
     def test_attempt_accept_reject_and_byte_accounting_is_exact(self):
-        mutations = {
-            "sample_count": 1,
-            "attempted_records": 1,
-            "accepted_records": 1,
-            "rejected_records": 1,
-            "accepted_bytes": 1,
-            "rejected_bytes": 1,
-        }
-        for field, value in mutations.items():
+        for field in (
+            "sample_count",
+            "attempted_records",
+            "accepted_records",
+            "rejected_records",
+            "accepted_bytes",
+            "rejected_bytes",
+        ):
             with self.subTest(field=field):
                 document = make_document()
-                document["benchmarks"][0][field] = value
+                document["benchmarks"][0][field] += 1
                 result = self.run_validator(document)
                 self.assertEqual(result.returncode, 1)
                 self.assertIn(field, result.stderr)
@@ -480,10 +480,10 @@ class BenchmarkResultsTest(unittest.TestCase):
             and "/occupancy:saturated/" in row["name"]
         )
 
-        self.assertEqual(near_full["accepted_records"], 64)
-        self.assertEqual(near_full["rejected_records"], 1_984)
+        self.assertEqual(near_full["accepted_records"], 1)
+        self.assertEqual(near_full["rejected_records"], 31)
         self.assertEqual(saturated["accepted_records"], 0)
-        self.assertEqual(saturated["rejected_records"], 2_048)
+        self.assertEqual(saturated["rejected_records"], 32)
         self.assertEqual(self.run_validator(document).returncode, 0)
 
     def test_allocation_and_deterministic_error_counters_must_be_zero(self):

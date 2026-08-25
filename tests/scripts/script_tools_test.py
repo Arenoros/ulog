@@ -293,13 +293,13 @@ class ScriptToolsTest(unittest.TestCase):
                 json.loads(reservation_destination.read_text(encoding="utf-8"))[
                     "context"
                 ]["ulog_result_protocol"],
-                "ulog-workload-results/3",
+                "ulog-workload-results/4",
             )
             self.assertEqual(
                 json.loads(record_storage_destination.read_text(encoding="utf-8"))[
                     "context"
                 ]["ulog_result_protocol"],
-                "ulog-record-storage-results/1",
+                "ulog-record-storage-results/2",
             )
 
 

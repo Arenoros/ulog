@@ -15,7 +15,7 @@ from benchmark_results import (
 )
 
 
-RESULT_PROTOCOL = "ulog-record-storage-results/1"
+RESULT_PROTOCOL = "ulog-record-storage-results/2"
 TIMING_POLICY = "advisory"
 EXPECTED_CANDIDATES = (
     "contiguous-record",
@@ -33,8 +33,9 @@ CANDIDATE_ORDERS = (
     (EXPECTED_CANDIDATES[2], EXPECTED_CANDIDATES[1], EXPECTED_CANDIDATES[0]),
 )
 MODE_REPETITIONS = {"controlled": 7, "smoke": 1}
-MODE_WARMUP_ROUNDS = {"controlled": 64, "smoke": 8}
-SMOKE_MEASURED_ROUNDS = 64
+MODE_WARMUP_ROUNDS = {"controlled": 64, "smoke": 1}
+SMOKE_MEASURED_ROUNDS = 1
+CONTROLLED_MINIMUM_MEASURED_ROUNDS = 64
 CONTROLLED_MINIMUM_SAMPLES_PER_CELL = 100_000
 PRODUCER_COUNTS = (1, 2, 4, 8, 16, 32)
 RECORD_SIZES = (64, 256, 1024, 4096, 16384)
@@ -181,7 +182,7 @@ def expected_measured_rounds(mode: str, producers: int) -> int:
     if mode == "smoke":
         return SMOKE_MEASURED_ROUNDS
     return max(
-        SMOKE_MEASURED_ROUNDS,
+        CONTROLLED_MINIMUM_MEASURED_ROUNDS,
         (CONTROLLED_MINIMUM_SAMPLES_PER_CELL + producers - 1) // producers,
     )
 

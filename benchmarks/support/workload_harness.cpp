@@ -19,9 +19,10 @@ inline constexpr std::array<Occupancy, 4> kOccupancies{
     Occupancy::kNearFull,
     Occupancy::kSaturated,
 };
-inline constexpr std::size_t kSmokeWarmupRounds = 8;
-inline constexpr std::size_t kSmokeMeasuredRounds = 64;
+inline constexpr std::size_t kSmokeWarmupRounds = 1;
+inline constexpr std::size_t kSmokeMeasuredRounds = 1;
 inline constexpr std::size_t kControlledWarmupRounds = 64;
+inline constexpr std::size_t kControlledMinimumMeasuredRounds = 64;
 inline constexpr std::size_t kControlledMinimumSamplesPerCell = 100'000;
 inline constexpr std::size_t kControlledRepetitions = 7;
 
@@ -73,7 +74,7 @@ std::vector<WorkloadCase> MakeWorkloadMatrix(Mode mode) {
       const std::size_t measured_rounds =
           mode == Mode::kSmoke
               ? kSmokeMeasuredRounds
-              : std::max(kSmokeMeasuredRounds,
+              : std::max(kControlledMinimumMeasuredRounds,
                          (kControlledMinimumSamplesPerCell + producer_count - 1U) / producer_count);
       const std::size_t warmup_rounds =
           mode == Mode::kSmoke ? kSmokeWarmupRounds : kControlledWarmupRounds;

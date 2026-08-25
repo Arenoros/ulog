@@ -162,7 +162,7 @@ void RegisterWorkloads(Mode mode) {
     RegisterWorkload(workload);
   }
   const std::size_t repetitions = workloads.empty() ? 0U : workloads.back().repetition + 1U;
-  benchmark::AddCustomContext("ulog_result_protocol", "ulog-record-storage-results/1");
+  benchmark::AddCustomContext("ulog_result_protocol", "ulog-record-storage-results/2");
   benchmark::AddCustomContext("ulog_candidates", "contiguous-record,chunked-record,hybrid-record");
   benchmark::AddCustomContext("ulog_candidate_schedule", std::string{kCandidateSchedule});
   benchmark::AddCustomContext("ulog_mode", std::string{ulog::benchmark_support::ToString(mode)});
