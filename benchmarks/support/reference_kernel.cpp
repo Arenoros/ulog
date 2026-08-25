@@ -39,7 +39,6 @@ ReferenceLedgerKernel::Attempt ReferenceLedgerKernel::TryProduce(
     const std::size_t retained_after_publish = retained_bytes + record_size_bytes;
     if (retained_bytes_.compare_exchange_weak(retained_bytes, retained_after_publish,
                                               std::memory_order_relaxed)) {
-      UpdateHighWater(retained_after_publish);
       accepted_records_.fetch_add(1, std::memory_order_relaxed);
       return Attempt{AttemptStatus::kAccepted, record_size_bytes};
     }
@@ -50,6 +49,10 @@ void ReferenceLedgerKernel::Release(Attempt& attempt) noexcept {
   if (attempt.status() == AttemptStatus::kAccepted) {
     retained_bytes_.fetch_sub(attempt.retained_bytes(), std::memory_order_relaxed);
   }
+}
+
+void ReferenceLedgerKernel::ObserveRetainedHighWater() noexcept {
+  UpdateHighWater(retained_bytes_.load(std::memory_order_relaxed));
 }
 
 KernelSnapshot ReferenceLedgerKernel::Snapshot() const noexcept {

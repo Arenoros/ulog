@@ -19,6 +19,11 @@ OCCUPANCY_BYTES = {
     "saturated": 1_048_576,
 }
 LOGICAL_LIMIT = 1_048_576
+EXPECTED_CANDIDATES = (
+    "central-reservation",
+    "producer-credit-reservation",
+)
+EXPECTED_CANDIDATE_DECLARATION = "central-reservation,producer-credit-reservation"
 MODE_REPETITIONS = {"controlled": 7, "smoke": 1}
 MODE_WARMUP_ROUNDS = {"controlled": 64, "smoke": 8}
 SMOKE_MEASURED_ROUNDS = 64
@@ -50,8 +55,14 @@ def make_row(
     rejected_records = attempted_records - accepted_records
     wall_time_ns = attempted_records * 1_000_000
     logical_high_water = initial_bytes + accepted_per_round * record_size
-    physical_initial = initial_bytes + 128
-    physical_high_water = physical_initial + accepted_per_round * record_size
+    if candidate == "central-reservation":
+        physical_initial = initial_bytes
+        physical_high_water = logical_high_water
+        physical_limit = LOGICAL_LIMIT
+    else:
+        physical_initial = initial_bytes + 128
+        physical_high_water = physical_initial + accepted_per_round * record_size
+        physical_limit = LOGICAL_LIMIT * 2
 
     return {
         "name": (
@@ -95,14 +106,14 @@ def make_row(
         "physical_retained_initial_bytes": physical_initial,
         "physical_retained_high_water_bytes": physical_high_water,
         "physical_retained_final_bytes": physical_initial,
-        "physical_retained_limit_bytes": LOGICAL_LIMIT * 2,
+        "physical_retained_limit_bytes": physical_limit,
         "accounting_error_count": 0,
         "retained_bound_error_count": 0,
     }
 
 
 def make_document(
-    *, candidates: tuple[str, ...] = ("model-v1",), mode: str = "smoke"
+    *, candidates: tuple[str, ...] = EXPECTED_CANDIDATES, mode: str = "smoke"
 ) -> dict[str, object]:
     repetitions = MODE_REPETITIONS[mode]
     rows = [
@@ -117,7 +128,8 @@ def make_document(
         "context": {
             "date": "2026-08-24T00:00:00+00:00",
             "host_name": "fixture",
-            "ulog_result_protocol": "ulog-workload-results/1",
+            "ulog_result_protocol": "ulog-workload-results/2",
+            "ulog_candidates": EXPECTED_CANDIDATE_DECLARATION,
             "ulog_mode": mode,
             "ulog_timing_policy": "advisory",
             "ulog_repetitions": str(repetitions),
@@ -151,12 +163,12 @@ class BenchmarkResultsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             result.stdout.strip(),
-            "Validated 120 workload row(s) for 1 candidate(s) and 1 repetition(s)",
+            "Validated 240 workload row(s) for 2 candidate(s) and 1 repetition(s)",
         )
 
     def test_protocol_context_is_required(self):
         document = make_document()
-        document["context"]["ulog_result_protocol"] = "ulog-workload-results/2"
+        document["context"]["ulog_result_protocol"] = "ulog-workload-results/1"
 
         result = self.run_validator(document)
 
@@ -165,13 +177,49 @@ class BenchmarkResultsTest(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
 
     def test_multiple_candidates_and_controlled_repetitions_are_valid(self):
-        result = self.run_validator(
-            make_document(candidates=("atomic-v1", "mutex.v2"), mode="controlled")
-        )
+        result = self.run_validator(make_document(mode="controlled"))
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("1680 workload row(s)", result.stdout)
         self.assertIn("2 candidate(s) and 7 repetition(s)", result.stdout)
+
+    def test_declared_candidate_inventory_is_exact(self):
+        missing_candidate = make_document(candidates=(EXPECTED_CANDIDATES[0],))
+        undeclared_candidate = make_document(
+            candidates=EXPECTED_CANDIDATES + ("undeclared-reservation",)
+        )
+
+        missing = self.run_validator(missing_candidate)
+        undeclared = self.run_validator(undeclared_candidate)
+
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn("producer-credit-reservation", missing.stderr)
+        self.assertIn("ulog_candidates", missing.stderr)
+        self.assertEqual(undeclared.returncode, 1)
+        self.assertIn("undeclared-reservation", undeclared.stderr)
+        self.assertIn("ulog_candidates", undeclared.stderr)
+
+    def test_candidate_declaration_is_canonical_and_required(self):
+        malformed_values = (
+            None,
+            "producer-credit-reservation,central-reservation",
+            "central-reservation,producer-credit-reservation,central-reservation",
+            "central-reservation, producer-credit-reservation",
+            list(EXPECTED_CANDIDATES),
+        )
+        for value in malformed_values:
+            with self.subTest(value=value):
+                document = make_document()
+                if value is None:
+                    del document["context"]["ulog_candidates"]
+                else:
+                    document["context"]["ulog_candidates"] = value
+
+                result = self.run_validator(document)
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("ulog_candidates", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_mode_repetitions_and_rounds_are_exact(self):
         invalid_documents = []
@@ -431,6 +479,79 @@ class BenchmarkResultsTest(unittest.TestCase):
                 result = self.run_validator(document)
                 self.assertEqual(result.returncode, 1)
                 self.assertIn("retained", result.stderr)
+
+    def test_physical_retained_bytes_must_cover_logical_retained_bytes(self):
+        saturated_document = make_document()
+        saturated_row = next(
+            row
+            for row in saturated_document["benchmarks"]
+            if "/occupancy:saturated/" in row["name"]
+        )
+        saturated_row["physical_retained_initial_bytes"] = LOGICAL_LIMIT - 1
+        saturated_row["physical_retained_final_bytes"] = LOGICAL_LIMIT - 1
+
+        final_document = make_document()
+        final_row = next(
+            row
+            for row in final_document["benchmarks"]
+            if "/occupancy:partial/" in row["name"]
+        )
+        final_row["physical_retained_final_bytes"] = (
+            final_row["logical_retained_final_bytes"] - 1
+        )
+
+        high_water_document = make_document()
+        high_water_row = next(
+            row
+            for row in high_water_document["benchmarks"]
+            if "/producers:32/" in row["name"]
+            and "/record_bytes:16384/" in row["name"]
+            and "/occupancy:empty/" in row["name"]
+        )
+        high_water_row["physical_retained_high_water_bytes"] = (
+            high_water_row["logical_retained_high_water_bytes"] - 1
+        )
+
+        limit_document = make_document()
+        limit_row = next(
+            row
+            for row in limit_document["benchmarks"]
+            if "/producers:1/" in row["name"]
+            and "/record_bytes:64/" in row["name"]
+            and "/occupancy:empty/" in row["name"]
+        )
+        limit_row["physical_retained_limit_bytes"] = LOGICAL_LIMIT - 1
+
+        for stage, document in (
+            ("initial", saturated_document),
+            ("final", final_document),
+            ("high-water", high_water_document),
+            ("limit", limit_document),
+        ):
+            with self.subTest(stage=stage):
+                result = self.run_validator(document)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("physical retained", result.stderr)
+                self.assertIn("logical retained", result.stderr)
+                self.assertIn(stage, result.stderr)
+
+    def test_central_candidate_physical_retained_bytes_equal_logical(self):
+        document = make_document()
+        row = next(
+            row
+            for row in document["benchmarks"]
+            if row["name"].startswith("UlogWorkload/central-reservation/")
+            and "/occupancy:empty/" in row["name"]
+        )
+        row["physical_retained_high_water_bytes"] = (
+            row["logical_retained_high_water_bytes"] + 64
+        )
+
+        result = self.run_validator(document)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("central candidate", result.stderr)
+        self.assertIn("physical retained high-water", result.stderr)
 
     def test_percentiles_are_monotonic_but_have_no_timing_threshold(self):
         invalid_document = make_document()

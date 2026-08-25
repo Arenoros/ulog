@@ -36,6 +36,8 @@ repetitions.
 
 - a stable lowercase candidate name;
 - preparation and measurement-reset operations;
+- a post-attempt retained high-water observation;
+- a post-snapshot quiescent cleanup operation;
 - a non-throwing producer attempt and release pair;
 - a non-throwing snapshot with admission, allocation, and retained-memory
   accounting.
@@ -45,18 +47,22 @@ outside the measured producer attempts. The template call seam avoids a virtual
 or function-pointer dispatch in the hot path. Reservation, Record-storage, and
 ingress prototypes can therefore reuse the harness without adding a production
 header or installed interface. `ReferenceLedgerKernel` is the deterministic
-reference adapter and an example for later candidates.
+adapter used by harness unit tests. The reservation experiment registers the
+`central-reservation` and `producer-credit-reservation` candidates; neither is
+installed or exposed as Ulog API.
 
 ## Result protocol
 
 The executable emits Google Benchmark JSON with these context fields:
 
-- `ulog_result_protocol`: `ulog-workload-results/1`;
+- `ulog_result_protocol`: `ulog-workload-results/2`;
+- `ulog_candidates`: `central-reservation,producer-credit-reservation`;
 - `ulog_mode`: `smoke` or `controlled`;
 - `ulog_timing_policy`: `advisory`;
 - `ulog_repetitions`: the number of workload repetitions.
 
-Each workload row is named
+The candidate inventory is canonical and mandatory, so omitting an entire
+implementation cannot accidentally produce a valid result. Each workload row is named
 `UlogWorkload/<candidate>/producers:<count>/record_bytes:<bytes>/occupancy:<state>/repetition:<index>`.
 Google Benchmark may append `/iterations:1/manual_time`.
 
@@ -77,10 +83,11 @@ Process CPU utilization can exceed 100% when producer threads run concurrently.
 Some operating systems expose process CPU clocks at a coarser resolution than
 the smoke workload; those timing fields remain valid advisory observations.
 
-`scripts/benchmark_results.py` strictly validates the protocol, complete matrix,
-finite values, exact admission arithmetic, rates, allocation failures, and
-retained bounds. `scripts/collect_benchmark_results.py` validates the newest
-Conan result before publishing it as a CI artifact.
+`scripts/benchmark_results.py` strictly validates the protocol, exact candidate
+inventory, complete matrix, finite values, exact admission arithmetic, rates,
+allocation failures, and retained bounds. Physical retained values must cover
+their corresponding logical values. `scripts/collect_benchmark_results.py`
+validates the newest Conan result before publishing it as a CI artifact.
 
 ## Smoke mode
 

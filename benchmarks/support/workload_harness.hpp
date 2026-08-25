@@ -106,6 +106,8 @@ concept WorkloadKernel =
       { Kernel::Name() } -> std::convertible_to<std::string_view>;
       { kernel.Prepare(workload) } -> std::same_as<void>;
       { kernel.BeginMeasurement() } noexcept -> std::same_as<void>;
+      { kernel.ObserveRetainedHighWater() } noexcept -> std::same_as<void>;
+      { kernel.EndMeasurement() } -> std::same_as<void>;
       {
         kernel.TryProduce(std::size_t{}, payload)
       } noexcept -> std::same_as<typename Kernel::Attempt>;
@@ -156,7 +158,13 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
   std::barrier measurement_start{producer_count + 1};
   std::barrier measurement_done{producer_count + 1};
   std::barrier round_start{producer_count};
-  std::barrier round_attempted{producer_count};
+  std::size_t completed_round_count = 0;
+  std::barrier round_attempted{producer_count, [&]() noexcept {
+                                 if (completed_round_count == workload.warmup_rounds) {
+                                   kernel.ObserveRetainedHighWater();
+                                 }
+                                 ++completed_round_count;
+                               }};
 
   std::vector<std::thread> producer_threads;
   producer_threads.reserve(workload.producer_count);
@@ -236,6 +244,8 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
   for (auto& producer_thread : producer_threads) {
     producer_thread.join();
   }
+  const auto snapshot = std::as_const(kernel).Snapshot();
+  kernel.EndMeasurement();
   if (cpu_clock_error) {
     std::rethrow_exception(cpu_clock_error);
   }
@@ -267,7 +277,6 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
     }
   }
 
-  const auto snapshot = std::as_const(kernel).Snapshot();
   const auto attempted_records = static_cast<std::uint64_t>(samples.size());
   const auto record_size_bytes = static_cast<std::uint64_t>(workload.record_size_bytes);
   const auto accepted_bytes = accepted_records * record_size_bytes;

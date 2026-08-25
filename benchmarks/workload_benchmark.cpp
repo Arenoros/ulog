@@ -10,16 +10,19 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
-#include "support/reference_kernel.hpp"
+#include "prototypes/reservation/central_reservation_kernel.hpp"
+#include "prototypes/reservation/producer_credit_reservation_kernel.hpp"
 #include "support/workload_harness.hpp"
 
 namespace {
 
 using ulog::benchmark_support::Mode;
-using ulog::benchmark_support::ReferenceLedgerKernel;
 using ulog::benchmark_support::WorkloadCase;
 using ulog::benchmark_support::WorkloadResult;
+using ulog::benchmark_support::reservation::CentralReservationKernel;
+using ulog::benchmark_support::reservation::ProducerCreditReservationKernel;
 
 std::atomic<bool> deterministic_failure{false};
 
@@ -55,8 +58,9 @@ Mode ExtractModeArgument(int& argument_count, char** arguments) {
   return mode;
 }
 
+template <typename Kernel>
 std::string WorkloadName(const WorkloadCase& workload) {
-  return "UlogWorkload/" + std::string{ReferenceLedgerKernel::Name()} +
+  return "UlogWorkload/" + std::string{Kernel::Name()} +
          "/producers:" + std::to_string(workload.producer_count) +
          "/record_bytes:" + std::to_string(workload.record_size_bytes) +
          "/occupancy:" + std::string{ulog::benchmark_support::ToString(workload.occupancy)} +
@@ -104,8 +108,9 @@ void PublishResult(benchmark::State& state, const WorkloadResult& result) {
   SetCounter(state, "retained_bound_error_count", result.retained_bound_error_count);
 }
 
-void RunReferenceWorkload(benchmark::State& state, WorkloadCase workload) {
-  ReferenceLedgerKernel kernel;
+template <typename Kernel>
+void RunCandidateWorkload(benchmark::State& state, WorkloadCase workload) {
+  Kernel kernel;
   std::optional<WorkloadResult> result;
   try {
     for ([[maybe_unused]] const auto iteration : state) {
@@ -128,15 +133,23 @@ void RunReferenceWorkload(benchmark::State& state, WorkloadCase workload) {
   }
 }
 
-void RegisterWorkloads(Mode mode) {
-  const auto workloads = ulog::benchmark_support::MakeWorkloadMatrix(mode);
+template <typename Kernel>
+void RegisterCandidate(const std::vector<WorkloadCase>& workloads) {
   for (const auto& workload : workloads) {
-    benchmark::RegisterBenchmark(WorkloadName(workload).c_str(), RunReferenceWorkload, workload)
+    benchmark::RegisterBenchmark(WorkloadName<Kernel>(workload).c_str(),
+                                 RunCandidateWorkload<Kernel>, workload)
         ->Iterations(1)
         ->UseManualTime();
   }
+}
+
+void RegisterWorkloads(Mode mode) {
+  const auto workloads = ulog::benchmark_support::MakeWorkloadMatrix(mode);
+  RegisterCandidate<CentralReservationKernel>(workloads);
+  RegisterCandidate<ProducerCreditReservationKernel>(workloads);
   const std::size_t repetitions = workloads.empty() ? 0U : workloads.back().repetition + 1U;
-  benchmark::AddCustomContext("ulog_result_protocol", "ulog-workload-results/1");
+  benchmark::AddCustomContext("ulog_result_protocol", "ulog-workload-results/2");
+  benchmark::AddCustomContext("ulog_candidates", "central-reservation,producer-credit-reservation");
   benchmark::AddCustomContext("ulog_mode", std::string{ulog::benchmark_support::ToString(mode)});
   benchmark::AddCustomContext("ulog_timing_policy", "advisory");
   benchmark::AddCustomContext("ulog_repetitions", std::to_string(repetitions));

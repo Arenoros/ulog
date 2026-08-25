@@ -8,8 +8,13 @@ import sys
 from pathlib import Path
 
 
-RESULT_PROTOCOL = "ulog-workload-results/1"
+RESULT_PROTOCOL = "ulog-workload-results/2"
 TIMING_POLICY = "advisory"
+EXPECTED_CANDIDATES = (
+    "central-reservation",
+    "producer-credit-reservation",
+)
+EXPECTED_CANDIDATE_DECLARATION = ",".join(EXPECTED_CANDIDATES)
 MODE_REPETITIONS = {"controlled": 7, "smoke": 1}
 MODE_WARMUP_ROUNDS = {"controlled": 64, "smoke": 8}
 SMOKE_MEASURED_ROUNDS = 64
@@ -135,7 +140,7 @@ def read_result_file(path: Path) -> dict[str, object]:
     return document
 
 
-def require_context(document: dict[str, object]) -> tuple[str, int]:
+def require_context(document: dict[str, object]) -> tuple[str, int, tuple[str, ...]]:
     context = document.get("context")
     if not isinstance(context, dict):
         raise BenchmarkResultsError(
@@ -153,6 +158,15 @@ def require_context(document: dict[str, object]) -> tuple[str, int]:
                 f"{context.get(key)!r}. Configure the workload benchmark context "
                 "and retry."
             )
+
+    candidate_declaration = context.get("ulog_candidates")
+    if candidate_declaration != EXPECTED_CANDIDATE_DECLARATION:
+        raise BenchmarkResultsError(
+            "Benchmark context 'ulog_candidates' must be the canonical candidate "
+            f"declaration {EXPECTED_CANDIDATE_DECLARATION!r}; found "
+            f"{candidate_declaration!r}. Register every reservation candidate in "
+            "the workload executable and retry."
+        )
 
     mode = context.get("ulog_mode")
     if not isinstance(mode, str) or mode not in MODES:
@@ -177,7 +191,7 @@ def require_context(document: dict[str, object]) -> tuple[str, int]:
             f"{expected_repetitions} for {mode!r} mode; found {repetitions_value!r}. "
             f"Run the benchmark with --ulog_mode={mode} and retry."
         )
-    return mode, expected_repetitions
+    return mode, expected_repetitions, EXPECTED_CANDIDATES
 
 
 def expected_measured_rounds(mode: str, producers: int) -> int:
@@ -290,7 +304,7 @@ def validate_row(
     if missing:
         raise BenchmarkResultsError(
             f"Workload row '{row_name}' is missing required counters: "
-            f"{', '.join(missing)}. Emit every ulog-workload-results/1 counter."
+            f"{', '.join(missing)}. Emit every ulog-workload-results/2 counter."
         )
 
     integers = {
@@ -366,6 +380,29 @@ def validate_row(
     for field, expected in exact_values.items():
         require_equal(row_name, field, integers[field], expected)
 
+    for suffix, stage in (
+        ("initial_bytes", "initial"),
+        ("high_water_bytes", "high-water"),
+        ("final_bytes", "final"),
+        ("limit_bytes", "limit"),
+    ):
+        logical = integers[f"logical_retained_{suffix}"]
+        physical = integers[f"physical_retained_{suffix}"]
+        if physical < logical:
+            raise BenchmarkResultsError(
+                f"Workload row '{row_name}' physical retained {stage} bytes "
+                f"{physical} are below logical retained {stage} bytes {logical}. "
+                "Fix candidate retained-memory accounting and retry."
+            )
+
+        if candidate == "central-reservation":
+            require_equal(
+                row_name,
+                f"central candidate physical retained {stage} bytes",
+                physical,
+                logical,
+            )
+
     for prefix in ("logical", "physical"):
         initial = integers[f"{prefix}_retained_initial_bytes"]
         high_water = integers[f"{prefix}_retained_high_water_bytes"]
@@ -429,7 +466,7 @@ def validate_row(
 
 
 def validate_document(document: dict[str, object]) -> tuple[int, int, int]:
-    mode, repetitions = require_context(document)
+    mode, repetitions, declared_candidates = require_context(document)
     rows = document.get("benchmarks")
     if not isinstance(rows, list) or not rows:
         raise BenchmarkResultsError(
@@ -449,9 +486,24 @@ def validate_document(document: dict[str, object]) -> tuple[int, int, int]:
         observed.add(key)
         candidates.add(key[0])
 
+    declared_candidate_set = set(declared_candidates)
+    if candidates != declared_candidate_set:
+        missing_candidates = sorted(declared_candidate_set - candidates)
+        undeclared_candidates = sorted(candidates - declared_candidate_set)
+        details = []
+        if missing_candidates:
+            details.append("missing " + ", ".join(missing_candidates))
+        if undeclared_candidates:
+            details.append("undeclared " + ", ".join(undeclared_candidates))
+        raise BenchmarkResultsError(
+            "Benchmark rows must match context 'ulog_candidates' exactly: "
+            + "; ".join(details)
+            + ". Register every declared candidate and remove undeclared rows."
+        )
+
     expected = {
         (candidate, producers, record_size, occupancy, repetition)
-        for candidate in candidates
+        for candidate in declared_candidates
         for repetition in range(repetitions)
         for producers in PRODUCER_COUNTS
         for record_size in RECORD_SIZES

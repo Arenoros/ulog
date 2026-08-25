@@ -29,6 +29,8 @@ class ReferenceLedgerKernel final {
 
   void Prepare(const WorkloadCase& workload);
   void BeginMeasurement() noexcept;
+  void ObserveRetainedHighWater() noexcept;
+  void EndMeasurement() noexcept {}
   [[nodiscard]] Attempt TryProduce(std::size_t producer_index,
                                    std::span<const std::byte> payload) noexcept;
   void Release(Attempt& attempt) noexcept;

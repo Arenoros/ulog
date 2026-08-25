@@ -3,8 +3,14 @@ find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
 find_package(Threads REQUIRED)
 
 add_library(
-  ulog-workload-support STATIC support/process_cpu_clock.cpp support/reference_kernel.cpp
-                               support/workload_harness.cpp
+  ulog-workload-support STATIC
+  prototypes/reservation/central_reservation_kernel.cpp
+  prototypes/reservation/central_reservation_ledger.cpp
+  prototypes/reservation/producer_credit_ledger.cpp
+  prototypes/reservation/producer_credit_reservation_kernel.cpp
+  support/process_cpu_clock.cpp
+  support/reference_kernel.cpp
+  support/workload_harness.cpp
 )
 target_compile_features(ulog-workload-support PUBLIC cxx_std_20)
 target_include_directories(ulog-workload-support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -26,7 +32,13 @@ target_compile_features(ulog-workload-harness-test PRIVATE cxx_std_20)
 target_link_libraries(ulog-workload-harness-test PRIVATE ulog-workload-support)
 ulog_configure_target(ulog-workload-harness-test)
 
+add_executable(ulog-reservation-ledger-test reservation_ledger_test.cpp)
+target_compile_features(ulog-reservation-ledger-test PRIVATE cxx_std_20)
+target_link_libraries(ulog-reservation-ledger-test PRIVATE ulog-workload-support)
+ulog_configure_target(ulog-reservation-ledger-test)
+
 add_test(NAME ulog.workload-harness-unit COMMAND ulog-workload-harness-test)
+add_test(NAME ulog.reservation-ledger-unit COMMAND ulog-reservation-ledger-test)
 add_test(NAME ulog.version-benchmark-smoke COMMAND ulog-benchmarks --benchmark_min_time=0.001s
                                                    --benchmark_color=false
 )
@@ -41,6 +53,7 @@ add_test(NAME ulog.benchmark-results
                  validate "${PROJECT_BINARY_DIR}/benchmark-results.json"
 )
 set_tests_properties(ulog.workload-harness-unit PROPERTIES LABELS "benchmark;unit")
+set_tests_properties(ulog.reservation-ledger-unit PROPERTIES LABELS "benchmark;unit")
 set_tests_properties(ulog.version-benchmark-smoke PROPERTIES LABELS "benchmark")
 set_tests_properties(ulog.benchmark-smoke PROPERTIES LABELS "benchmark")
 set_tests_properties(
