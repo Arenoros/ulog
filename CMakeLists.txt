@@ -27,7 +27,7 @@ ulog_define_options()
 set(ULOG_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 configure_file(include/ulog/version.hpp.in "${ULOG_GENERATED_INCLUDE_DIR}/ulog/version.hpp" @ONLY)
 
-add_library(ulog src/version.cpp)
+add_library(ulog src/logger.cpp src/version.cpp)
 add_library(ulog::ulog ALIAS ulog)
 
 target_compile_features(ulog PUBLIC cxx_std_20)
@@ -84,7 +84,8 @@ install(
   INCLUDES
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
-install(FILES include/ulog/export.hpp "${ULOG_GENERATED_INCLUDE_DIR}/ulog/version.hpp"
+install(FILES include/ulog/export.hpp include/ulog/level.hpp include/ulog/logger.hpp
+              include/ulog/source_location.hpp "${ULOG_GENERATED_INCLUDE_DIR}/ulog/version.hpp"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ulog"
 )
 install(

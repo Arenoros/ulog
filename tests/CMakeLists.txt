@@ -44,13 +44,24 @@ endif()
 
 if(ULOG_BUILD_UNIT_TESTS)
   find_package(GTest CONFIG REQUIRED)
-  add_executable(ulog-unit-tests version_test.cpp memory_resource_test.cpp)
+  add_executable(
+    ulog-unit-tests default_logger_probe.cpp frontend_test.cpp memory_resource_test.cpp
+                    version_test.cpp
+  )
   target_compile_features(ulog-unit-tests PRIVATE cxx_std_20)
   target_include_directories(ulog-unit-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(ulog-unit-tests PRIVATE ulog::ulog GTest::gtest_main)
   ulog_configure_target(ulog-unit-tests)
   add_test(NAME ulog.unit COMMAND ulog-unit-tests)
   set_tests_properties(ulog.unit PROPERTIES LABELS "unit" TIMEOUT 20)
+
+  add_executable(ulog-frontend-contract frontend_contract_test.cpp)
+  target_compile_features(ulog-frontend-contract PRIVATE cxx_std_20)
+  target_compile_definitions(ulog-frontend-contract PRIVATE ULOG_COMPILE_TIME_MIN_LEVEL=5)
+  target_link_libraries(ulog-frontend-contract PRIVATE ulog::ulog)
+  ulog_configure_target(ulog-frontend-contract)
+  add_test(NAME ulog.frontend-contract COMMAND ulog-frontend-contract)
+  set_tests_properties(ulog.frontend-contract PROPERTIES LABELS "unit;frontend" TIMEOUT 10)
 endif()
 
 if(ULOG_BUILD_STRESS_TESTS)

@@ -1,8 +1,10 @@
 # Ulog
 
 Ulog is a standalone, performance-oriented C++20 logging library under active
-development. The repository currently contains the verified project and agent
-infrastructure; production logging APIs are intentionally not implemented yet.
+development. Its first production interface exposes native levels, source
+locations, and a cheap Logger handle whose initial process-wide target is a
+static Null Logger. Runtime construction and Record delivery are not implemented
+yet.
 
 The design preserves the capabilities of the pinned reference implementation
 without source or API compatibility and without depending on that project.
@@ -30,6 +32,24 @@ external consumer through the canonical target:
 find_package(ulog CONFIG REQUIRED)
 target_link_libraries(my_target PRIVATE ulog::ulog)
 ```
+
+The initial native frontend is available from public package headers:
+
+```cpp
+#include <string_view>
+
+#include <ulog/logger.hpp>
+
+const ulog::Logger logger = ulog::GetDefaultLogger();
+logger.Log<ulog::Level::kInfo>(ulog::SourceLocation::Current(), []() -> std::string_view {
+  return "startup reached";
+});
+```
+
+Until an application-owned Runtime and Default Logger exchange are introduced,
+the initial target is the Null Logger and suppresses the factory without
+invoking its body. See [`docs/native-frontend.md`](docs/native-frontend.md) for
+the complete current contract and compile-time cutoff.
 
 For the full Conan, unit, stress, dependency, and benchmark workflow, see
 [`docs/testing.md`](docs/testing.md). The shared performance workload and

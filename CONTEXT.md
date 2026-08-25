@@ -57,6 +57,11 @@ that do not name a Logger explicitly. Every target ever published in this role
 has an application-long stable address.
 _Avoid_: shared logger, implicitly created runtime
 
+**Null Logger**:
+The process-lifetime Logger state at the suppressing `None` threshold. It owns
+no Runtime or delivery state, and it is the initial Default Logger target.
+_Avoid_: startup buffer, empty runtime
+
 **Bootstrap Logger**:
 An explicitly created, application-long default target that stores early
 Structured Records in a bounded in-memory buffer and later hands them to a

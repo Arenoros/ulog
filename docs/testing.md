@@ -1,10 +1,11 @@
 # Testing and performance checks
 
-The bootstrap establishes seven independent test categories:
+The repository establishes seven independent test categories:
 
-- `unit`: public version seam and test memory resources;
+- `unit`: public version and native frontend seams, compile-time erasure,
+  Null-Logger allocation/ownership guarantees, and test memory resources;
 - `integration`/`package`: install Ulog, configure a copied external project,
-  link only `ulog::ulog`, and run it;
+  link only `ulog::ulog`, and exercise the frontend across translation units;
 - `dependencies`: compile and run fmt/libuv integration without linking those
   dependencies into the shipped bootstrap library;
 - `stress`: deterministic concurrent checks for allocation instrumentation;
