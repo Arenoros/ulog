@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -19,6 +20,7 @@ constexpr std::array kLevels{
     Level::kTrace, Level::kDebug,    Level::kInfo, Level::kWarning,
     Level::kError, Level::kCritical, Level::kNone,
 };
+constexpr Level kUnknownLevel = std::bit_cast<Level>(std::uint8_t{255});
 
 static_assert(static_cast<std::uint8_t>(Level::kTrace) == 0);
 static_assert(static_cast<std::uint8_t>(Level::kDebug) == 1);
@@ -57,8 +59,8 @@ TEST(Level, ThresholdOrderingIsExplicit) {
   EXPECT_TRUE(IsLevelEnabled(Level::kCritical, Level::kCritical));
   EXPECT_FALSE(IsLevelEnabled(Level::kNone, Level::kTrace));
   EXPECT_FALSE(IsLevelEnabled(Level::kCritical, Level::kNone));
-  EXPECT_FALSE(IsLevelEnabled(static_cast<Level>(255), Level::kTrace));
-  EXPECT_FALSE(IsLevelEnabled(Level::kCritical, static_cast<Level>(255)));
+  EXPECT_FALSE(IsLevelEnabled(kUnknownLevel, Level::kTrace));
+  EXPECT_FALSE(IsLevelEnabled(Level::kCritical, kUnknownLevel));
 }
 
 TEST(Logger, InitialDefaultIsTheProcessWideNullLogger) {
