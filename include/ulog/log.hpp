@@ -78,7 +78,7 @@ struct MacroAccess final {
 
 #define ULOG_DETAIL_NAMED_LOG_TO(target, level, ...)                                       \
   do {                                                                                     \
-    if constexpr (static_cast<std::uint8_t>(level) >= ULOG_COMPILE_TIME_MIN_LEVEL) {       \
+    if constexpr (static_cast<int>(level) >= ULOG_COMPILE_TIME_MIN_LEVEL) {                \
       ::ulog::detail::MacroAccess::Log((target), level, ::ulog::SourceLocation::Current(), \
                                        ULOG_DETAIL_MESSAGE_BUILDER(__VA_ARGS__));          \
     }                                                                                      \

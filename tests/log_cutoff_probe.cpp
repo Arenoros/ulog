@@ -111,7 +111,7 @@ void ExerciseNamedMacros() {
 [[nodiscard]] int CheckNamedMacros() noexcept {
   for (std::size_t index = 0; index < kLevelCount; ++index) {
     const int expected_target_evaluations =
-        index >= static_cast<std::size_t>(ULOG_EXPECTED_MIN_LEVEL) ? 1 : 0;
+        static_cast<int>(index) >= ULOG_EXPECTED_MIN_LEVEL ? 1 : 0;
     if (target_evaluations[index] != expected_target_evaluations) {
       return 10 + static_cast<int>(index);
     }
