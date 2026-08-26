@@ -6,14 +6,6 @@
 
 namespace ulog {
 
-namespace detail {
-
-struct LoggerAccess final {
-  [[nodiscard]] static Logger FromState(const LoggerState* state) noexcept { return Logger{state}; }
-};
-
-}  // namespace detail
-
 namespace {
 
 void DiscardText(void*, Level, const SourceLocation&, void*, detail::TextBuilder) {}

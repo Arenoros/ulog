@@ -27,12 +27,18 @@ ulog_define_options()
 set(ULOG_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 configure_file(include/ulog/version.hpp.in "${ULOG_GENERATED_INCLUDE_DIR}/ulog/version.hpp" @ONLY)
 
-add_library(ulog src/logger.cpp src/version.cpp)
+set(ULOG_PRODUCER_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/producer/credit_ledger.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/producer/producer_kernel.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/producer/record_storage.cpp"
+)
+add_library(ulog src/logger.cpp ${ULOG_PRODUCER_SOURCES} src/version.cpp)
 add_library(ulog::ulog ALIAS ulog)
 
 target_compile_features(ulog PUBLIC cxx_std_20)
 target_include_directories(
   ulog
+  PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
          "$<BUILD_INTERFACE:${ULOG_GENERATED_INCLUDE_DIR}>"
          "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"

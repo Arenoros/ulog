@@ -20,4 +20,8 @@ struct LoggerState final {
   void* producer_context;
 };
 
+struct LoggerAccess final {
+  [[nodiscard]] static Logger FromState(const LoggerState* state) noexcept { return Logger{state}; }
+};
+
 }  // namespace ulog::detail

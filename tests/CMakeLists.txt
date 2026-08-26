@@ -42,18 +42,53 @@ if(PROJECT_IS_TOP_LEVEL)
   )
 endif()
 
+if(ULOG_BUILD_UNIT_TESTS OR ULOG_BUILD_STRESS_TESTS)
+  find_package(Threads REQUIRED)
+endif()
+
+set(_ulog_producer_test_library ulog::ulog)
+if(BUILD_SHARED_LIBS AND (ULOG_BUILD_UNIT_TESTS OR ULOG_BUILD_STRESS_TESTS))
+  # Private producer symbols stay out of the shared ABI. Tests link the same sources privately.
+  add_library(ulog-producer-test-support STATIC ${ULOG_PRODUCER_SOURCES})
+  target_compile_features(ulog-producer-test-support PRIVATE cxx_std_20)
+  target_include_directories(
+    ulog-producer-test-support PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/include"
+                                       "${ULOG_GENERATED_INCLUDE_DIR}"
+  )
+  target_link_libraries(ulog-producer-test-support PUBLIC ulog::ulog)
+  ulog_configure_target(ulog-producer-test-support)
+  set(_ulog_producer_test_library ulog-producer-test-support)
+endif()
+
 if(ULOG_BUILD_UNIT_TESTS)
   find_package(GTest CONFIG REQUIRED)
   add_executable(
     ulog-unit-tests default_logger_probe.cpp frontend_test.cpp memory_resource_test.cpp
-                    version_test.cpp
+                    producer_kernel_test.cpp version_test.cpp
   )
   target_compile_features(ulog-unit-tests PRIVATE cxx_std_20)
-  target_include_directories(ulog-unit-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(ulog-unit-tests PRIVATE ulog::ulog GTest::gtest_main)
+  target_include_directories(
+    ulog-unit-tests PRIVATE "${PROJECT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  target_link_libraries(
+    ulog-unit-tests PRIVATE ${_ulog_producer_test_library} GTest::gtest_main Threads::Threads
+  )
   ulog_configure_target(ulog-unit-tests)
   add_test(NAME ulog.unit COMMAND ulog-unit-tests)
   set_tests_properties(ulog.unit PROPERTIES LABELS "unit" TIMEOUT 20)
+
+  if(NOT ULOG_ENABLE_TSAN)
+    # This test interposes global allocation functions, whose symbols are also owned by TSan.
+    add_executable(ulog-producer-allocation-test producer_kernel_allocation_test.cpp)
+    target_compile_features(ulog-producer-allocation-test PRIVATE cxx_std_20)
+    target_include_directories(ulog-producer-allocation-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(ulog-producer-allocation-test PRIVATE ${_ulog_producer_test_library})
+    ulog_configure_target(ulog-producer-allocation-test)
+    add_test(NAME ulog.producer-allocation COMMAND ulog-producer-allocation-test)
+    set_tests_properties(
+      ulog.producer-allocation PROPERTIES LABELS "unit;producer;allocation" TIMEOUT 10
+    )
+  endif()
 
   add_executable(ulog-frontend-contract frontend_contract_test.cpp)
   target_compile_features(ulog-frontend-contract PRIVATE cxx_std_20)
@@ -65,7 +100,6 @@ if(ULOG_BUILD_UNIT_TESTS)
 endif()
 
 if(ULOG_BUILD_STRESS_TESTS)
-  find_package(Threads REQUIRED)
   add_executable(ulog-stress-tests stress/memory_resource_stress.cpp)
   target_compile_features(ulog-stress-tests PRIVATE cxx_std_20)
   target_include_directories(ulog-stress-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -73,6 +107,18 @@ if(ULOG_BUILD_STRESS_TESTS)
   ulog_configure_target(ulog-stress-tests)
   add_test(NAME ulog.stress COMMAND ulog-stress-tests)
   set_tests_properties(ulog.stress PROPERTIES LABELS "stress" TIMEOUT 10)
+
+  add_executable(ulog-producer-kernel-stress stress/producer_kernel_stress.cpp)
+  target_compile_features(ulog-producer-kernel-stress PRIVATE cxx_std_20)
+  target_include_directories(ulog-producer-kernel-stress PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_link_libraries(
+    ulog-producer-kernel-stress PRIVATE ${_ulog_producer_test_library} Threads::Threads
+  )
+  ulog_configure_target(ulog-producer-kernel-stress)
+  add_test(NAME ulog.producer-kernel-stress COMMAND ulog-producer-kernel-stress)
+  set_tests_properties(
+    ulog.producer-kernel-stress PROPERTIES LABELS "stress;producer;concurrency" TIMEOUT 10
+  )
 endif()
 
 if(ULOG_BUILD_DEPENDENCY_SMOKE_TESTS)

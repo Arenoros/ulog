@@ -3,12 +3,15 @@
 The repository establishes seven independent test categories:
 
 - `unit`: public version and native frontend seams, compile-time erasure,
-  Null-Logger allocation/ownership guarantees, and test memory resources;
+  Null-Logger allocation/ownership guarantees, bounded producer transactions,
+  and test memory resources;
 - `integration`/`package`: install Ulog, configure a copied external project,
   link only `ulog::ulog`, and exercise the frontend across translation units;
 - `dependencies`: compile and run fmt/libuv integration without linking those
   dependencies into the shipped bootstrap library;
-- `stress`: deterministic concurrent checks for allocation instrumentation;
+- `stress`: deterministic concurrent checks for allocation instrumentation,
+  producer-lane saturation, FIFO publication, byte conservation, retirement,
+  and race-free weak snapshots;
 - `tooling`: regression checks for dependency-graph enforcement and benchmark
   result collection;
 - `migration`: schema, provenance, manifest-ID, and integrity validation for
@@ -33,6 +36,9 @@ the standalone Conan package consumer. Full controlled benchmark execution is
 never part of hosted CI. A timeout is a diagnosable failure, not permission to
 silently raise the limit: first identify the stalled phase or move intentional
 long-running evidence collection to the externally bounded controlled runner.
+The production producer allocation test and randomized stress test have
+10-second CTest limits; the stress executable also has its own five-second
+watchdog so a stalled thread fails with a focused diagnostic.
 
 The dependency-free presets build the library, architecture check, and installed
 consumer:

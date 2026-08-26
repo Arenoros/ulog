@@ -35,10 +35,15 @@ that body: C++ constructs the factory argument before calling `Log`, so an eager
 init-capture such as `[message = BuildMessage()]` is outside the lazy guarantee.
 The result must be usable as `std::string_view` and is consumed before the
 factory result is destroyed. Caller exceptions can only occur if the factory is
-admitted and remain outside Ulog's no-exception guarantee. At this stage no
-Runtime Logger can be constructed, so every public call follows the Null path;
-the production producer path is added behind the same Logger interface in the
-next roadmap slice.
+admitted and remain outside Ulog's no-exception guarantee.
+
+The private production producer kernel now uses this same Logger dispatch. It
+claims a producer-local ingress cell and reserves the complete configured
+worst-case Record charge before evaluating the factory, then copies the source
+and message into bounded owned storage. Rejected calls therefore preserve the
+lazy contract. Runtime construction and ownership of that private kernel remain
+later roadmap work, so the installed public package still exposes only the Null
+and Default Logger accessors.
 
 ## Compile-time cutoff
 
