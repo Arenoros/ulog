@@ -173,6 +173,7 @@ TEST(Operation, CompletionDispatchesTheSingleCallbackAwayFromCompletingThread) {
   ASSERT_TRUE(started);
 
   std::latch callback_entered{1};
+  std::latch callback_finished{1};
   std::binary_semaphore release_callback{0};
   std::binary_semaphore completion_returned{0};
   std::thread::id completing_thread;
@@ -186,6 +187,7 @@ TEST(Operation, CompletionDispatchesTheSingleCallbackAwayFromCompletingThread) {
     ++callback_calls;
     callback_entered.count_down();
     release_callback.acquire();
+    callback_finished.count_down();
   });
   ASSERT_EQ(registered.status, OperationCallbackStatus::kRegistered);
 
@@ -202,6 +204,7 @@ TEST(Operation, CompletionDispatchesTheSingleCallbackAwayFromCompletingThread) {
   const bool completion_was_offloaded =
       completion_returned.try_acquire_for(std::chrono::seconds{1});
   release_callback.release();
+  callback_finished.wait();
   completer.join();
 
   EXPECT_TRUE(completion_was_offloaded);

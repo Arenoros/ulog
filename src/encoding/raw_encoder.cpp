@@ -143,27 +143,57 @@ void WriteNumber(std::span<char> output, std::size_t& cursor, Value value) noexc
   cursor = static_cast<std::size_t>(formatted.ptr - output.data());
 }
 
-void WriteFieldValue(std::span<char> output, std::size_t& cursor, const FieldView& field) noexcept {
+[[nodiscard]] bool WriteFieldValue(std::span<char> output, std::size_t& cursor,
+                                   const FieldView& field) noexcept {
   switch (field.kind()) {
-    case FieldKind::kString:
-      WriteEscaped(output, cursor, *field.AsString(), false);
-      return;
-    case FieldKind::kInt64:
-      WriteNumber(output, cursor, *field.AsInt64());
-      return;
-    case FieldKind::kUInt64:
-      WriteNumber(output, cursor, *field.AsUInt64());
-      return;
-    case FieldKind::kDouble:
-      WriteNumber(output, cursor, *field.AsDouble());
-      return;
-    case FieldKind::kBool:
-      output[cursor++] = *field.AsBool() ? '1' : '0';
-      return;
+    case FieldKind::kString: {
+      const auto value = field.AsString();
+      if (!value) {
+        return false;
+      }
+      WriteEscaped(output, cursor, *value, false);
+      return true;
+    }
+    case FieldKind::kInt64: {
+      const auto value = field.AsInt64();
+      if (!value) {
+        return false;
+      }
+      WriteNumber(output, cursor, *value);
+      return true;
+    }
+    case FieldKind::kUInt64: {
+      const auto value = field.AsUInt64();
+      if (!value) {
+        return false;
+      }
+      WriteNumber(output, cursor, *value);
+      return true;
+    }
+    case FieldKind::kDouble: {
+      const auto value = field.AsDouble();
+      if (!value) {
+        return false;
+      }
+      WriteNumber(output, cursor, *value);
+      return true;
+    }
+    case FieldKind::kBool: {
+      const auto value = field.AsBool();
+      if (!value) {
+        return false;
+      }
+      output[cursor++] = *value ? '1' : '0';
+      return true;
+    }
     case FieldKind::kNull:
+      if (!field.IsNull()) {
+        return false;
+      }
       WriteLiteral(output, cursor, kNullValue);
-      return;
+      return true;
   }
+  return false;
 }
 
 }  // namespace
@@ -189,10 +219,15 @@ RawEncodeResult EncodeRawRecord(const producer::RecordView& record,
   const std::size_t field_count = record.field_count();
   for (std::size_t index = 0; index < field_count; ++index) {
     const auto field = fields.Next();
+    if (!field) {
+      return {};
+    }
     output[cursor++] = kFieldSeparator;
     WriteEscaped(output, cursor, field->key(), true);
     output[cursor++] = kKeyValueSeparator;
-    WriteFieldValue(output, cursor, *field);
+    if (!WriteFieldValue(output, cursor, *field)) {
+      return {};
+    }
   }
   WriteLiteral(output, cursor, kTextPrefix);
   WriteEscaped(output, cursor, record.message(), false);

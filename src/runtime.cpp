@@ -11,7 +11,6 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
-#include <type_traits>
 #include <ulog/runtime.hpp>
 #include <ulog/testing/in_memory_destination.hpp>
 #include <ulog/testing/in_memory_encoded_destination.hpp>
@@ -187,74 +186,62 @@ class RuntimeRoute final {
   ~RuntimeRoute() { Detach(); }
 
   [[nodiscard]] bool TryAttach() noexcept {
-    attached_ = std::visit(
-        [](auto& destination) {
-          using Destination = std::remove_cvref_t<decltype(destination)>;
-          if constexpr (std::is_same_v<Destination, testing::InMemoryDestination>) {
-            return InMemoryDestinationAccess::TryAttachRuntime(destination);
-          } else {
-            return InMemoryEncodedDestinationAccess::TryAttachRuntime(destination);
-          }
-        },
-        destination_);
+    if (auto* structured_destination = std::get_if<testing::InMemoryDestination>(&destination_)) {
+      attached_ = InMemoryDestinationAccess::TryAttachRuntime(*structured_destination);
+    } else if (auto* encoded_destination =
+                   std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
+      attached_ = InMemoryEncodedDestinationAccess::TryAttachRuntime(*encoded_destination);
+    } else {
+      attached_ = false;
+    }
     return attached_;
   }
 
   [[nodiscard]] RouteDeliveryResult WaitAndDeliver(
       ProducerKernel& producer, std::chrono::steady_clock::duration recheck_interval) noexcept {
-    return std::visit(
-        [&](auto& destination) -> RouteDeliveryResult {
-          using Destination = std::remove_cvref_t<decltype(destination)>;
-          if constexpr (std::is_same_v<Destination, testing::InMemoryDestination>) {
-            DestinationWriteClaim claim =
-                InMemoryDestinationAccess::WaitForWrite(destination, recheck_interval);
-            if (!claim) {
-              return {};
-            }
-            const ConsumeStatus consumed = producer.TryConsume(&claim, &StoreStructuredRecord);
-            return {.consumed = consumed,
-                    .delivered_bytes = 0U,
-                    .committed = consumed == ConsumeStatus::kRecord};
-          } else {
-            EncodedDestinationWriteClaim claim =
-                InMemoryEncodedDestinationAccess::WaitForWrite(destination, recheck_interval);
-            if (!claim) {
-              return {};
-            }
-            EncodedStoreContext context{.claim = &claim};
-            const ConsumeStatus consumed = producer.TryConsume(&context, &StoreEncodedRecord);
-            return {.consumed = consumed,
-                    .delivered_bytes = context.result.encoded_bytes,
-                    .committed = context.result.committed};
-          }
-        },
-        destination_);
+    if (auto* destination = std::get_if<testing::InMemoryDestination>(&destination_)) {
+      DestinationWriteClaim claim =
+          InMemoryDestinationAccess::WaitForWrite(*destination, recheck_interval);
+      if (!claim) {
+        return {};
+      }
+      const ConsumeStatus consumed = producer.TryConsume(&claim, &StoreStructuredRecord);
+      return {.consumed = consumed,
+              .delivered_bytes = 0U,
+              .committed = consumed == ConsumeStatus::kRecord};
+    }
+    if (auto* destination = std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
+      EncodedDestinationWriteClaim claim =
+          InMemoryEncodedDestinationAccess::WaitForWrite(*destination, recheck_interval);
+      if (!claim) {
+        return {};
+      }
+      EncodedStoreContext context{.claim = &claim};
+      const ConsumeStatus consumed = producer.TryConsume(&context, &StoreEncodedRecord);
+      return {.consumed = consumed,
+              .delivered_bytes = context.result.encoded_bytes,
+              .committed = context.result.committed};
+    }
+    return {};
   }
 
   void Stop() noexcept {
-    std::visit(
-        [](auto& destination) {
-          using Destination = std::remove_cvref_t<decltype(destination)>;
-          if constexpr (std::is_same_v<Destination, testing::InMemoryDestination>) {
-            InMemoryDestinationAccess::Stop(destination);
-          } else {
-            InMemoryEncodedDestinationAccess::Stop(destination);
-          }
-        },
-        destination_);
+    if (auto* structured_destination = std::get_if<testing::InMemoryDestination>(&destination_)) {
+      InMemoryDestinationAccess::Stop(*structured_destination);
+    } else if (auto* encoded_destination =
+                   std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
+      InMemoryEncodedDestinationAccess::Stop(*encoded_destination);
+    }
   }
 
   [[nodiscard]] std::size_t FixedBackingBytes() const noexcept {
-    return std::visit(
-        [](const auto& destination) {
-          using Destination = std::remove_cvref_t<decltype(destination)>;
-          if constexpr (std::is_same_v<Destination, testing::InMemoryDestination>) {
-            return InMemoryDestinationAccess::FixedBackingBytes(destination);
-          } else {
-            return InMemoryEncodedDestinationAccess::FixedBackingBytes(destination);
-          }
-        },
-        destination_);
+    if (const auto* destination = std::get_if<testing::InMemoryDestination>(&destination_)) {
+      return InMemoryDestinationAccess::FixedBackingBytes(*destination);
+    }
+    if (const auto* destination = std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
+      return InMemoryEncodedDestinationAccess::FixedBackingBytes(*destination);
+    }
+    return 0U;
   }
 
  private:
@@ -278,16 +265,12 @@ class RuntimeRoute final {
     if (!attached_) {
       return;
     }
-    std::visit(
-        [](auto& destination) {
-          using Destination = std::remove_cvref_t<decltype(destination)>;
-          if constexpr (std::is_same_v<Destination, testing::InMemoryDestination>) {
-            InMemoryDestinationAccess::DetachRuntime(destination);
-          } else {
-            InMemoryEncodedDestinationAccess::DetachRuntime(destination);
-          }
-        },
-        destination_);
+    if (auto* structured_destination = std::get_if<testing::InMemoryDestination>(&destination_)) {
+      InMemoryDestinationAccess::DetachRuntime(*structured_destination);
+    } else if (auto* encoded_destination =
+                   std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
+      InMemoryEncodedDestinationAccess::DetachRuntime(*encoded_destination);
+    }
     attached_ = false;
   }
 
