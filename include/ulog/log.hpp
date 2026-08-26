@@ -76,16 +76,25 @@ struct MacroAccess final {
 
 #define ULOG_DETAIL_MESSAGE_BUILDER(...) ULOG_DETAIL_MESSAGE_BUILDER_IMPL(__COUNTER__, __VA_ARGS__)
 
-#define ULOG_DETAIL_NAMED_LOG_TO(target, level, ...)                                       \
+#define ULOG_DETAIL_NAMED_LOG_TO(target, level, ...)                                     \
+  do {                                                                                   \
+    ::ulog::detail::MacroAccess::Log((target), level, ::ulog::SourceLocation::Current(), \
+                                     ULOG_DETAIL_MESSAGE_BUILDER(__VA_ARGS__));          \
+  } while (false)
+
+#define ULOG_DETAIL_NAMED_LOG(level, ...) \
+  ULOG_DETAIL_NAMED_LOG_TO(::ulog::GetDefaultLogger(), level, __VA_ARGS__)
+
+#define ULOG_DETAIL_ERASED_NAMED_LOG_TO(target, level, ...)                                \
   do {                                                                                     \
-    if constexpr (static_cast<int>(level) >= ULOG_COMPILE_TIME_MIN_LEVEL) {                \
+    if constexpr (false) {                                                                 \
       ::ulog::detail::MacroAccess::Log((target), level, ::ulog::SourceLocation::Current(), \
                                        ULOG_DETAIL_MESSAGE_BUILDER(__VA_ARGS__));          \
     }                                                                                      \
   } while (false)
 
-#define ULOG_DETAIL_NAMED_LOG(level, ...) \
-  ULOG_DETAIL_NAMED_LOG_TO(::ulog::GetDefaultLogger(), level, __VA_ARGS__)
+#define ULOG_DETAIL_ERASED_NAMED_LOG(level, ...) \
+  ULOG_DETAIL_ERASED_NAMED_LOG_TO(::ulog::GetDefaultLogger(), level, __VA_ARGS__)
 
 #define ULOG_DETAIL_GENERIC_LOG_TO(target, level, ...)                                     \
   do {                                                                                     \
@@ -96,21 +105,55 @@ struct MacroAccess final {
 #define LOG(level, ...) ULOG_DETAIL_GENERIC_LOG_TO(::ulog::GetDefaultLogger(), level, __VA_ARGS__)
 #define LOG_TO(logger, level, ...) ULOG_DETAIL_GENERIC_LOG_TO(logger, level, __VA_ARGS__)
 
+#if ULOG_COMPILE_TIME_MIN_LEVEL <= 0
 #define LOG_TRACE(...) ULOG_DETAIL_NAMED_LOG(::ulog::Level::kTrace, __VA_ARGS__)
-#define LOG_DEBUG(...) ULOG_DETAIL_NAMED_LOG(::ulog::Level::kDebug, __VA_ARGS__)
-#define LOG_INFO(...) ULOG_DETAIL_NAMED_LOG(::ulog::Level::kInfo, __VA_ARGS__)
-#define LOG_WARNING(...) ULOG_DETAIL_NAMED_LOG(::ulog::Level::kWarning, __VA_ARGS__)
-#define LOG_ERROR(...) ULOG_DETAIL_NAMED_LOG(::ulog::Level::kError, __VA_ARGS__)
-#define LOG_CRITICAL(...) ULOG_DETAIL_NAMED_LOG(::ulog::Level::kCritical, __VA_ARGS__)
-
 #define LOG_TRACE_TO(logger, ...) \
   ULOG_DETAIL_NAMED_LOG_TO(logger, ::ulog::Level::kTrace, __VA_ARGS__)
+#else
+#define LOG_TRACE(...) ULOG_DETAIL_ERASED_NAMED_LOG(::ulog::Level::kTrace, __VA_ARGS__)
+#define LOG_TRACE_TO(logger, ...) \
+  ULOG_DETAIL_ERASED_NAMED_LOG_TO(logger, ::ulog::Level::kTrace, __VA_ARGS__)
+#endif
+
+#if ULOG_COMPILE_TIME_MIN_LEVEL <= 1
+#define LOG_DEBUG(...) ULOG_DETAIL_NAMED_LOG(::ulog::Level::kDebug, __VA_ARGS__)
 #define LOG_DEBUG_TO(logger, ...) \
   ULOG_DETAIL_NAMED_LOG_TO(logger, ::ulog::Level::kDebug, __VA_ARGS__)
+#else
+#define LOG_DEBUG(...) ULOG_DETAIL_ERASED_NAMED_LOG(::ulog::Level::kDebug, __VA_ARGS__)
+#define LOG_DEBUG_TO(logger, ...) \
+  ULOG_DETAIL_ERASED_NAMED_LOG_TO(logger, ::ulog::Level::kDebug, __VA_ARGS__)
+#endif
+
+#if ULOG_COMPILE_TIME_MIN_LEVEL <= 2
+#define LOG_INFO(...) ULOG_DETAIL_NAMED_LOG(::ulog::Level::kInfo, __VA_ARGS__)
 #define LOG_INFO_TO(logger, ...) ULOG_DETAIL_NAMED_LOG_TO(logger, ::ulog::Level::kInfo, __VA_ARGS__)
+#else
+#define LOG_INFO(...) ULOG_DETAIL_ERASED_NAMED_LOG(::ulog::Level::kInfo, __VA_ARGS__)
+#define LOG_INFO_TO(logger, ...) \
+  ULOG_DETAIL_ERASED_NAMED_LOG_TO(logger, ::ulog::Level::kInfo, __VA_ARGS__)
+#endif
+
+#if ULOG_COMPILE_TIME_MIN_LEVEL <= 3
+#define LOG_WARNING(...) ULOG_DETAIL_NAMED_LOG(::ulog::Level::kWarning, __VA_ARGS__)
 #define LOG_WARNING_TO(logger, ...) \
   ULOG_DETAIL_NAMED_LOG_TO(logger, ::ulog::Level::kWarning, __VA_ARGS__)
+#else
+#define LOG_WARNING(...) ULOG_DETAIL_ERASED_NAMED_LOG(::ulog::Level::kWarning, __VA_ARGS__)
+#define LOG_WARNING_TO(logger, ...) \
+  ULOG_DETAIL_ERASED_NAMED_LOG_TO(logger, ::ulog::Level::kWarning, __VA_ARGS__)
+#endif
+
+#if ULOG_COMPILE_TIME_MIN_LEVEL <= 4
+#define LOG_ERROR(...) ULOG_DETAIL_NAMED_LOG(::ulog::Level::kError, __VA_ARGS__)
 #define LOG_ERROR_TO(logger, ...) \
   ULOG_DETAIL_NAMED_LOG_TO(logger, ::ulog::Level::kError, __VA_ARGS__)
+#else
+#define LOG_ERROR(...) ULOG_DETAIL_ERASED_NAMED_LOG(::ulog::Level::kError, __VA_ARGS__)
+#define LOG_ERROR_TO(logger, ...) \
+  ULOG_DETAIL_ERASED_NAMED_LOG_TO(logger, ::ulog::Level::kError, __VA_ARGS__)
+#endif
+
+#define LOG_CRITICAL(...) ULOG_DETAIL_NAMED_LOG(::ulog::Level::kCritical, __VA_ARGS__)
 #define LOG_CRITICAL_TO(logger, ...) \
   ULOG_DETAIL_NAMED_LOG_TO(logger, ::ulog::Level::kCritical, __VA_ARGS__)
