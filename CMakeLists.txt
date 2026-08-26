@@ -35,17 +35,12 @@ set(ULOG_PRODUCER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/producer/producer_kernel.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/producer/record_storage.cpp"
 )
-set(ULOG_CONTROL_PRIVATE_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/control/control_reserve.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/control/thread_role.cpp"
+set(ULOG_CONTROL_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/control/control_reserve.cpp"
+                                 "${CMAKE_CURRENT_SOURCE_DIR}/src/control/thread_role.cpp"
 )
 add_library(
-  ulog
-  src/logger.cpp
-  src/operation.cpp
-  ${ULOG_PRODUCER_SOURCES}
-  ${ULOG_CONTROL_PRIVATE_SOURCES}
-  src/version.cpp
+  ulog src/logger.cpp src/operation.cpp ${ULOG_PRODUCER_SOURCES} ${ULOG_CONTROL_PRIVATE_SOURCES}
+       src/version.cpp
 )
 add_library(ulog::ulog ALIAS ulog)
 
@@ -57,7 +52,11 @@ target_include_directories(
          "$<BUILD_INTERFACE:${ULOG_GENERATED_INCLUDE_DIR}>"
          "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
-target_link_libraries(ulog PRIVATE Threads::Threads PUBLIC fmt::fmt)
+target_link_libraries(
+  ulog
+  PRIVATE Threads::Threads
+  PUBLIC fmt::fmt
+)
 
 if(BUILD_SHARED_LIBS)
   target_compile_definitions(ulog PRIVATE ULOG_BUILDING_LIBRARY)
@@ -106,8 +105,12 @@ install(
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
 install(
-  FILES include/ulog/export.hpp include/ulog/level.hpp include/ulog/log.hpp include/ulog/logger.hpp
-        include/ulog/operation.hpp include/ulog/source_location.hpp
+  FILES include/ulog/export.hpp
+        include/ulog/level.hpp
+        include/ulog/log.hpp
+        include/ulog/logger.hpp
+        include/ulog/operation.hpp
+        include/ulog/source_location.hpp
         "${ULOG_GENERATED_INCLUDE_DIR}/ulog/version.hpp"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ulog"
 )

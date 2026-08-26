@@ -64,7 +64,7 @@ if(BUILD_SHARED_LIBS AND (ULOG_BUILD_UNIT_TESTS OR ULOG_BUILD_STRESS_TESTS))
   target_compile_features(ulog-private-test-support PRIVATE cxx_std_20)
   target_include_directories(
     ulog-private-test-support PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/include"
-                                     "${ULOG_GENERATED_INCLUDE_DIR}"
+                                      "${ULOG_GENERATED_INCLUDE_DIR}"
   )
   target_link_libraries(ulog-private-test-support PUBLIC ulog::ulog Threads::Threads)
   ulog_configure_target(ulog-private-test-support)
