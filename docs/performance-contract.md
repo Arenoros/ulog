@@ -68,7 +68,9 @@ all payload pools, and the independent control and progress reserves.
   handoff; ordinary Runtime Logger calls retain the no-forwarding contract.
 - Runtime construction validates configuration, reserves global pools, and
   starts the configured fixed workers before logging begins; producer-local
-  storage may be initialized during warm-up.
+  storage may be initialized during warm-up. The current in-memory tracer
+  accepts exactly one worker and prepares each producer thread through
+  `Runtime::GetLogger()`.
 - Ulog-owned payload memory is bounded by a configurable pipeline byte limit.
   It covers open RecordWriters, ingress Records, encoded batches, retry queues,
   and Ulog-owned in-flight buffers. Control operations use a separate bounded
@@ -114,6 +116,12 @@ Context capture occurs only after admission capacity has been reserved. Encoder
 and Sink extension code never executes on producer threads, and Encoder never
 executes on the libuv loop thread.
 
+The current [in-memory Runtime tracer](runtime.md) exercises the bounded
+producer, single FIFO worker, control reserve, and lifecycle portions of this
+contract. Generic Encoders, Sinks, ContextProviders, libuv I/O, multiple routes,
+and batching remain out of scope for that tracer; route and I/O requirements in
+this document constrain their later implementations.
+
 ## Statistics overhead
 
 - Statistics have fixed cardinality by Runtime, Logger, route, level, and a
@@ -152,6 +160,8 @@ executes on the libuv loop thread.
 ## Ordering
 
 - Each route and sink observes its selected Records in FIFO admission order.
+- The current tracer has one immutable route and its in-memory destination
+  exposes ready Records in FIFO admission order.
 - Flush and Reopen provide explicit ordered barriers.
 - Completion order between independent routes is not guaranteed, allowing the
   implementation to execute routes concurrently.

@@ -11,3 +11,9 @@ target_compile_definitions(ulog-conan-package-test PRIVATE ULOG_COMPILE_TIME_MIN
 target_link_libraries(ulog-conan-package-test PRIVATE ulog::ulog)
 add_test(NAME ulog.conan-package COMMAND ulog-conan-package-test)
 set_tests_properties(ulog.conan-package PROPERTIES TIMEOUT 20)
+
+add_executable(ulog-conan-runtime-tracer src/runtime_main.cpp)
+target_compile_features(ulog-conan-runtime-tracer PRIVATE cxx_std_20)
+target_link_libraries(ulog-conan-runtime-tracer PRIVATE ulog::ulog)
+add_test(NAME ulog.conan-runtime-tracer COMMAND ulog-conan-runtime-tracer)
+set_tests_properties(ulog.conan-runtime-tracer PROPERTIES TIMEOUT 10)

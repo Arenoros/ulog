@@ -39,8 +39,14 @@ set(ULOG_CONTROL_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/control/contro
                                  "${CMAKE_CURRENT_SOURCE_DIR}/src/control/thread_role.cpp"
 )
 add_library(
-  ulog src/logger.cpp src/operation.cpp ${ULOG_PRODUCER_SOURCES} ${ULOG_CONTROL_PRIVATE_SOURCES}
-       src/version.cpp
+  ulog
+  src/logger.cpp
+  src/operation.cpp
+  src/runtime.cpp
+  src/testing/in_memory_destination.cpp
+  ${ULOG_PRODUCER_SOURCES}
+  ${ULOG_CONTROL_PRIVATE_SOURCES}
+  src/version.cpp
 )
 add_library(ulog::ulog ALIAS ulog)
 
@@ -110,9 +116,13 @@ install(
         include/ulog/log.hpp
         include/ulog/logger.hpp
         include/ulog/operation.hpp
+        include/ulog/runtime.hpp
         include/ulog/source_location.hpp
         "${ULOG_GENERATED_INCLUDE_DIR}/ulog/version.hpp"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ulog"
+)
+install(FILES include/ulog/testing/in_memory_destination.hpp
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ulog/testing"
 )
 install(
   EXPORT ulogTargets

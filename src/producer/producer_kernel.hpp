@@ -26,12 +26,24 @@ struct EventClock final {
 
 [[nodiscard]] EventClock SystemEventClock() noexcept;
 
+struct ConsumerNotification final {
+  void* context{nullptr};
+  void (*notify)(void*) noexcept {nullptr};
+
+  void Notify() const noexcept {
+    if (notify != nullptr) {
+      notify(context);
+    }
+  }
+};
+
 struct KernelConfig final {
   Level threshold{Level::kInfo};
   std::size_t payload_capacity_bytes{0};
   std::size_t maximum_record_bytes{kMaximumRecordBytes};
   std::size_t producer_slots{kMaximumProducerSlots};
   std::size_t ingress_cells{kMaximumIngressCells};
+  ConsumerNotification consumer_notification{};
 };
 
 struct WriteResult final {
@@ -234,6 +246,9 @@ class ProducerKernel final {
   [[nodiscard]] Logger GetLogger() noexcept;
   [[nodiscard]] ProducerRegistration TryRegisterProducer() noexcept;
   void SetLevel(Level threshold) noexcept;
+  void CloseAdmission() noexcept;
+  [[nodiscard]] bool IsAdmissionOpen() const noexcept;
+  [[nodiscard]] bool IsQuiescent() noexcept;
 
   [[nodiscard]] PublishResult TryPublish(ProducerRegistration& producer, Level level,
                                          const SourceLocation& source, BuildOperation operation);
@@ -250,6 +265,7 @@ class ProducerKernel final {
                                              BuildOperation operation);
   void RetireProducer(ProducerRegistration& producer) noexcept;
 
+  std::uint64_t identity_{0};
   std::unique_ptr<Impl> impl_;
 };
 

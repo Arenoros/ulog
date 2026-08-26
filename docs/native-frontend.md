@@ -11,8 +11,8 @@ same predicate used by Logger.
 `SourceLocation::Current()` must be called at the application call site. It
 captures file, function, line, and column without allocation. `Custom` accepts
 borrowed file and function names for adapters; those names must remain valid
-until the synchronous Logger call returns. A future accepted call copies source
-data into its owned Record before returning.
+until the synchronous Logger call returns. An accepted Runtime call copies
+source data into its owned Record before returning.
 
 `Logger` is a pointer-sized, trivially copied non-owning handle. A
 default-constructed Logger, `GetNullLogger()`, and the initial
@@ -38,12 +38,12 @@ The result must be usable as `std::string_view` and is consumed before the
 factory result is destroyed. Caller exceptions can only occur if the factory is
 admitted and remain outside Ulog's no-exception guarantee.
 
-The private production producer kernel now uses this same Logger dispatch. It
-claims a producer-local ingress cell and reserves the complete configured
-worst-case Record charge before evaluating the factory, then copies the source
-and message into bounded owned storage. Rejected calls therefore preserve the
-lazy contract. Runtime construction and ownership of that private kernel remain
-later roadmap work.
+The concrete [in-memory Runtime tracer](runtime.md) uses this same Logger
+dispatch. It claims a producer-local ingress cell and reserves the complete
+configured worst-case Record charge before evaluating the factory, then copies
+the source and message into bounded owned storage. Rejected calls therefore
+preserve the lazy contract. Each producing thread prepares its bounded slot by
+calling `Runtime::GetLogger()` on that thread.
 
 ## Default Logger exchange
 
@@ -56,9 +56,10 @@ process-wide target or checks a forwarding pointer.
 
 No ownership is transferred. Every Logger state ever installed as the Default
 Logger must remain alive at a stable address until application termination,
-including after replacement. A future Runtime will own its Logger states for
-that lifetime. Until Runtime construction is public, the initial Null Logger is
-the only non-test target supplied by the installed package.
+including after replacement. The public Runtime tracer supplies a non-owning
+Logger but does not install it automatically; an application that installs it
+must keep that Runtime alive for the required application-long lifetime. The
+initial target remains the static Null Logger.
 
 An unnamed call uses one loaded handle for filtering and dispatch:
 

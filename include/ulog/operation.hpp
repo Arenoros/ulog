@@ -220,4 +220,13 @@ class Operation final {
   const detail::OperationVTable* operations_{nullptr};
 };
 
+struct OperationStartResult final {
+  Operation operation{};
+  std::optional<OperationStartFailure> failure{};
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return !failure.has_value() && static_cast<bool>(operation);
+  }
+};
+
 }  // namespace ulog

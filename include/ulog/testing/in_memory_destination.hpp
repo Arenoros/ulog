@@ -12,6 +12,10 @@ namespace ulog::detail::testing {
 
 struct InMemoryDestinationState;
 class InMemoryDestinationAccess;
+struct DestinationSlotIdentity final {
+  std::size_t index{0};
+  std::uint64_t generation{0};
+};
 
 }  // namespace ulog::detail::testing
 
@@ -52,12 +56,11 @@ class ObservedRecord final {
   friend class InMemoryDestination;
 
   ObservedRecord(std::shared_ptr<detail::testing::InMemoryDestinationState> state,
-                 std::size_t slot_index, std::uint64_t generation) noexcept;
+                 detail::testing::DestinationSlotIdentity identity) noexcept;
   void Reset() noexcept;
 
   std::shared_ptr<detail::testing::InMemoryDestinationState> state_;
-  std::size_t slot_index_{0};
-  std::uint64_t generation_{0};
+  detail::testing::DestinationSlotIdentity identity_{};
 };
 
 class InMemoryDestination final {

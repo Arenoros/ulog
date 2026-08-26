@@ -5,10 +5,11 @@ The repository establishes seven independent test categories:
 - `unit`: public version and native frontend seams, compile-time erasure,
   Null-Logger allocation/ownership guarantees, atomic Default Logger exchange,
   stale-target completion, bounded producer transactions, Operation polling,
-  deadlines, callback dispatch, control-reserve exhaustion, and test memory
-  resources;
+  deadlines, callback dispatch, control-reserve exhaustion, in-memory Runtime
+  lifecycle and saturation, and test memory resources;
 - `integration`/`package`: install Ulog, configure a copied external project,
-  link only `ulog::ulog`, and exercise the frontend across translation units;
+  link only `ulog::ulog`, and exercise the frontend and in-memory Runtime tracer
+  through installed public headers;
 - `dependencies`: compile and run the production fmt integration together with
   the planned libuv dependency boundary;
 - `stress`: deterministic concurrent checks for allocation instrumentation,
@@ -41,16 +42,32 @@ the standalone Conan package consumer. Full controlled benchmark execution is
 never part of hosted CI. A timeout is a diagnosable failure, not permission to
 silently raise the limit: first identify the stalled phase or move intentional
 long-running evidence collection to the externally bounded controlled runner.
-The production producer and Operation allocation tests and randomized stress
-tests have 10-second CTest limits; stress executables also have their own
+The production producer, Operation, and Runtime allocation tests and randomized
+stress tests have 10-second CTest limits; stress executables also have their own
 five-second watchdogs so a stalled thread fails with a focused diagnostic. The
 Default Logger concurrency stress uses the same five-second watchdog and
-10-second CTest limit. The frontend benchmark adds no hosted job: its five-row smoke body
-runs inside the existing static package build with a 30-second CTest limit. Its
-controlled-schedule listing is capped at 10 seconds by the script and 15 seconds
-by CTest, and its result validator is capped at 10 seconds. The full controlled
-frontend body is external-only and has the three-minute supervisor limit shown
-in `docs/benchmarking.md`.
+10-second CTest limit. The frontend benchmark adds no hosted job: its five-row
+smoke body runs inside the existing static package build with a 30-second CTest
+limit. Its controlled-schedule listing is capped at 10 seconds by the script and
+15 seconds by CTest, and its result validator is capped at 10 seconds. The full
+controlled frontend body is external-only and has the three-minute supervisor
+limit shown in `docs/benchmarking.md`.
+
+## In-memory Runtime test seam
+
+The installed [`InMemoryDestination`](runtime.md#observing-records) is a
+deterministic pull seam, not a generic production Sink. `TryTake()` returns the
+lowest ready admission sequence without blocking, and each `ObservedRecord`
+pins its fixed destination slot until moved from or destroyed. A full set of
+ready or held slots therefore applies worker-side backpressure while producer
+admission remains non-blocking.
+
+Tests can construct the destination with `start_paused=true` to hold the worker
+before its first destination write, fill bounded ingress deterministically, and
+verify drop-newest rejection before caller evaluation. `Resume()` opens the
+destination gate. Runtime unit, installed-consumer, and Conan package tests use
+explicit Drain or Shutdown Operations and bounded deadlines; none relies on
+destructor timing for successful delivery.
 
 The presets build the library, architecture check, and installed consumer once
 fmt 12 is available to CMake. The pinned Conan setup is:

@@ -22,8 +22,99 @@ namespace {
 
 enum class ProducerSlotState : std::uint8_t { kFree, kActive, kRetiring, kReconciling };
 
+struct RegistrationLiveness final {
+  std::atomic<std::uint64_t> registered_generation{0};
+};
+
+struct KernelLifetimeState final {
+  std::atomic<std::size_t> references{1};
+  std::atomic<bool> admission_open{true};
+  std::array<RegistrationLiveness, kMaximumProducerSlots> registrations{};
+};
+
+class KernelLifetimeRef final {
+ public:
+  KernelLifetimeRef() noexcept = default;
+
+  [[nodiscard]] static KernelLifetimeRef Create() {
+    return KernelLifetimeRef{new KernelLifetimeState};
+  }
+
+  KernelLifetimeRef(const KernelLifetimeRef& other) noexcept : state_(other.state_) { Retain(); }
+  KernelLifetimeRef& operator=(const KernelLifetimeRef& other) noexcept {
+    if (this != &other) {
+      Reset();
+      state_ = other.state_;
+      Retain();
+    }
+    return *this;
+  }
+  KernelLifetimeRef(KernelLifetimeRef&& other) noexcept
+      : state_(std::exchange(other.state_, nullptr)) {}
+  KernelLifetimeRef& operator=(KernelLifetimeRef&& other) noexcept {
+    if (this != &other) {
+      Reset();
+      state_ = std::exchange(other.state_, nullptr);
+    }
+    return *this;
+  }
+  ~KernelLifetimeRef() { Reset(); }
+
+  [[nodiscard]] bool IsAdmissionOpen() const noexcept {
+    return state_ != nullptr && state_->admission_open.load(std::memory_order_acquire);
+  }
+
+  [[nodiscard]] bool IsRegistrationCurrent(std::size_t slot_index,
+                                           std::uint64_t generation) const noexcept {
+    return IsAdmissionOpen() && slot_index < state_->registrations.size() &&
+           state_->registrations[slot_index].registered_generation.load(
+               std::memory_order_acquire) == generation;
+  }
+
+  void ActivateRegistration(std::size_t slot_index, std::uint64_t generation) noexcept {
+    if (state_ != nullptr && slot_index < state_->registrations.size()) {
+      state_->registrations[slot_index].registered_generation.store(generation,
+                                                                    std::memory_order_release);
+    }
+  }
+
+  void RetireRegistration(std::size_t slot_index, std::uint64_t generation) noexcept {
+    if (state_ == nullptr || slot_index >= state_->registrations.size()) {
+      return;
+    }
+    state_->registrations[slot_index].registered_generation.compare_exchange_strong(
+        generation, 0, std::memory_order_acq_rel);
+  }
+
+  void CloseAdmission() noexcept {
+    if (state_ != nullptr) {
+      state_->admission_open.store(false, std::memory_order_release);
+    }
+  }
+
+ private:
+  explicit KernelLifetimeRef(KernelLifetimeState* state) noexcept : state_(state) {}
+
+  void Retain() noexcept {
+    if (state_ != nullptr) {
+      state_->references.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+
+  void Reset() noexcept {
+    KernelLifetimeState* const state = std::exchange(state_, nullptr);
+    if (state != nullptr && state->references.fetch_sub(1, std::memory_order_acq_rel) == 1U) {
+      delete state;
+    }
+  }
+
+  KernelLifetimeState* state_{nullptr};
+};
+
 struct ThreadRegistration final {
   ProducerKernel* owner{nullptr};
+  KernelLifetimeRef lifetime{};
+  std::uint64_t kernel_identity{0};
   std::size_t slot_index{0};
   std::uint64_t generation{0};
 };
@@ -35,6 +126,7 @@ struct ThreadRegistry final {
 };
 
 std::atomic<std::size_t> next_missing_producer_shard{0};
+std::atomic<std::uint64_t> next_kernel_identity{1};
 thread_local ThreadRegistry thread_registry;
 
 [[nodiscard]] std::size_t MissingProducerShard() noexcept {
@@ -45,15 +137,17 @@ thread_local ThreadRegistry thread_registry;
   return thread_registry.missing_producer_shard;
 }
 
-[[nodiscard]] ThreadRegistration* FindThreadRegistration(ProducerKernel& owner) noexcept {
+[[nodiscard]] ThreadRegistration* FindThreadRegistration(ProducerKernel& owner,
+                                                         std::uint64_t kernel_identity) noexcept {
   if (thread_registry.last_hit < thread_registry.entries.size()) {
     auto& cached = thread_registry.entries[thread_registry.last_hit];
-    if (cached.owner == &owner) {
+    if (cached.owner == &owner && cached.kernel_identity == kernel_identity) {
       return &cached;
     }
   }
   for (std::size_t index = 0; index < thread_registry.entries.size(); ++index) {
-    if (thread_registry.entries[index].owner == &owner) {
+    if (thread_registry.entries[index].owner == &owner &&
+        thread_registry.entries[index].kernel_identity == kernel_identity) {
       thread_registry.last_hit = index;
       return &thread_registry.entries[index];
     }
@@ -62,19 +156,28 @@ thread_local ThreadRegistry thread_registry;
 }
 
 [[nodiscard]] ThreadRegistration* FindFreeThreadRegistration() noexcept {
-  for (auto& entry : thread_registry.entries) {
+  for (std::size_t index = 0; index < thread_registry.entries.size(); ++index) {
+    auto& entry = thread_registry.entries[index];
     if (entry.owner == nullptr) {
+      return &entry;
+    }
+    if (!entry.lifetime.IsRegistrationCurrent(entry.slot_index, entry.generation)) {
+      entry = {};
+      if (thread_registry.last_hit == index) {
+        thread_registry.last_hit = kMaximumProducerSlots;
+      }
       return &entry;
     }
   }
   return nullptr;
 }
 
-void RemoveThreadRegistration(ProducerKernel& owner, std::size_t slot_index,
-                              std::uint64_t generation) noexcept {
+void RemoveThreadRegistration(ProducerKernel& owner, std::uint64_t kernel_identity,
+                              std::size_t slot_index, std::uint64_t generation) noexcept {
   for (std::size_t index = 0; index < thread_registry.entries.size(); ++index) {
     auto& entry = thread_registry.entries[index];
-    if (entry.owner == &owner && entry.slot_index == slot_index && entry.generation == generation) {
+    if (entry.owner == &owner && entry.kernel_identity == kernel_identity &&
+        entry.slot_index == slot_index && entry.generation == generation) {
       entry = {};
       if (thread_registry.last_hit == index) {
         thread_registry.last_hit = kMaximumProducerSlots;
@@ -134,6 +237,12 @@ EventTimestamp ReadSystemClock(void*) noexcept {
 struct MessageCall final {
   void* builder_context;
   MessageBuilder build_message;
+};
+
+struct NotifyConsumerOnExit final {
+  ConsumerNotification notification;
+
+  ~NotifyConsumerOnExit() { notification.Notify(); }
 };
 
 void AppendText(void* context, std::string_view text) {
@@ -226,6 +335,7 @@ struct ProducerKernel::Impl final {
   std::array<MissingProducerCounter, kMaximumProducerSlots> missing_producer_counters{};
   credit::CreditLedger ledger;
   ingress::ProducerLanes lanes;
+  KernelLifetimeRef lifetime{KernelLifetimeRef::Create()};
   std::unique_ptr<record::RecordSlot[]> record_slots;
   std::atomic<std::uint64_t> consumed_records{0};
   std::atomic<std::uint64_t> consumer_validation_errors{0};
@@ -263,14 +373,15 @@ void ProducerKernel::ProducerRegistration::Reset() noexcept {
   }
 }
 
-ProducerKernel::ProducerKernel(KernelConfig config, EventClock clock) {
+ProducerKernel::ProducerKernel(KernelConfig config, EventClock clock)
+    : identity_(next_kernel_identity.fetch_add(1, std::memory_order_relaxed)) {
   ValidateConfiguration(config, clock);
   impl_ = std::make_unique<Impl>(*this, config, clock);
   static const ProducerOperations operations{&ProducerKernel::LogMessage};
   impl_->logger_state.producer_operations = &operations;
 }
 
-ProducerKernel::~ProducerKernel() = default;
+ProducerKernel::~ProducerKernel() { impl_->lifetime.CloseAdmission(); }
 
 Logger ProducerKernel::GetLogger() noexcept {
   return LoggerAccess::FromState(&impl_->logger_state);
@@ -278,11 +389,15 @@ Logger ProducerKernel::GetLogger() noexcept {
 
 ProducerKernel::ProducerRegistration ProducerKernel::TryRegisterProducer() noexcept {
   static_cast<void>(MissingProducerShard());
-  if (ThreadRegistration* const existing = FindThreadRegistration(*this); existing != nullptr) {
+  if (!impl_->lifetime.IsAdmissionOpen()) {
+    return {};
+  }
+  if (ThreadRegistration* const existing = FindThreadRegistration(*this, identity_);
+      existing != nullptr) {
     if (impl_->IsActive(existing->slot_index, existing->generation)) {
       return {};
     }
-    RemoveThreadRegistration(*this, existing->slot_index, existing->generation);
+    RemoveThreadRegistration(*this, identity_, existing->slot_index, existing->generation);
   }
   ThreadRegistration* const thread_entry = FindFreeThreadRegistration();
   if (thread_entry == nullptr) {
@@ -295,10 +410,20 @@ ProducerKernel::ProducerRegistration ProducerKernel::TryRegisterProducer() noexc
             expected, ProducerSlotState::kActive, std::memory_order_acq_rel)) {
       continue;
     }
+    if (!impl_->lifetime.IsAdmissionOpen()) {
+      impl_->controls[slot_index].state.store(ProducerSlotState::kRetiring,
+                                              std::memory_order_release);
+      impl_->TryFinishRetirement(slot_index);
+      return {};
+    }
     const std::uint64_t generation =
         impl_->controls[slot_index].generation.load(std::memory_order_relaxed);
-    *thread_entry =
-        ThreadRegistration{.owner = this, .slot_index = slot_index, .generation = generation};
+    impl_->lifetime.ActivateRegistration(slot_index, generation);
+    *thread_entry = ThreadRegistration{.owner = this,
+                                       .lifetime = impl_->lifetime,
+                                       .kernel_identity = identity_,
+                                       .slot_index = slot_index,
+                                       .generation = generation};
     thread_registry.last_hit =
         static_cast<std::size_t>(thread_entry - thread_registry.entries.data());
     return ProducerRegistration{*this, slot_index, generation};
@@ -310,6 +435,25 @@ void ProducerKernel::SetLevel(Level threshold) noexcept {
   const auto value = static_cast<std::uint8_t>(threshold);
   const auto none = static_cast<std::uint8_t>(Level::kNone);
   impl_->logger_state.threshold.store(value <= none ? value : none, std::memory_order_relaxed);
+}
+
+void ProducerKernel::CloseAdmission() noexcept {
+  impl_->lifetime.CloseAdmission();
+  SetLevel(Level::kNone);
+  impl_->config.consumer_notification.Notify();
+}
+
+bool ProducerKernel::IsAdmissionOpen() const noexcept { return impl_->lifetime.IsAdmissionOpen(); }
+
+bool ProducerKernel::IsQuiescent() noexcept {
+  bool quiescent = true;
+  for (std::size_t slot_index = 0; slot_index < impl_->config.producer_slots; ++slot_index) {
+    impl_->TryFinishRetirement(slot_index);
+    quiescent = quiescent && impl_->lanes.IsProducerDrained(slot_index) &&
+                impl_->controls[slot_index].state.load(std::memory_order_acquire) ==
+                    ProducerSlotState::kFree;
+  }
+  return quiescent;
 }
 
 PublishResult ProducerKernel::TryPublish(ProducerRegistration& producer, Level level,
@@ -344,6 +488,11 @@ PublishResult ProducerKernel::TryPublishSlot(std::size_t slot_index, std::uint64
     }
     counters.invalid_records.fetch_add(1, std::memory_order_relaxed);
     return {.outcome = PublishOutcome::kInvalidRecord};
+  }
+  const NotifyConsumerOnExit notify_consumer{impl_->config.consumer_notification};
+  if (!impl_->lifetime.IsAdmissionOpen() || !impl_->IsActive(slot_index, generation)) {
+    impl_->CountMissingProducer();
+    return {.outcome = PublishOutcome::kNoProducerSlot};
   }
 
   const auto cell_index = publication.cell_index();
@@ -509,7 +658,7 @@ KernelSnapshot ProducerKernel::GetSnapshot() const noexcept {
 void ProducerKernel::LogMessage(void* context, Level level, const SourceLocation& source,
                                 void* builder_context, MessageBuilder build_message) {
   auto& kernel = *static_cast<ProducerKernel*>(context);
-  ThreadRegistration* const registration = FindThreadRegistration(kernel);
+  ThreadRegistration* const registration = FindThreadRegistration(kernel, kernel.identity_);
   if (registration == nullptr) {
     kernel.impl_->CountMissingProducer();
     return;
@@ -517,7 +666,7 @@ void ProducerKernel::LogMessage(void* context, Level level, const SourceLocation
   if (!kernel.impl_->IsActive(registration->slot_index, registration->generation)) {
     const auto slot_index = registration->slot_index;
     const auto generation = registration->generation;
-    RemoveThreadRegistration(kernel, slot_index, generation);
+    RemoveThreadRegistration(kernel, kernel.identity_, slot_index, generation);
     kernel.impl_->CountMissingProducer();
     return;
   }
@@ -527,7 +676,8 @@ void ProducerKernel::LogMessage(void* context, Level level, const SourceLocation
 }
 
 void ProducerKernel::RetireProducer(ProducerRegistration& producer) noexcept {
-  RemoveThreadRegistration(*this, producer.slot_index_, producer.generation_);
+  RemoveThreadRegistration(*this, identity_, producer.slot_index_, producer.generation_);
+  impl_->lifetime.RetireRegistration(producer.slot_index_, producer.generation_);
   if (producer.slot_index_ < impl_->config.producer_slots &&
       impl_->controls[producer.slot_index_].generation.load(std::memory_order_relaxed) ==
           producer.generation_) {

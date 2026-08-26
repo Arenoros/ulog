@@ -1,10 +1,10 @@
 # Operations
 
 `ulog::Operation` is the move-only completion handle for ordered Runtime
-actions. The first public Runtime will use it for Drain and Shutdown. Operation
-state is allocated from a control reserve that is independent of producer
-payload credits, so a control action can still start when retained Records fill
-the payload budget.
+actions. The public [in-memory Runtime tracer](runtime.md) uses it for Drain and
+Shutdown. Operation state is allocated from a control reserve that is
+independent of producer payload credits, so a control action can still start
+when retained Records fill the payload budget.
 
 Include the interface with:
 
@@ -73,3 +73,16 @@ After warm-up, starting, polling, registering a small callback, completing,
 dispatching, and recycling an Operation perform no general-purpose heap
 allocation. None of these types or dependencies is present in Logger or
 producer source files; the frontend structural gate enforces that direction.
+
+## Runtime actions
+
+`Runtime::Drain()` captures an accepted-record watermark and completes after the
+single worker has copied every Record through that watermark into the in-memory
+destination. It leaves admission open. `Runtime::Shutdown()` closes admission,
+delivers all already accepted Records, completes, and stops the worker. A
+successful Drain or Shutdown does not mean an application has taken or released
+the destination's observed Records.
+
+Runtime destruction is a separate bounded cancellation path. Pending actions
+complete as `kCancelled`; callers that require delivery must explicitly start
+Shutdown and observe its successful terminal result before destroying Runtime.

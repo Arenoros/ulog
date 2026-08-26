@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "testing/in_memory_destination_access.hpp"
@@ -19,6 +21,11 @@ namespace {
 
 enum class SlotState : std::uint8_t { kFree, kReserved, kReady, kHeld };
 
+struct TextRange final {
+  std::uint32_t offset{0};
+  std::uint32_t size{0};
+};
+
 struct SlotMetadata final {
   SlotState state{SlotState::kFree};
   std::uint64_t generation{0};
@@ -26,12 +33,9 @@ struct SlotMetadata final {
   producer::EventTimestamp event_timestamp{0};
   std::size_t serialized_bytes{0};
   std::size_t accounting_charge_bytes{0};
-  std::uint32_t source_path_offset{0};
-  std::uint32_t source_path_size{0};
-  std::uint32_t source_function_offset{0};
-  std::uint32_t source_function_size{0};
-  std::uint32_t message_offset{0};
-  std::uint32_t message_size{0};
+  TextRange source_path{};
+  TextRange source_function{};
+  TextRange message{};
   std::uint32_t source_line{0};
   std::uint32_t source_column{0};
   Level level{Level::kNone};
@@ -112,8 +116,9 @@ struct InMemoryDestinationState final {
   const std::size_t capacity_records;
   const std::size_t maximum_record_bytes;
   const std::size_t fixed_backing_bytes;
+  std::atomic<bool> runtime_attached{false};
   bool paused{false};
-  bool stopped{false};
+  std::atomic<bool> stopped{false};
 };
 
 namespace {
@@ -124,30 +129,51 @@ namespace {
   return std::make_shared<InMemoryDestinationState>(config, fixed_backing_bytes);
 }
 
+void ReleaseSlotHandle(std::shared_ptr<InMemoryDestinationState>& owner,
+                       DestinationSlotIdentity& identity, SlotState expected_state) noexcept {
+  if (owner == nullptr) {
+    return;
+  }
+  auto state = std::move(owner);
+  bool released = false;
+  {
+    std::lock_guard lock{state->mutex};
+    if (identity.index < state->capacity_records) {
+      auto& slot = state->slots[identity.index];
+      if (slot.state == expected_state && slot.generation == identity.generation) {
+        slot.state = SlotState::kFree;
+        released = true;
+      }
+    }
+  }
+  identity = {};
+  if (released) {
+    state->writable.notify_one();
+  }
+}
+
 [[nodiscard]] const SlotMetadata* FindHeldSlot(
-    const std::shared_ptr<InMemoryDestinationState>& state, std::size_t slot_index,
-    std::uint64_t generation) noexcept {
-  if (state == nullptr || slot_index >= state->capacity_records) {
+    const std::shared_ptr<InMemoryDestinationState>& state,
+    DestinationSlotIdentity identity) noexcept {
+  if (state == nullptr || identity.index >= state->capacity_records) {
     return nullptr;
   }
-  const auto& slot = state->slots[slot_index];
-  return slot.state == SlotState::kHeld && slot.generation == generation ? &slot : nullptr;
+  const auto& slot = state->slots[identity.index];
+  return slot.state == SlotState::kHeld && slot.generation == identity.generation ? &slot : nullptr;
 }
 
 [[nodiscard]] std::string_view StoredText(const std::shared_ptr<InMemoryDestinationState>& state,
-                                          std::size_t slot_index, std::uint32_t offset,
-                                          std::uint32_t size) noexcept {
+                                          std::size_t slot_index, TextRange range) noexcept {
   if (state == nullptr || slot_index >= state->capacity_records ||
-      offset > state->maximum_record_bytes ||
-      size > state->maximum_record_bytes - static_cast<std::size_t>(offset)) {
+      range.offset > state->maximum_record_bytes ||
+      range.size > state->maximum_record_bytes - static_cast<std::size_t>(range.offset)) {
     return {};
   }
-  return {reinterpret_cast<const char*>(state->SlotBacking(slot_index) + offset), size};
+  return {reinterpret_cast<const char*>(state->SlotBacking(slot_index) + range.offset), range.size};
 }
 
 struct StoredTextLocation final {
-  std::uint32_t offset{0};
-  std::uint32_t size{0};
+  TextRange range{};
   bool complete{true};
 };
 
@@ -160,29 +186,44 @@ struct StoredTextLocation final {
     std::memcpy(destination + cursor, source.data(), stored_size);
   }
   cursor += stored_size;
-  return {.offset = static_cast<std::uint32_t>(offset),
-          .size = static_cast<std::uint32_t>(stored_size),
+  return {.range = {.offset = static_cast<std::uint32_t>(offset),
+                    .size = static_cast<std::uint32_t>(stored_size)},
           .complete = stored_size == source.size()};
+}
+
+[[nodiscard]] bool IsUtf8Continuation(char value) noexcept {
+  return (static_cast<unsigned char>(value) & 0xC0U) == 0x80U;
+}
+
+[[nodiscard]] StoredTextLocation CopyUtf8Text(std::byte* destination, std::size_t capacity,
+                                              std::size_t& cursor,
+                                              std::string_view source) noexcept {
+  const std::size_t available = cursor <= capacity ? capacity - cursor : 0U;
+  std::size_t prefix_size = std::min(available, source.size());
+  if (prefix_size < source.size()) {
+    while (prefix_size != 0U && IsUtf8Continuation(source[prefix_size])) {
+      --prefix_size;
+    }
+  }
+  auto location = CopyText(destination, capacity, cursor, source.substr(0, prefix_size));
+  location.complete = prefix_size == source.size();
+  return location;
 }
 
 }  // namespace
 
 DestinationWriteClaim::DestinationWriteClaim(std::shared_ptr<InMemoryDestinationState> state,
-                                             std::size_t slot_index,
-                                             std::uint64_t generation) noexcept
-    : state_(std::move(state)), slot_index_(slot_index), generation_(generation) {}
+                                             DestinationSlotIdentity identity) noexcept
+    : state_(std::move(state)), identity_(identity) {}
 
 DestinationWriteClaim::DestinationWriteClaim(DestinationWriteClaim&& other) noexcept
-    : state_(std::move(other.state_)),
-      slot_index_(std::exchange(other.slot_index_, 0U)),
-      generation_(std::exchange(other.generation_, 0U)) {}
+    : state_(std::move(other.state_)), identity_(std::exchange(other.identity_, {})) {}
 
 DestinationWriteClaim& DestinationWriteClaim::operator=(DestinationWriteClaim&& other) noexcept {
   if (this != &other) {
     Reset();
     state_ = std::move(other.state_);
-    slot_index_ = std::exchange(other.slot_index_, 0U);
-    generation_ = std::exchange(other.generation_, 0U);
+    identity_ = std::exchange(other.identity_, {});
   }
   return *this;
 }
@@ -190,58 +231,36 @@ DestinationWriteClaim& DestinationWriteClaim::operator=(DestinationWriteClaim&& 
 DestinationWriteClaim::~DestinationWriteClaim() { Reset(); }
 
 void DestinationWriteClaim::Reset() noexcept {
-  if (state_ == nullptr) {
-    return;
-  }
-  bool released = false;
-  {
-    std::lock_guard lock{state_->mutex};
-    if (slot_index_ < state_->capacity_records) {
-      auto& slot = state_->slots[slot_index_];
-      if (slot.state == SlotState::kReserved && slot.generation == generation_) {
-        slot.state = SlotState::kFree;
-        released = true;
-      }
-    }
-  }
-  auto state = std::move(state_);
-  slot_index_ = 0;
-  generation_ = 0;
-  if (released) {
-    state->writable.notify_one();
-  }
+  ReleaseSlotHandle(state_, identity_, SlotState::kReserved);
 }
 
 void DestinationWriteClaim::Store(std::uint64_t admission_sequence,
                                   const producer::RecordView& record) noexcept {
-  if (state_ == nullptr || slot_index_ >= state_->capacity_records) {
+  if (state_ == nullptr || identity_.index >= state_->capacity_records) {
     return;
   }
 
-  auto& slot = state_->slots[slot_index_];
-  std::byte* const destination = state_->SlotBacking(slot_index_);
+  auto& slot = state_->slots[identity_.index];
+  std::byte* const destination = state_->SlotBacking(identity_.index);
   std::size_t cursor = 0;
   const StoredTextLocation source_path =
       CopyText(destination, state_->maximum_record_bytes, cursor, record.source_path());
   const StoredTextLocation source_function =
       CopyText(destination, state_->maximum_record_bytes, cursor, record.source_function());
   const StoredTextLocation message =
-      CopyText(destination, state_->maximum_record_bytes, cursor, record.message());
+      CopyUtf8Text(destination, state_->maximum_record_bytes, cursor, record.message());
 
   bool committed = false;
   {
     std::lock_guard lock{state_->mutex};
-    if (slot.state == SlotState::kReserved && slot.generation == generation_) {
+    if (slot.state == SlotState::kReserved && slot.generation == identity_.generation) {
       slot.admission_sequence = admission_sequence;
       slot.event_timestamp = record.event_timestamp();
       slot.serialized_bytes = record.serialized_bytes();
       slot.accounting_charge_bytes = record.accounting_charge_bytes();
-      slot.source_path_offset = source_path.offset;
-      slot.source_path_size = source_path.size;
-      slot.source_function_offset = source_function.offset;
-      slot.source_function_size = source_function.size;
-      slot.message_offset = message.offset;
-      slot.message_size = message.size;
+      slot.source_path = source_path.range;
+      slot.source_function = source_function.range;
+      slot.message = message.range;
       slot.source_line = record.source_line();
       slot.source_column = record.source_column();
       slot.level = record.level();
@@ -254,34 +273,70 @@ void DestinationWriteClaim::Store(std::uint64_t admission_sequence,
 
   if (committed) {
     state_.reset();
-    slot_index_ = 0;
-    generation_ = 0;
+    identity_ = {};
   } else {
     Reset();
   }
 }
 
-DestinationWriteClaim InMemoryDestinationAccess::WaitForWrite(
-    ulog::testing::InMemoryDestination& destination) {
+bool InMemoryDestinationAccess::TryAttachRuntime(
+    ulog::testing::InMemoryDestination& destination) noexcept {
   auto state = destination.state_;
   if (state == nullptr) {
+    return false;
+  }
+  if (state->stopped.load(std::memory_order_acquire)) {
+    return false;
+  }
+  bool expected = false;
+  if (!state->runtime_attached.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+    return false;
+  }
+  if (state->stopped.load(std::memory_order_acquire)) {
+    state->runtime_attached.store(false, std::memory_order_release);
+    return false;
+  }
+  return true;
+}
+
+void InMemoryDestinationAccess::DetachRuntime(
+    ulog::testing::InMemoryDestination& destination) noexcept {
+  auto state = destination.state_;
+  if (state == nullptr) {
+    return;
+  }
+  state->runtime_attached.store(false, std::memory_order_release);
+}
+
+DestinationWriteClaim InMemoryDestinationAccess::WaitForWrite(
+    ulog::testing::InMemoryDestination& destination,
+    std::chrono::steady_clock::duration recheck_interval) noexcept {
+  try {
+    auto state = destination.state_;
+    if (state == nullptr) {
+      return {};
+    }
+    std::unique_lock lock{state->mutex};
+    state->writable.wait_for(lock, recheck_interval, [&state] {
+      return state->stopped.load(std::memory_order_acquire) ||
+             (!state->paused && state->FindFreeSlot().has_value());
+    });
+    if (state->stopped.load(std::memory_order_acquire)) {
+      return {};
+    }
+    const auto slot_index = state->FindFreeSlot();
+    if (!slot_index) {
+      return {};
+    }
+    auto& slot = state->slots[*slot_index];
+    slot.generation = NextGeneration(slot.generation);
+    slot.state = SlotState::kReserved;
+    return DestinationWriteClaim{
+        std::move(state),
+        DestinationSlotIdentity{.index = *slot_index, .generation = slot.generation}};
+  } catch (const std::system_error&) {
     return {};
   }
-  std::unique_lock lock{state->mutex};
-  state->writable.wait(lock, [&state] {
-    return state->stopped || (!state->paused && state->FindFreeSlot().has_value());
-  });
-  if (state->stopped) {
-    return {};
-  }
-  const auto slot_index = state->FindFreeSlot();
-  if (!slot_index) {
-    return {};
-  }
-  auto& slot = state->slots[*slot_index];
-  slot.generation = NextGeneration(slot.generation);
-  slot.state = SlotState::kReserved;
-  return DestinationWriteClaim{std::move(state), *slot_index, slot.generation};
 }
 
 void InMemoryDestinationAccess::Stop(ulog::testing::InMemoryDestination& destination) noexcept {
@@ -289,10 +344,7 @@ void InMemoryDestinationAccess::Stop(ulog::testing::InMemoryDestination& destina
   if (state == nullptr) {
     return;
   }
-  {
-    std::lock_guard lock{state->mutex};
-    state->stopped = true;
-  }
+  state->stopped.store(true, std::memory_order_release);
   state->writable.notify_all();
 }
 
@@ -306,20 +358,17 @@ std::size_t InMemoryDestinationAccess::FixedBackingBytes(
 namespace ulog::testing {
 
 ObservedRecord::ObservedRecord(std::shared_ptr<detail::testing::InMemoryDestinationState> state,
-                               std::size_t slot_index, std::uint64_t generation) noexcept
-    : state_(std::move(state)), slot_index_(slot_index), generation_(generation) {}
+                               detail::testing::DestinationSlotIdentity identity) noexcept
+    : state_(std::move(state)), identity_(identity) {}
 
 ObservedRecord::ObservedRecord(ObservedRecord&& other) noexcept
-    : state_(std::move(other.state_)),
-      slot_index_(std::exchange(other.slot_index_, 0U)),
-      generation_(std::exchange(other.generation_, 0U)) {}
+    : state_(std::move(other.state_)), identity_(std::exchange(other.identity_, {})) {}
 
 ObservedRecord& ObservedRecord::operator=(ObservedRecord&& other) noexcept {
   if (this != &other) {
     Reset();
     state_ = std::move(other.state_);
-    slot_index_ = std::exchange(other.slot_index_, 0U);
-    generation_ = std::exchange(other.generation_, 0U);
+    identity_ = std::exchange(other.identity_, {});
   }
   return *this;
 }
@@ -327,88 +376,65 @@ ObservedRecord& ObservedRecord::operator=(ObservedRecord&& other) noexcept {
 ObservedRecord::~ObservedRecord() { Reset(); }
 
 void ObservedRecord::Reset() noexcept {
-  if (state_ == nullptr) {
-    return;
-  }
-  bool released = false;
-  {
-    std::lock_guard lock{state_->mutex};
-    if (slot_index_ < state_->capacity_records) {
-      auto& slot = state_->slots[slot_index_];
-      if (slot.state == detail::testing::SlotState::kHeld && slot.generation == generation_) {
-        slot.state = detail::testing::SlotState::kFree;
-        released = true;
-      }
-    }
-  }
-  auto state = std::move(state_);
-  slot_index_ = 0;
-  generation_ = 0;
-  if (released) {
-    state->writable.notify_one();
-  }
+  detail::testing::ReleaseSlotHandle(state_, identity_, detail::testing::SlotState::kHeld);
 }
 
 std::uint64_t ObservedRecord::AdmissionSequence() const noexcept {
-  const auto* slot = detail::testing::FindHeldSlot(state_, slot_index_, generation_);
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
   return slot != nullptr ? slot->admission_sequence : 0U;
 }
 
 Level ObservedRecord::GetLevel() const noexcept {
-  const auto* slot = detail::testing::FindHeldSlot(state_, slot_index_, generation_);
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
   return slot != nullptr ? slot->level : Level::kNone;
 }
 
 std::int64_t ObservedRecord::EventTimestamp() const noexcept {
-  const auto* slot = detail::testing::FindHeldSlot(state_, slot_index_, generation_);
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
   return slot != nullptr ? slot->event_timestamp : 0;
 }
 
 std::string_view ObservedRecord::SourcePath() const noexcept {
-  const auto* slot = detail::testing::FindHeldSlot(state_, slot_index_, generation_);
-  return slot != nullptr
-             ? detail::testing::StoredText(state_, slot_index_, slot->source_path_offset,
-                                           slot->source_path_size)
-             : std::string_view{};
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
+  return slot != nullptr ? detail::testing::StoredText(state_, identity_.index, slot->source_path)
+                         : std::string_view{};
 }
 
 std::string_view ObservedRecord::SourceFunction() const noexcept {
-  const auto* slot = detail::testing::FindHeldSlot(state_, slot_index_, generation_);
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
   return slot != nullptr
-             ? detail::testing::StoredText(state_, slot_index_, slot->source_function_offset,
-                                           slot->source_function_size)
+             ? detail::testing::StoredText(state_, identity_.index, slot->source_function)
              : std::string_view{};
 }
 
 std::uint32_t ObservedRecord::SourceLine() const noexcept {
-  const auto* slot = detail::testing::FindHeldSlot(state_, slot_index_, generation_);
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
   return slot != nullptr ? slot->source_line : 0U;
 }
 
 std::uint32_t ObservedRecord::SourceColumn() const noexcept {
-  const auto* slot = detail::testing::FindHeldSlot(state_, slot_index_, generation_);
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
   return slot != nullptr ? slot->source_column : 0U;
 }
 
 std::string_view ObservedRecord::Message() const noexcept {
-  const auto* slot = detail::testing::FindHeldSlot(state_, slot_index_, generation_);
-  return slot != nullptr ? detail::testing::StoredText(state_, slot_index_, slot->message_offset,
-                                                       slot->message_size)
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
+  return slot != nullptr ? detail::testing::StoredText(state_, identity_.index, slot->message)
                          : std::string_view{};
 }
 
 bool ObservedRecord::Truncated() const noexcept {
-  const auto* slot = detail::testing::FindHeldSlot(state_, slot_index_, generation_);
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
   return slot != nullptr && slot->truncated;
 }
 
 std::size_t ObservedRecord::SerializedBytes() const noexcept {
-  const auto* slot = detail::testing::FindHeldSlot(state_, slot_index_, generation_);
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
   return slot != nullptr ? slot->serialized_bytes : 0U;
 }
 
 std::size_t ObservedRecord::AccountingChargeBytes() const noexcept {
-  const auto* slot = detail::testing::FindHeldSlot(state_, slot_index_, generation_);
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
   return slot != nullptr ? slot->accounting_charge_bytes : 0U;
 }
 
@@ -435,7 +461,8 @@ std::optional<ObservedRecord> InMemoryDestination::TryTake() noexcept {
   }
   auto& slot = state_->slots[*selected];
   slot.state = detail::testing::SlotState::kHeld;
-  ObservedRecord record{state_, *selected, slot.generation};
+  ObservedRecord record{state_, detail::testing::DestinationSlotIdentity{
+                                    .index = *selected, .generation = slot.generation}};
   return std::optional<ObservedRecord>{std::move(record)};
 }
 

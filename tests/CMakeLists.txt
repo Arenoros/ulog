@@ -95,6 +95,13 @@ if(ULOG_BUILD_UNIT_TESTS)
   add_test(NAME ulog.unit COMMAND ulog-unit-tests)
   set_tests_properties(ulog.unit PROPERTIES LABELS "unit" TIMEOUT 20)
 
+  add_executable(ulog-runtime-tracer runtime_tracer_test.cpp)
+  target_compile_features(ulog-runtime-tracer PRIVATE cxx_std_20)
+  target_link_libraries(ulog-runtime-tracer PRIVATE ulog::ulog GTest::gtest_main Threads::Threads)
+  ulog_configure_target(ulog-runtime-tracer)
+  add_test(NAME ulog.runtime-tracer COMMAND ulog-runtime-tracer)
+  set_tests_properties(ulog.runtime-tracer PROPERTIES LABELS "unit;integration;runtime" TIMEOUT 10)
+
   foreach(_ulog_cutoff RANGE 0 5)
     add_executable(ulog-log-cutoff-${_ulog_cutoff} log_cutoff_probe.cpp)
     target_compile_features(ulog-log-cutoff-${_ulog_cutoff} PRIVATE cxx_std_20)
@@ -138,6 +145,18 @@ if(ULOG_BUILD_UNIT_TESTS)
     add_test(NAME ulog.operation-allocation COMMAND ulog-operation-allocation-test)
     set_tests_properties(
       ulog.operation-allocation PROPERTIES LABELS "unit;control;allocation" TIMEOUT 10
+    )
+
+    add_executable(ulog-runtime-allocation-test runtime_allocation_test.cpp)
+    target_compile_features(ulog-runtime-allocation-test PRIVATE cxx_std_20)
+    target_include_directories(
+      ulog-runtime-allocation-test PRIVATE "${PROJECT_SOURCE_DIR}/benchmarks"
+    )
+    target_link_libraries(ulog-runtime-allocation-test PRIVATE ulog::ulog Threads::Threads)
+    ulog_configure_target(ulog-runtime-allocation-test)
+    add_test(NAME ulog.runtime-allocation COMMAND ulog-runtime-allocation-test)
+    set_tests_properties(
+      ulog.runtime-allocation PROPERTIES LABELS "unit;runtime;allocation" TIMEOUT 10
     )
 
     add_executable(ulog-frontend-performance-test frontend_performance_test.cpp)
@@ -205,6 +224,15 @@ if(ULOG_BUILD_STRESS_TESTS)
   add_test(NAME ulog.producer-kernel-stress COMMAND ulog-producer-kernel-stress)
   set_tests_properties(
     ulog.producer-kernel-stress PROPERTIES LABELS "stress;producer;concurrency" TIMEOUT 10
+  )
+
+  add_executable(ulog-runtime-stress stress/runtime_stress.cpp)
+  target_compile_features(ulog-runtime-stress PRIVATE cxx_std_20)
+  target_link_libraries(ulog-runtime-stress PRIVATE ulog::ulog Threads::Threads)
+  ulog_configure_target(ulog-runtime-stress)
+  add_test(NAME ulog.runtime-stress COMMAND ulog-runtime-stress)
+  set_tests_properties(
+    ulog.runtime-stress PROPERTIES LABELS "stress;runtime;concurrency" TIMEOUT 10
   )
 endif()
 

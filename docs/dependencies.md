@@ -13,8 +13,9 @@ Center:
 
 fmt is a public production requirement because `<ulog/log.hpp>` exposes
 compile-time-checked formatting calls. The installed CMake and Conan metadata
-therefore carry fmt transitively. libuv remains a test requirement until the
-production Runtime delivery path uses it.
+therefore carry fmt transitively. The current in-memory Runtime tracer has no
+I/O dependency, so libuv remains a test requirement until a later production
+filesystem, network, or IPC delivery path uses it.
 
 libuv 1.51 exports `libuv::uv_a` for a static Conan package and `libuv::uv` for
 a shared one. Ulog normalizes both names only inside the dependency smoke test;
