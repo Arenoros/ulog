@@ -23,6 +23,11 @@ namespace allocation_tracking {
 
 std::atomic<std::uint64_t> allocation_count{0};
 
+struct AlignedAllocationRequest final {
+  std::size_t size{0};
+  std::size_t alignment{0};
+};
+
 void* Allocate(std::size_t size) {
   allocation_count.fetch_add(1, std::memory_order_relaxed);
   if (void* memory = std::malloc(std::max(size, std::size_t{1}))) {
@@ -31,19 +36,20 @@ void* Allocate(std::size_t size) {
   throw std::bad_alloc{};
 }
 
-void* AllocateAligned(std::size_t size, std::size_t alignment) {
+void* AllocateAligned(AlignedAllocationRequest request) {
   allocation_count.fetch_add(1, std::memory_order_relaxed);
 #if defined(_MSC_VER)
-  if (void* memory = _aligned_malloc(std::max(size, std::size_t{1}), alignment)) {
+  if (void* memory = _aligned_malloc(std::max(request.size, std::size_t{1}), request.alignment)) {
     return memory;
   }
 #else
-  const std::size_t requested_size = std::max(size, std::size_t{1});
-  if (requested_size > std::numeric_limits<std::size_t>::max() - alignment + 1U) {
+  const std::size_t requested_size = std::max(request.size, std::size_t{1});
+  if (requested_size > std::numeric_limits<std::size_t>::max() - request.alignment + 1U) {
     throw std::bad_alloc{};
   }
-  const std::size_t aligned_size = ((requested_size + alignment - 1U) / alignment) * alignment;
-  if (void* memory = std::aligned_alloc(alignment, aligned_size)) {
+  const std::size_t aligned_size =
+      ((requested_size + request.alignment - 1U) / request.alignment) * request.alignment;
+  if (void* memory = std::aligned_alloc(request.alignment, aligned_size)) {
     return memory;
   }
 #endif
@@ -68,10 +74,12 @@ void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 
 void* operator new(std::size_t size, std::align_val_t alignment) {
-  return allocation_tracking::AllocateAligned(size, static_cast<std::size_t>(alignment));
+  return allocation_tracking::AllocateAligned(
+      {.size = size, .alignment = static_cast<std::size_t>(alignment)});
 }
 void* operator new[](std::size_t size, std::align_val_t alignment) {
-  return allocation_tracking::AllocateAligned(size, static_cast<std::size_t>(alignment));
+  return allocation_tracking::AllocateAligned(
+      {.size = size, .alignment = static_cast<std::size_t>(alignment)});
 }
 void operator delete(void* memory, std::align_val_t) noexcept {
   allocation_tracking::FreeAligned(memory);
