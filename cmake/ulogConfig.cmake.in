@@ -2,6 +2,7 @@
 
 include(CMakeFindDependencyMacro)
 find_dependency(fmt 12 CONFIG)
+find_dependency(Threads)
 
 include("${CMAKE_CURRENT_LIST_DIR}/ulogTargets.cmake")
 check_required_components(ulog)

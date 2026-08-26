@@ -4,7 +4,8 @@ The repository establishes seven independent test categories:
 
 - `unit`: public version and native frontend seams, compile-time erasure,
   Null-Logger allocation/ownership guarantees, atomic Default Logger exchange,
-  stale-target completion, bounded producer transactions, and test memory
+  stale-target completion, bounded producer transactions, Operation polling,
+  deadlines, callback dispatch, control-reserve exhaustion, and test memory
   resources;
 - `integration`/`package`: install Ulog, configure a copied external project,
   link only `ulog::ulog`, and exercise the frontend across translation units;
@@ -13,7 +14,7 @@ The repository establishes seven independent test categories:
 - `stress`: deterministic concurrent checks for allocation instrumentation,
   linearizable Default Logger exchange, stale-target dispatch, producer-lane
   saturation, FIFO publication, byte conservation, retirement, and race-free
-  weak snapshots;
+  weak snapshots, plus completion/callback registration races;
 - `tooling`: regression checks for dependency-graph enforcement and benchmark
   result collection, plus the frontend atomic-load and producer hot-path
   source-shape contract;
@@ -40,11 +41,11 @@ the standalone Conan package consumer. Full controlled benchmark execution is
 never part of hosted CI. A timeout is a diagnosable failure, not permission to
 silently raise the limit: first identify the stalled phase or move intentional
 long-running evidence collection to the externally bounded controlled runner.
-The production producer allocation test and randomized stress test have
-10-second CTest limits; the stress executable also has its own five-second
-watchdog so a stalled thread fails with a focused diagnostic. The Default
-Logger concurrency stress uses the same five-second watchdog and 10-second
-CTest limit. The frontend benchmark adds no hosted job: its five-row smoke body
+The production producer and Operation allocation tests and randomized stress
+tests have 10-second CTest limits; stress executables also have their own
+five-second watchdogs so a stalled thread fails with a focused diagnostic. The
+Default Logger concurrency stress uses the same five-second watchdog and
+10-second CTest limit. The frontend benchmark adds no hosted job: its five-row smoke body
 runs inside the existing static package build with a 30-second CTest limit. Its
 controlled-schedule listing is capped at 10 seconds by the script and 15 seconds
 by CTest, and its result validator is capped at 10 seconds. The full controlled

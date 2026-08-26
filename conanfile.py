@@ -168,6 +168,8 @@ class UlogConan(ConanFile):
         self.cpp_info.set_property("cmake_target_name", "ulog::ulog")
         self.cpp_info.libs = ["ulog"]
         self.cpp_info.requires = ["fmt::fmt"]
+        if self.settings.os == "Linux":
+            self.cpp_info.system_libs = ["pthread"]
         if not self.options.shared:
             self.cpp_info.defines = ["ULOG_STATIC_DEFINE"]
 

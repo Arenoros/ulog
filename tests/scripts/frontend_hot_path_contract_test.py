@@ -101,6 +101,30 @@ class FrontendHotPathContractTest(unittest.TestCase):
         ):
             contract.validate_sources(sources)
 
+    def test_rejects_an_operation_dependency_in_the_logger_path(self):
+        sources = self.sources()
+        sources["src/logger.cpp"] = (
+            '#include <ulog/operation.hpp>\n' + sources["src/logger.cpp"]
+        )
+        with self.assertRaisesRegex(
+            contract.FrontendHotPathContractError, "control-state dependency"
+        ):
+            contract.validate_sources(sources)
+
+    def test_rejects_a_lock_in_the_producer_path(self):
+        sources = self.sources()
+        sources["src/producer/producer_kernel.cpp"] = sources[
+            "src/producer/producer_kernel.cpp"
+        ].replace(
+            "namespace ulog::detail::producer {",
+            "namespace ulog::detail::producer {\nstd::mutex forbidden_hot_path_mutex;",
+        )
+        with self.assertRaisesRegex(
+            contract.FrontendHotPathContractError,
+            "blocking or shared-ownership primitive",
+        ):
+            contract.validate_sources(sources)
+
 
 if __name__ == "__main__":
     unittest.main()

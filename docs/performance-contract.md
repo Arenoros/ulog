@@ -137,8 +137,17 @@ executes on the libuv loop thread.
   from a reserve that remains available when the payload budget is exhausted.
 - Their Operation completion state is independent of Record admission and does
   not add locks, reference counting, or shared-counter traffic to `LOG*` calls.
-- Callback completion does not block an operating-system thread. `WaitUntil`
-  blocks only when a caller explicitly selects the waiting interface.
+- Publishing completion never runs user callback code on the owning worker or
+  I/O thread. `WaitUntil` blocks only when an external caller explicitly
+  selects the waiting interface.
+- One small callback is owned inline by its control node. Accepted callback
+  delivery uses that node as bounded queue storage and performs no inline
+  fallback on the completing worker.
+- A control slot is recycled only after its action owner, Operation handle, and
+  queued callback delivery have all released it. Holding a completed Operation
+  therefore remains visible bounded reserve occupancy.
+- A `WaitUntil` deadline reports only that the caller stopped waiting. It does
+  not cancel or overwrite the single terminal Operation result.
 
 ## Ordering
 

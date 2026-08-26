@@ -47,6 +47,25 @@ EXPECTED_PUBLISH_COUNTER_MUTATIONS = Counter(
         "counters.truncated_records": 1,
     }
 )
+FORBIDDEN_CONTROL_REFERENCES = (
+    "#include <ulog/operation.hpp>",
+    '#include "control/',
+    "detail::control",
+    "ControlReserve",
+    "OperationCallback",
+    "OperationWait",
+)
+FORBIDDEN_BLOCKING_OR_OWNING_PRIMITIVES = (
+    "std::mutex",
+    "std::recursive_mutex",
+    "std::condition_variable",
+    "std::shared_mutex",
+    "std::lock_guard",
+    "std::unique_lock",
+    "std::scoped_lock",
+    "std::shared_ptr",
+    "std::weak_ptr",
+)
 ATOMIC_DECLARATION = re.compile(
     r"(?m)^[ \t]*(?:(?:inline|static|constinit|const)\s+)*"
     r"std::atomic(?:<[^;\n]+>|_flag)\s+"
@@ -97,6 +116,33 @@ def validate_atomic_inventory(sources: dict[str, str]) -> None:
     )
 
 
+def validate_control_isolation(sources: dict[str, str]) -> None:
+    control_references = sorted(
+        (path, token)
+        for path, source in sources.items()
+        for token in FORBIDDEN_CONTROL_REFERENCES
+        if token in source
+    )
+    if control_references:
+        raise FrontendHotPathContractError(
+            "The ordinary logger/producer path gained a control-state dependency. Operation and "
+            f"control-reserve code must remain outside LOG* calls: {control_references}."
+        )
+
+    forbidden_primitives = sorted(
+        (path, token)
+        for path, source in sources.items()
+        for token in FORBIDDEN_BLOCKING_OR_OWNING_PRIMITIVES
+        if token in source
+    )
+    if forbidden_primitives:
+        raise FrontendHotPathContractError(
+            "The ordinary logger/producer path gained a blocking or shared-ownership primitive. "
+            "Keep locks, waits, and reference counting in the separate control path: "
+            f"{forbidden_primitives}."
+        )
+
+
 def validate_sources(sources: dict[str, str]) -> None:
     producer_kernel = require_source(sources, "src/producer/producer_kernel.cpp")
     producer_lanes = require_source(sources, "src/producer/producer_lanes.hpp")
@@ -121,6 +167,7 @@ def validate_sources(sources: dict[str, str]) -> None:
         )
 
     validate_atomic_inventory(sources)
+    validate_control_isolation(sources)
 
     snapshot_match = require_match(
         producer_kernel,

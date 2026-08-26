@@ -1,14 +1,22 @@
+#include <chrono>
 #include <cstddef>
 #include <string_view>
+#include <type_traits>
 #include <ulog/level.hpp>
 #include <ulog/log.hpp>
 #include <ulog/logger.hpp>
+#include <ulog/operation.hpp>
 #include <ulog/source_location.hpp>
 #include <ulog/version.hpp>
 
 ulog::Logger LoadInstalledDefaultLogger() noexcept;
 ulog::Logger MissingInstalledLoggerDefinition() noexcept;
 std::string_view MissingInstalledMessageDefinition();
+
+static_assert(!std::is_copy_constructible_v<ulog::Operation>);
+static_assert(!std::is_copy_assignable_v<ulog::Operation>);
+static_assert(std::is_nothrow_move_constructible_v<ulog::Operation>);
+static_assert(std::is_nothrow_move_assignable_v<ulog::Operation>);
 
 int main() {
   const ulog::Version version = ulog::GetVersion();
@@ -21,6 +29,13 @@ int main() {
   std::size_t generic_target_evaluations = 0;
   std::size_t generic_level_evaluations = 0;
   std::size_t generic_message_evaluations = 0;
+  ulog::Operation empty_operation;
+  const auto empty_poll = empty_operation.Poll();
+  const auto empty_wait = empty_operation.WaitUntil(std::chrono::steady_clock::now());
+  const auto empty_callback =
+      empty_operation.OnComplete([](const ulog::OperationResult&) noexcept {});
+  const ulog::OperationStartFailure exhausted{
+      ulog::OperationStartErrorCode::kControlReserveExhausted, 1, 1};
 
   LOG_INFO((++erased_message_evaluations, MissingInstalledMessageDefinition()));
   LOG_INFO_TO((++erased_target_evaluations, MissingInstalledLoggerDefinition()),
@@ -50,5 +65,10 @@ int main() {
   if (generic_target_evaluations != 1) return 13;
   if (generic_level_evaluations != 1) return 14;
   if (generic_message_evaluations != 0) return 15;
+  if (empty_poll.status != ulog::OperationPollStatus::kInvalidOperation) return 16;
+  if (empty_wait.status != ulog::OperationWaitStatus::kInvalidOperation) return 17;
+  if (empty_wait.Message().empty() || empty_wait.HowToFix().empty()) return 18;
+  if (empty_callback.status != ulog::OperationCallbackStatus::kInvalidOperation) return 19;
+  if (exhausted.Message().empty() || exhausted.HowToFix().empty()) return 20;
   return 0;
 }

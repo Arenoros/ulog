@@ -2,7 +2,8 @@
 
 Ulog is a standalone, performance-oriented C++20 logging library under active
 development. Its current production interface exposes native levels, source
-locations, a cheap Logger handle, and the basic text/fmt `LOG*` macro family.
+locations, a cheap Logger handle, bounded Operation completion primitives, and
+the basic text/fmt `LOG*` macro family.
 The initial process-wide target is a static Null Logger. Applications can
 atomically replace that non-owning target; Runtime construction and public
 Record delivery are not implemented yet.
@@ -55,6 +56,12 @@ and returns the previous target. Every installed target must remain alive at a
 stable address until application termination, even after replacement. See
 [`docs/native-frontend.md`](docs/native-frontend.md) for the complete current
 contract, supported macro forms, and compile-time cutoff.
+
+The public [`Operation`](docs/operations.md) handle provides non-blocking
+polling, one asynchronously dispatched completion callback, and explicit
+deadline-bounded waiting. Runtime actions that return Operations are delivered
+by the next roadmap step; this step establishes their bounded state and error
+contract without entering the logging hot path.
 
 For the full Conan, unit, stress, dependency, and benchmark workflow, see
 [`docs/testing.md`](docs/testing.md). The shared performance workload and

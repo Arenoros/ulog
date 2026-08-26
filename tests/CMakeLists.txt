@@ -55,18 +55,20 @@ if(ULOG_BUILD_UNIT_TESTS OR ULOG_BUILD_STRESS_TESTS)
   find_package(Threads REQUIRED)
 endif()
 
-set(_ulog_producer_test_library ulog::ulog)
+set(_ulog_private_test_library ulog::ulog)
 if(BUILD_SHARED_LIBS AND (ULOG_BUILD_UNIT_TESTS OR ULOG_BUILD_STRESS_TESTS))
-  # Private producer symbols stay out of the shared ABI. Tests link the same sources privately.
-  add_library(ulog-producer-test-support STATIC ${ULOG_PRODUCER_SOURCES})
-  target_compile_features(ulog-producer-test-support PRIVATE cxx_std_20)
-  target_include_directories(
-    ulog-producer-test-support PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/include"
-                                       "${ULOG_GENERATED_INCLUDE_DIR}"
+  # Private symbols stay out of the shared ABI. Tests link the same sources privately.
+  add_library(
+    ulog-private-test-support STATIC ${ULOG_PRODUCER_SOURCES} ${ULOG_CONTROL_PRIVATE_SOURCES}
   )
-  target_link_libraries(ulog-producer-test-support PUBLIC ulog::ulog)
-  ulog_configure_target(ulog-producer-test-support)
-  set(_ulog_producer_test_library ulog-producer-test-support)
+  target_compile_features(ulog-private-test-support PRIVATE cxx_std_20)
+  target_include_directories(
+    ulog-private-test-support PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/include"
+                                     "${ULOG_GENERATED_INCLUDE_DIR}"
+  )
+  target_link_libraries(ulog-private-test-support PUBLIC ulog::ulog Threads::Threads)
+  ulog_configure_target(ulog-private-test-support)
+  set(_ulog_private_test_library ulog-private-test-support)
 endif()
 
 if(ULOG_BUILD_UNIT_TESTS)
@@ -78,6 +80,7 @@ if(ULOG_BUILD_UNIT_TESTS)
     frontend_test.cpp
     log_macro_test.cpp
     memory_resource_test.cpp
+    operation_test.cpp
     producer_kernel_test.cpp
     version_test.cpp
   )
@@ -86,7 +89,7 @@ if(ULOG_BUILD_UNIT_TESTS)
     ulog-unit-tests PRIVATE "${PROJECT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}"
   )
   target_link_libraries(
-    ulog-unit-tests PRIVATE ${_ulog_producer_test_library} GTest::gtest_main Threads::Threads
+    ulog-unit-tests PRIVATE ${_ulog_private_test_library} GTest::gtest_main Threads::Threads
   )
   ulog_configure_target(ulog-unit-tests)
   add_test(NAME ulog.unit COMMAND ulog-unit-tests)
@@ -115,11 +118,26 @@ if(ULOG_BUILD_UNIT_TESTS)
       ulog-producer-allocation-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
                                             "${PROJECT_SOURCE_DIR}/benchmarks"
     )
-    target_link_libraries(ulog-producer-allocation-test PRIVATE ${_ulog_producer_test_library})
+    target_link_libraries(ulog-producer-allocation-test PRIVATE ${_ulog_private_test_library})
     ulog_configure_target(ulog-producer-allocation-test)
     add_test(NAME ulog.producer-allocation COMMAND ulog-producer-allocation-test)
     set_tests_properties(
       ulog.producer-allocation PROPERTIES LABELS "unit;producer;allocation" TIMEOUT 10
+    )
+
+    add_executable(ulog-operation-allocation-test operation_allocation_test.cpp)
+    target_compile_features(ulog-operation-allocation-test PRIVATE cxx_std_20)
+    target_include_directories(
+      ulog-operation-allocation-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
+                                             "${PROJECT_SOURCE_DIR}/benchmarks"
+    )
+    target_link_libraries(
+      ulog-operation-allocation-test PRIVATE ${_ulog_private_test_library} Threads::Threads
+    )
+    ulog_configure_target(ulog-operation-allocation-test)
+    add_test(NAME ulog.operation-allocation COMMAND ulog-operation-allocation-test)
+    set_tests_properties(
+      ulog.operation-allocation PROPERTIES LABELS "unit;control;allocation" TIMEOUT 10
     )
 
     add_executable(ulog-frontend-performance-test frontend_performance_test.cpp)
@@ -129,7 +147,7 @@ if(ULOG_BUILD_UNIT_TESTS)
       ulog-frontend-performance-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
                                              "${PROJECT_SOURCE_DIR}/benchmarks"
     )
-    target_link_libraries(ulog-frontend-performance-test PRIVATE ${_ulog_producer_test_library})
+    target_link_libraries(ulog-frontend-performance-test PRIVATE ${_ulog_private_test_library})
     ulog_configure_target(ulog-frontend-performance-test)
     add_test(NAME ulog.frontend-performance COMMAND ulog-frontend-performance-test)
     set_tests_properties(
@@ -147,6 +165,18 @@ if(ULOG_BUILD_UNIT_TESTS)
 endif()
 
 if(ULOG_BUILD_STRESS_TESTS)
+  add_executable(ulog-operation-stress stress/operation_stress.cpp)
+  target_compile_features(ulog-operation-stress PRIVATE cxx_std_20)
+  target_include_directories(ulog-operation-stress PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_link_libraries(
+    ulog-operation-stress PRIVATE ${_ulog_private_test_library} Threads::Threads
+  )
+  ulog_configure_target(ulog-operation-stress)
+  add_test(NAME ulog.operation-stress COMMAND ulog-operation-stress)
+  set_tests_properties(
+    ulog.operation-stress PROPERTIES LABELS "stress;control;concurrency" TIMEOUT 10
+  )
+
   add_executable(ulog-default-logger-stress stress/default_logger_stress.cpp)
   target_compile_features(ulog-default-logger-stress PRIVATE cxx_std_20)
   target_include_directories(ulog-default-logger-stress PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -169,7 +199,7 @@ if(ULOG_BUILD_STRESS_TESTS)
   target_compile_features(ulog-producer-kernel-stress PRIVATE cxx_std_20)
   target_include_directories(ulog-producer-kernel-stress PRIVATE "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(
-    ulog-producer-kernel-stress PRIVATE ${_ulog_producer_test_library} Threads::Threads
+    ulog-producer-kernel-stress PRIVATE ${_ulog_private_test_library} Threads::Threads
   )
   ulog_configure_target(ulog-producer-kernel-stress)
   add_test(NAME ulog.producer-kernel-stress COMMAND ulog-producer-kernel-stress)
