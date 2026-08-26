@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -33,6 +34,10 @@ using detail::producer::KernelConfig;
 using detail::producer::ProducerKernel;
 using detail::producer::RecordView;
 
+// Macro records include compiler-provided absolute paths and function signatures.
+constexpr std::size_t kMacroTestMaximumRecordBytes = detail::producer::kMaximumRecordBytes;
+constexpr std::size_t kMacroTestPayloadCapacityBytes = 2 * kMacroTestMaximumRecordBytes;
+
 class PoisonAfterConversion final {
  public:
   explicit PoisonAfterConversion(std::string& storage) noexcept : storage_(&storage) {}
@@ -55,8 +60,8 @@ class PoisonAfterConversion final {
 [[nodiscard]] constexpr KernelConfig MacroTestConfig() noexcept {
   return KernelConfig{
       .threshold = Level::kTrace,
-      .payload_capacity_bytes = 512,
-      .maximum_record_bytes = 256,
+      .payload_capacity_bytes = kMacroTestPayloadCapacityBytes,
+      .maximum_record_bytes = kMacroTestMaximumRecordBytes,
       .producer_slots = 1,
       .ingress_cells = 2,
   };
@@ -68,7 +73,7 @@ class PoisonAfterConversion final {
   return KernelConfig{
       .threshold = threshold,
       .payload_capacity_bytes = payload_capacity_bytes,
-      .maximum_record_bytes = 256,
+      .maximum_record_bytes = kMacroTestMaximumRecordBytes,
       .producer_slots = 1,
       .ingress_cells = ingress_cells,
   };
@@ -238,9 +243,7 @@ TEST(LogMacro, CallerIdentifiersDoNotBindToMacroInternals) {
 }
 
 TEST(LogMacro, MessageOperandsAreConsumedBeforeNestedTemporariesExpire) {
-  auto config = MacroTestConfig(Level::kTrace, 1024, 2);
-  config.maximum_record_bytes = 512;
-  ProducerKernel kernel{config};
+  ProducerKernel kernel{MacroTestConfig(Level::kTrace, kMacroTestPayloadCapacityBytes, 2)};
   auto producer = kernel.TryRegisterProducer();
   ASSERT_TRUE(producer);
   std::string native_storage = "native temporary";
@@ -334,7 +337,7 @@ TEST(LogMacro, GenericFormsEvaluateDynamicSelectorsOnce) {
 }
 
 TEST(LogMacro, FilteredAndUnregisteredCallsDoNotEvaluateFormatOperands) {
-  ProducerKernel filtered_kernel{MacroTestConfig(Level::kWarning, 512, 2)};
+  ProducerKernel filtered_kernel{MacroTestConfig(Level::kWarning, kMacroTestMaximumRecordBytes, 2)};
   auto filtered_producer = filtered_kernel.TryRegisterProducer();
   ASSERT_TRUE(filtered_producer);
   std::size_t filtered_evaluations = 0;
@@ -356,7 +359,7 @@ TEST(LogMacro, FilteredAndUnregisteredCallsDoNotEvaluateFormatOperands) {
 }
 
 TEST(LogMacro, AdmissionRejectionDoesNotEvaluateFormatOperands) {
-  ProducerKernel budget_kernel{MacroTestConfig(Level::kTrace, 256, 2)};
+  ProducerKernel budget_kernel{MacroTestConfig(Level::kTrace, kMacroTestMaximumRecordBytes, 2)};
   auto budget_producer = budget_kernel.TryRegisterProducer();
   ASSERT_TRUE(budget_producer);
   LOG_INFO_TO(budget_kernel.GetLogger(), "retained");
@@ -369,7 +372,7 @@ TEST(LogMacro, AdmissionRejectionDoesNotEvaluateFormatOperands) {
   EXPECT_EQ(budget_kernel.GetSnapshot().rejected_budget, 1U);
   ExpectNextRecord(budget_kernel, Level::kInfo, "retained");
 
-  ProducerKernel lane_kernel{MacroTestConfig(Level::kTrace, 512, 1)};
+  ProducerKernel lane_kernel{MacroTestConfig(Level::kTrace, kMacroTestPayloadCapacityBytes, 1)};
   auto lane_producer = lane_kernel.TryRegisterProducer();
   ASSERT_TRUE(lane_producer);
   LOG_INFO_TO(lane_kernel.GetLogger(), "retained");
@@ -422,12 +425,16 @@ TEST(LogMacro, UnnamedCallFinishesAgainstTheTargetLoadedBeforeMessageEvaluation)
   ASSERT_TRUE(first_producer);
   ASSERT_TRUE(replacement_producer);
   const ScopedDefaultLogger default_logger{first.GetLogger()};
+  const auto snapshot_before = first.GetSnapshot();
 
   LOG_INFO(([&]() -> std::string_view {
     static_cast<void>(ExchangeDefaultLogger(replacement.GetLogger()));
     return "stable target";
   })());
 
+  const auto snapshot_after = first.GetSnapshot();
+  EXPECT_EQ(snapshot_after.accepted_records, snapshot_before.accepted_records + 1U);
+  EXPECT_EQ(snapshot_after.invalid_records, snapshot_before.invalid_records);
   ExpectNextRecord(first, Level::kInfo, "stable target");
   EXPECT_EQ(replacement.TryConsume(nullptr, nullptr), ConsumeStatus::kEmpty);
 }
