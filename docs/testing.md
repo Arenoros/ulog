@@ -8,8 +8,8 @@ The repository establishes seven independent test categories:
   resources;
 - `integration`/`package`: install Ulog, configure a copied external project,
   link only `ulog::ulog`, and exercise the frontend across translation units;
-- `dependencies`: compile and run fmt/libuv integration without linking those
-  dependencies into the shipped bootstrap library;
+- `dependencies`: compile and run the production fmt integration together with
+  the planned libuv dependency boundary;
 - `stress`: deterministic concurrent checks for allocation instrumentation,
   linearizable Default Logger exchange, stale-target dispatch, producer-lane
   saturation, FIFO publication, byte conservation, retirement, and race-free
@@ -44,14 +44,17 @@ watchdog so a stalled thread fails with a focused diagnostic. The Default
 Logger concurrency stress uses the same five-second watchdog and 10-second
 CTest limit.
 
-The dependency-free presets build the library, architecture check, and installed
-consumer:
+The presets build the library, architecture check, and installed consumer once
+fmt 12 is available to CMake. The pinned Conan setup is:
 
 ```shell
-cmake --preset release-static
-cmake --build --preset release-static
-ctest --preset release-static
+conan profile detect --force
+conan build . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Release \
+  --lockfile=conan.lock --build=missing --output-folder=out/conan-build-release
 ```
+
+`conan build` resolves the generator-specific layout, builds Ulog, and runs
+CTest without requiring a hard-coded toolchain path.
 
 The complete suite uses Conan:
 

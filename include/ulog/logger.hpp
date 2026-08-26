@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <string_view>
 #include <type_traits>
 #include <ulog/export.hpp>
@@ -35,8 +37,46 @@ namespace detail {
 
 struct LoggerState;
 struct LoggerAccess;
+struct MacroAccess;
 using TextConsumer = void (*)(void*, std::string_view);
-using TextBuilder = void (*)(void*, void*, TextConsumer);
+
+class MessageSink final {
+ public:
+  class OutputIterator final {
+   public:
+    using value_type = void;
+    using difference_type = std::ptrdiff_t;
+    using pointer = void;
+    using reference = void;
+    using iterator_category = std::output_iterator_tag;
+
+    OutputIterator& operator=(char value) {
+      sink_->Append(std::string_view{&value, 1});
+      return *this;
+    }
+    [[nodiscard]] OutputIterator& operator*() noexcept { return *this; }
+    OutputIterator& operator++() noexcept { return *this; }
+    OutputIterator operator++(int) noexcept { return *this; }
+
+   private:
+    friend class MessageSink;
+    explicit OutputIterator(MessageSink& sink) noexcept : sink_(&sink) {}
+
+    MessageSink* sink_;
+  };
+
+  MessageSink(void* context, TextConsumer consume_text) noexcept
+      : context_(context), consume_text_(consume_text) {}
+
+  void Append(std::string_view text) { consume_text_(context_, text); }
+  [[nodiscard]] OutputIterator FormatOutput() noexcept { return OutputIterator{*this}; }
+
+ private:
+  void* context_;
+  TextConsumer consume_text_;
+};
+
+using MessageBuilder = bool (*)(void*, MessageSink&);
 
 }  // namespace detail
 
@@ -60,7 +100,7 @@ class Logger final {
     if constexpr (IsCompileTimeEnabled<kLevel>()) {
       auto factory = std::ref(make_message);
       using Factory = decltype(factory);
-      LogText(kLevel, source, &factory, &BuildText<Factory>);
+      LogMessage(kLevel, source, &factory, &BuildText<Factory>);
     }
   }
 
@@ -81,17 +121,18 @@ class Logger final {
   }
 
   template <typename Factory>
-  static void BuildText(void* factory_context, void* consumer_context,
-                        detail::TextConsumer consume) {
+  static bool BuildText(void* factory_context, detail::MessageSink& sink) {
     auto& factory = *static_cast<Factory*>(factory_context);
     decltype(auto) message = std::invoke(factory);
-    consume(consumer_context, std::string_view{message});
+    sink.Append(std::string_view{message});
+    return true;
   }
 
-  ULOG_API void LogText(Level level, const SourceLocation& source, void* factory_context,
-                        detail::TextBuilder build_text) const;
+  ULOG_API void LogMessage(Level level, const SourceLocation& source, void* builder_context,
+                           detail::MessageBuilder build_message) const;
 
   friend struct detail::LoggerAccess;
+  friend struct detail::MacroAccess;
 
   const detail::LoggerState* state_;
 };

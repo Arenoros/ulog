@@ -8,10 +8,10 @@
 
 namespace ulog::detail {
 
-using LogText = void (*)(void*, Level, const SourceLocation&, void*, TextBuilder);
+using LogMessage = void (*)(void*, Level, const SourceLocation&, void*, MessageBuilder);
 
 struct ProducerOperations final {
-  LogText log_text;
+  LogMessage log_message;
 };
 
 struct LoggerState final {

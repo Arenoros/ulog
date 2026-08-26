@@ -83,15 +83,16 @@ class StableTarget final {
     }
   }
 
-  static void LogText(void* context, ulog::Level, const ulog::SourceLocation&,
-                      void* factory_context, ulog::detail::TextBuilder build_text) {
+  static void LogMessage(void* context, ulog::Level, const ulog::SourceLocation&,
+                         void* builder_context, ulog::detail::MessageBuilder build_message) {
     auto& target = *static_cast<StableTarget*>(context);
     Observation& observation = GetObservation();
-    build_text(factory_context, &observation, &ConsumeText);
+    ulog::detail::MessageSink sink{&observation, &ConsumeText};
+    build_message(builder_context, sink);
     target.calls_.fetch_add(1, std::memory_order_relaxed);
   }
 
-  inline static constexpr ulog::detail::ProducerOperations kOperations{&LogText};
+  inline static constexpr ulog::detail::ProducerOperations kOperations{&LogMessage};
 
   std::atomic<std::size_t> calls_{0};
   ulog::detail::LoggerState state_;

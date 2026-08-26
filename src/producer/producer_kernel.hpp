@@ -243,8 +243,8 @@ class ProducerKernel final {
  private:
   struct Impl;
 
-  static void LogText(void* context, Level level, const SourceLocation& source,
-                      void* factory_context, TextBuilder build_text);
+  static void LogMessage(void* context, Level level, const SourceLocation& source,
+                         void* builder_context, MessageBuilder build_message);
   [[nodiscard]] PublishResult TryPublishSlot(std::size_t slot_index, std::uint64_t generation,
                                              Level level, const SourceLocation& source,
                                              BuildOperation operation);

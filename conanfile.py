@@ -91,13 +91,14 @@ class UlogConan(ConanFile):
                 "enable_tsan cannot be combined with enable_asan or enable_ubsan; use a separate package build"
             )
 
+    def requirements(self):
+        self.requires("fmt/12.1.0", transitive_headers=True, transitive_libs=True)
+
     def build_requirements(self):
         if self.options.build_tests:
             self.test_requires("gtest/1.17.0")
         if self.options.build_benchmarks:
             self.test_requires("benchmark/1.9.5")
-        if self.options.build_benchmarks or self.options.dependency_smoke:
-            self.test_requires("fmt/12.1.0")
         if self.options.dependency_smoke:
             self.test_requires("libuv/1.51.0")
 
@@ -166,6 +167,7 @@ class UlogConan(ConanFile):
         self.cpp_info.set_property("cmake_file_name", "ulog")
         self.cpp_info.set_property("cmake_target_name", "ulog::ulog")
         self.cpp_info.libs = ["ulog"]
+        self.cpp_info.requires = ["fmt::fmt"]
         if not self.options.shared:
             self.cpp_info.defines = ["ULOG_STATIC_DEFINE"]
 

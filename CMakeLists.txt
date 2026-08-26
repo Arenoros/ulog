@@ -24,6 +24,8 @@ include(cmake/UlogTooling.cmake)
 
 ulog_define_options()
 
+find_package(fmt 12 CONFIG REQUIRED)
+
 set(ULOG_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 configure_file(include/ulog/version.hpp.in "${ULOG_GENERATED_INCLUDE_DIR}/ulog/version.hpp" @ONLY)
 
@@ -43,6 +45,7 @@ target_include_directories(
          "$<BUILD_INTERFACE:${ULOG_GENERATED_INCLUDE_DIR}>"
          "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
+target_link_libraries(ulog PUBLIC fmt::fmt)
 
 if(BUILD_SHARED_LIBS)
   target_compile_definitions(ulog PRIVATE ULOG_BUILDING_LIBRARY)
@@ -90,9 +93,10 @@ install(
   INCLUDES
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
-install(FILES include/ulog/export.hpp include/ulog/level.hpp include/ulog/logger.hpp
-              include/ulog/source_location.hpp "${ULOG_GENERATED_INCLUDE_DIR}/ulog/version.hpp"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ulog"
+install(
+  FILES include/ulog/export.hpp include/ulog/level.hpp include/ulog/log.hpp include/ulog/logger.hpp
+        include/ulog/source_location.hpp "${ULOG_GENERATED_INCLUDE_DIR}/ulog/version.hpp"
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ulog"
 )
 install(
   EXPORT ulogTargets

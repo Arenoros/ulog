@@ -63,8 +63,14 @@ endif()
 if(ULOG_BUILD_UNIT_TESTS)
   find_package(GTest CONFIG REQUIRED)
   add_executable(
-    ulog-unit-tests default_logger_probe.cpp default_logger_test.cpp frontend_test.cpp
-                    memory_resource_test.cpp producer_kernel_test.cpp version_test.cpp
+    ulog-unit-tests
+    default_logger_probe.cpp
+    default_logger_test.cpp
+    frontend_test.cpp
+    log_macro_test.cpp
+    memory_resource_test.cpp
+    producer_kernel_test.cpp
+    version_test.cpp
   )
   target_compile_features(ulog-unit-tests PRIVATE cxx_std_20)
   target_include_directories(
@@ -76,6 +82,21 @@ if(ULOG_BUILD_UNIT_TESTS)
   ulog_configure_target(ulog-unit-tests)
   add_test(NAME ulog.unit COMMAND ulog-unit-tests)
   set_tests_properties(ulog.unit PROPERTIES LABELS "unit" TIMEOUT 20)
+
+  foreach(_ulog_cutoff RANGE 0 5)
+    add_executable(ulog-log-cutoff-${_ulog_cutoff} log_cutoff_probe.cpp)
+    target_compile_features(ulog-log-cutoff-${_ulog_cutoff} PRIVATE cxx_std_20)
+    target_compile_definitions(
+      ulog-log-cutoff-${_ulog_cutoff} PRIVATE ULOG_COMPILE_TIME_MIN_LEVEL=${_ulog_cutoff}
+                                              ULOG_EXPECTED_MIN_LEVEL=${_ulog_cutoff}
+    )
+    target_link_libraries(ulog-log-cutoff-${_ulog_cutoff} PRIVATE ulog::ulog)
+    ulog_configure_target(ulog-log-cutoff-${_ulog_cutoff})
+    add_test(NAME ulog.log-cutoff-${_ulog_cutoff} COMMAND ulog-log-cutoff-${_ulog_cutoff})
+    set_tests_properties(
+      ulog.log-cutoff-${_ulog_cutoff} PROPERTIES LABELS "unit;frontend;compile" TIMEOUT 10
+    )
+  endforeach()
 
   if(NOT ULOG_ENABLE_TSAN)
     # This test interposes global allocation functions, whose symbols are also owned by TSan.

@@ -1,7 +1,8 @@
 # Native frontend
 
-The installed package exposes the first native Ulog frontend through
-`<ulog/level.hpp>`, `<ulog/source_location.hpp>`, and `<ulog/logger.hpp>`.
+The installed package exposes the native Ulog frontend through
+`<ulog/level.hpp>`, `<ulog/source_location.hpp>`, `<ulog/logger.hpp>`, and
+`<ulog/log.hpp>`.
 
 `Level` is ordered from `kTrace` through `kCritical`; `kNone` is the suppressing
 threshold and is never an enabled message level. `IsLevelEnabled` provides the
@@ -68,8 +69,49 @@ target.Log<ulog::Level::kInfo>(ulog::SourceLocation::Current(), []() -> std::str
 });
 ```
 
-The later basic `LOG*` macro slice will preserve this single-load form after
-compile-time erasure.
+The unnamed `LOG*` macros preserve this single-load form after compile-time
+erasure.
+
+## Basic LOG macros
+
+`<ulog/log.hpp>` provides generic, named-level, and explicit-target statement
+forms:
+
+```cpp
+LOG(level, "plain text");
+LOG_TO(logger, level, "value={}", value);
+
+LOG_TRACE("trace");
+LOG_DEBUG("debug={}", value);
+LOG_INFO("info");
+LOG_WARNING_TO(logger, "warning={}", value);
+LOG_ERROR_TO(logger, "error");
+LOG_CRITICAL("critical={}", value);
+```
+
+All six named levels have both the unnamed and `_TO` form. `_TO` accepts one
+native `ulog::Logger` expression, evaluates it once, and does not consult the
+Default Logger. Use `GetNullLogger()` for an explicit suppressing target.
+Generic level expressions are also evaluated once.
+
+A call with one message operand treats it as native text usable as
+`std::string_view`; braces in that operand are literal. A call with a format
+string and one or more values uses fmt's compile-time-checked format strings
+and writes directly into the bounded Record. Message operands stay inside the
+admission callback. Compile-erased, runtime-filtered, Null Logger,
+unregistered-producer, and admission-rejected calls therefore do not evaluate
+them. A failure raised after native conversion or fmt formatting begins,
+including an invalid dynamic width or a custom formatter exception, abandons
+the reserved Record without publishing it or emitting an exception. Exceptions
+raised while evaluating caller operands before the formatter is entered remain
+outside Ulog's guarantee.
+
+Each macro expands as one statement and is safe in unbraced nested `if`/`else`
+and loop bodies. The stream expression `LOG_INFO() << value` is not part of the
+basic frontend. It is assigned to the later **Scope writer and streamed
+values** capability (`API-004`, `VAL-001` through `VAL-005`), which must provide
+a reservation-backed writer before evaluating streamed operands. Advanced
+range, map, chrono, and exception writers belong to that capability as well.
 
 ## Compile-time cutoff
 
@@ -80,6 +122,7 @@ still type-checks the factory contract but does not dispatch or invoke its body.
 `kNone` calls compile and are always suppressed. Invalid cutoff values fail
 compilation with a correction hint.
 
-The complete basic `LOG*` macro family is a later roadmap slice. Its erased
-unnamed forms will apply the same cutoff before loading the process-wide Default
-Logger.
+Named macros below the configured minimum are erased before evaluating an
+explicit target or loading the process-wide Default Logger. Generic `LOG` and
+`LOG_TO` are intentionally not erased by this control because their level is a
+runtime expression. Critical remains active at the maximum value `5`.

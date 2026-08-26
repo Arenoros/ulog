@@ -131,9 +131,9 @@ EventTimestamp ReadSystemClock(void*) noexcept {
       .count();
 }
 
-struct TextCall final {
-  void* factory_context;
-  TextBuilder build_text;
+struct MessageCall final {
+  void* builder_context;
+  MessageBuilder build_message;
 };
 
 void AppendText(void* context, std::string_view text) {
@@ -141,10 +141,11 @@ void AppendText(void* context, std::string_view text) {
   static_cast<void>(appender.Append(text));
 }
 
-BuildStatus BuildText(void* context, RecordAppender& appender) {
-  auto& call = *static_cast<TextCall*>(context);
-  call.build_text(call.factory_context, &appender, &AppendText);
-  return BuildStatus::kComplete;
+BuildStatus BuildMessage(void* context, RecordAppender& appender) {
+  auto& call = *static_cast<MessageCall*>(context);
+  MessageSink sink{&appender, &AppendText};
+  return call.build_message(call.builder_context, sink) ? BuildStatus::kComplete
+                                                        : BuildStatus::kInvalid;
 }
 
 }  // namespace
@@ -265,7 +266,7 @@ void ProducerKernel::ProducerRegistration::Reset() noexcept {
 ProducerKernel::ProducerKernel(KernelConfig config, EventClock clock) {
   ValidateConfiguration(config, clock);
   impl_ = std::make_unique<Impl>(*this, config, clock);
-  static const ProducerOperations operations{&ProducerKernel::LogText};
+  static const ProducerOperations operations{&ProducerKernel::LogMessage};
   impl_->logger_state.producer_operations = &operations;
 }
 
@@ -505,8 +506,8 @@ KernelSnapshot ProducerKernel::GetSnapshot() const noexcept {
   return snapshot;
 }
 
-void ProducerKernel::LogText(void* context, Level level, const SourceLocation& source,
-                             void* factory_context, TextBuilder build_text) {
+void ProducerKernel::LogMessage(void* context, Level level, const SourceLocation& source,
+                                void* builder_context, MessageBuilder build_message) {
   auto& kernel = *static_cast<ProducerKernel*>(context);
   ThreadRegistration* const registration = FindThreadRegistration(kernel);
   if (registration == nullptr) {
@@ -520,9 +521,9 @@ void ProducerKernel::LogText(void* context, Level level, const SourceLocation& s
     kernel.impl_->CountMissingProducer();
     return;
   }
-  TextCall call{factory_context, build_text};
+  MessageCall call{builder_context, build_message};
   static_cast<void>(kernel.TryPublishSlot(registration->slot_index, registration->generation, level,
-                                          source, BuildOperation{&call, &BuildText}));
+                                          source, BuildOperation{&call, &BuildMessage}));
 }
 
 void ProducerKernel::RetireProducer(ProducerRegistration& producer) noexcept {

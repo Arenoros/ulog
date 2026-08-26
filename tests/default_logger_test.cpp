@@ -39,9 +39,9 @@ class StableTarget final {
   }
 
  private:
-  static void DiscardText(void*, Level, const SourceLocation&, void*, detail::TextBuilder) {}
+  static void DiscardMessage(void*, Level, const SourceLocation&, void*, detail::MessageBuilder) {}
 
-  inline static constexpr detail::ProducerOperations kOperations{&DiscardText};
+  inline static constexpr detail::ProducerOperations kOperations{&DiscardMessage};
 
   detail::LoggerState state_;
 };

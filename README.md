@@ -1,10 +1,11 @@
 # Ulog
 
 Ulog is a standalone, performance-oriented C++20 logging library under active
-development. Its first production interface exposes native levels, source
-locations, and a cheap Logger handle whose initial process-wide target is a
-static Null Logger. Applications can atomically replace that non-owning target;
-Runtime construction and Record delivery are not implemented yet.
+development. Its current production interface exposes native levels, source
+locations, a cheap Logger handle, and the basic text/fmt `LOG*` macro family.
+The initial process-wide target is a static Null Logger. Applications can
+atomically replace that non-owning target; Runtime construction and public
+Record delivery are not implemented yet.
 
 The design preserves the capabilities of the pinned reference implementation
 without source or API compatibility and without depending on that project.
@@ -16,13 +17,18 @@ network, and IPC implementations will use libuv.
 CMake 3.20 or newer is required. Presets require CMake 3.25 or newer. On
 Windows, run CMake from a Visual Studio developer shell. Agents and automation
 may use `scripts\\with-msvc.cmd` to locate and activate the newest installed MSVC
-toolchain without hard-coding a Visual Studio version.
+toolchain without hard-coding a Visual Studio version. fmt 12 is a public
+dependency; make its CMake package available directly or prepare the pinned
+Conan dependencies first:
 
 ```shell
-cmake --preset dev
-cmake --build --preset dev
-ctest --preset dev
+conan profile detect --force
+conan build . -pr:h=conan/profiles/cpp20 -pr:b=default -s build_type=Debug \
+  --lockfile=conan.lock --build=missing --output-folder=out/conan-build-debug
 ```
+
+`conan build` installs the pinned dependencies, selects the generator-specific
+toolchain layout, builds Ulog, and runs CTest.
 
 Static is the default. Explicit release checks are available as
 `release-static` and `release-shared` presets. Both install and exercise an
@@ -33,17 +39,14 @@ find_package(ulog CONFIG REQUIRED)
 target_link_libraries(my_target PRIVATE ulog::ulog)
 ```
 
-The initial native frontend is available from public package headers:
+The native frontend is available from public package headers:
 
 ```cpp
-#include <string_view>
+#include <ulog/log.hpp>
 
-#include <ulog/logger.hpp>
-
-const ulog::Logger logger = ulog::GetDefaultLogger();
-logger.Log<ulog::Level::kInfo>(ulog::SourceLocation::Current(), []() -> std::string_view {
-  return "startup reached";
-});
+LOG_INFO("startup reached");
+LOG_WARNING("retry {} of {}", retry, maximum_retries);
+LOG_ERROR_TO(logger, "request failed: {}", error_text);
 ```
 
 The initial target is the Null Logger and suppresses the factory without
@@ -51,7 +54,7 @@ invoking its body. `ExchangeDefaultLogger()` installs a stable non-owning Logger
 and returns the previous target. Every installed target must remain alive at a
 stable address until application termination, even after replacement. See
 [`docs/native-frontend.md`](docs/native-frontend.md) for the complete current
-contract and compile-time cutoff.
+contract, supported macro forms, and compile-time cutoff.
 
 For the full Conan, unit, stress, dependency, and benchmark workflow, see
 [`docs/testing.md`](docs/testing.md). The shared performance workload and

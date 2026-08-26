@@ -53,7 +53,7 @@ execute_process(
   COMMAND
     ${_ulog_command_launcher} "@CMAKE_COMMAND@" -S "${_ulog_consumer_source}" -B
     "${_ulog_consumer_build}" ${_ulog_generator_args} ${_ulog_build_type_arg}
-    ${_ulog_toolchain_args} "-DCMAKE_PREFIX_PATH=${_ulog_install_prefix}"
+    ${_ulog_toolchain_args} "-DCMAKE_PREFIX_PATH=${_ulog_install_prefix}" "-Dfmt_DIR=@fmt_DIR@"
     -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF
   RESULT_VARIABLE _ulog_configure_result
 )

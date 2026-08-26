@@ -6,16 +6,15 @@ Center:
 
 | Package | Version | Bootstrap role |
 | --- | ---: | --- |
-| fmt | 12.1.0 | Formatting dependency smoke test |
+| fmt | 12.1.0 | Public compile-time-checked formatting backend |
 | libuv | 1.51.0 | Cross-platform asynchronous I/O dependency smoke test |
 | GoogleTest | 1.17.0 | Unit tests |
 | Google Benchmark | 1.9.5 | Benchmark harness |
 
-fmt and libuv remain test requirements until production code actually uses
-them. This keeps the initial installed library honest: it does not impose a
-runtime dependency for a version query. Their first production use must promote
-them to package requirements with the correct private/public traits and update
-the installed CMake dependency graph.
+fmt is a public production requirement because `<ulog/log.hpp>` exposes
+compile-time-checked formatting calls. The installed CMake and Conan metadata
+therefore carry fmt transitively. libuv remains a test requirement until the
+production Runtime delivery path uses it.
 
 libuv 1.51 exports `libuv::uv_a` for a static Conan package and `libuv::uv` for
 a shared one. Ulog normalizes both names only inside the dependency smoke test;

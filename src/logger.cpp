@@ -8,9 +8,9 @@ namespace ulog {
 
 namespace {
 
-void DiscardText(void*, Level, const SourceLocation&, void*, detail::TextBuilder) {}
+void DiscardMessage(void*, Level, const SourceLocation&, void*, detail::MessageBuilder) {}
 
-constinit const detail::ProducerOperations kNullProducerOperations{&DiscardText};
+constinit const detail::ProducerOperations kNullProducerOperations{&DiscardMessage};
 constinit detail::LoggerState kNullLoggerState{
     std::atomic<std::uint8_t>{static_cast<std::uint8_t>(Level::kNone)},
     &kNullProducerOperations,
@@ -37,14 +37,14 @@ bool Logger::ShouldLog(Level message_level) const noexcept {
   return IsLevelEnabled(message_level, LoadLevel(*state_));
 }
 
-void Logger::LogText(Level level, const SourceLocation& source, void* factory_context,
-                     detail::TextBuilder build_text) const {
+void Logger::LogMessage(Level level, const SourceLocation& source, void* builder_context,
+                        detail::MessageBuilder build_message) const {
   const detail::LoggerState& state = *state_;
   if (!IsLevelEnabled(level, LoadLevel(state))) {
     return;
   }
-  state.producer_operations->log_text(state.producer_context, level, source, factory_context,
-                                      build_text);
+  state.producer_operations->log_message(state.producer_context, level, source, builder_context,
+                                         build_message);
 }
 
 Logger GetDefaultLogger() noexcept {
