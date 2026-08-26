@@ -59,7 +59,8 @@ set(_ulog_private_test_library ulog::ulog)
 if(BUILD_SHARED_LIBS AND (ULOG_BUILD_UNIT_TESTS OR ULOG_BUILD_STRESS_TESTS))
   # Private symbols stay out of the shared ABI. Tests link the same sources privately.
   add_library(
-    ulog-private-test-support STATIC ${ULOG_PRODUCER_SOURCES} ${ULOG_CONTROL_PRIVATE_SOURCES}
+    ulog-private-test-support STATIC ${ULOG_PRODUCER_SOURCES} ${ULOG_ENCODING_PRIVATE_SOURCES}
+                                     ${ULOG_CONTROL_PRIVATE_SOURCES}
   )
   target_compile_features(ulog-private-test-support PRIVATE cxx_std_20)
   target_include_directories(
@@ -82,6 +83,7 @@ if(ULOG_BUILD_UNIT_TESTS)
     memory_resource_test.cpp
     operation_test.cpp
     producer_kernel_test.cpp
+    raw_encoder_test.cpp
     version_test.cpp
   )
   target_compile_features(ulog-unit-tests PRIVATE cxx_std_20)
@@ -101,6 +103,17 @@ if(ULOG_BUILD_UNIT_TESTS)
   ulog_configure_target(ulog-runtime-tracer)
   add_test(NAME ulog.runtime-tracer COMMAND ulog-runtime-tracer)
   set_tests_properties(ulog.runtime-tracer PROPERTIES LABELS "unit;integration;runtime" TIMEOUT 10)
+
+  add_executable(ulog-runtime-encoded-tracer runtime_encoded_tracer_test.cpp)
+  target_compile_features(ulog-runtime-encoded-tracer PRIVATE cxx_std_20)
+  target_link_libraries(
+    ulog-runtime-encoded-tracer PRIVATE ulog::ulog GTest::gtest_main Threads::Threads
+  )
+  ulog_configure_target(ulog-runtime-encoded-tracer)
+  add_test(NAME ulog.runtime-encoded-tracer COMMAND ulog-runtime-encoded-tracer)
+  set_tests_properties(
+    ulog.runtime-encoded-tracer PROPERTIES LABELS "unit;integration;runtime;encoding" TIMEOUT 10
+  )
 
   foreach(_ulog_cutoff RANGE 0 5)
     add_executable(ulog-log-cutoff-${_ulog_cutoff} log_cutoff_probe.cpp)
@@ -157,6 +170,19 @@ if(ULOG_BUILD_UNIT_TESTS)
     add_test(NAME ulog.runtime-allocation COMMAND ulog-runtime-allocation-test)
     set_tests_properties(
       ulog.runtime-allocation PROPERTIES LABELS "unit;runtime;allocation" TIMEOUT 10
+    )
+
+    add_executable(ulog-runtime-encoded-allocation-test runtime_encoded_allocation_test.cpp)
+    target_compile_features(ulog-runtime-encoded-allocation-test PRIVATE cxx_std_20)
+    target_include_directories(
+      ulog-runtime-encoded-allocation-test PRIVATE "${PROJECT_SOURCE_DIR}/benchmarks"
+    )
+    target_link_libraries(ulog-runtime-encoded-allocation-test PRIVATE ulog::ulog Threads::Threads)
+    ulog_configure_target(ulog-runtime-encoded-allocation-test)
+    add_test(NAME ulog.runtime-encoded-allocation COMMAND ulog-runtime-encoded-allocation-test)
+    set_tests_properties(
+      ulog.runtime-encoded-allocation PROPERTIES LABELS "unit;runtime;encoding;allocation" TIMEOUT
+                                                 10
     )
 
     add_executable(ulog-frontend-performance-test frontend_performance_test.cpp)
@@ -233,6 +259,15 @@ if(ULOG_BUILD_STRESS_TESTS)
   add_test(NAME ulog.runtime-stress COMMAND ulog-runtime-stress)
   set_tests_properties(
     ulog.runtime-stress PROPERTIES LABELS "stress;runtime;concurrency" TIMEOUT 10
+  )
+
+  add_executable(ulog-runtime-encoded-stress stress/runtime_encoded_stress.cpp)
+  target_compile_features(ulog-runtime-encoded-stress PRIVATE cxx_std_20)
+  target_link_libraries(ulog-runtime-encoded-stress PRIVATE ulog::ulog Threads::Threads)
+  ulog_configure_target(ulog-runtime-encoded-stress)
+  add_test(NAME ulog.runtime-encoded-stress COMMAND ulog-runtime-encoded-stress)
+  set_tests_properties(
+    ulog.runtime-encoded-stress PROPERTIES LABELS "stress;runtime;encoding;concurrency" TIMEOUT 10
   )
 endif()
 

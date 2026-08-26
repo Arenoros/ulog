@@ -11,14 +11,18 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <type_traits>
 #include <ulog/runtime.hpp>
 #include <ulog/testing/in_memory_destination.hpp>
+#include <ulog/testing/in_memory_encoded_destination.hpp>
 #include <utility>
+#include <variant>
 
 #include "control/control_reserve.hpp"
 #include "control/thread_role.hpp"
 #include "producer/producer_kernel.hpp"
 #include "testing/in_memory_destination_access.hpp"
+#include "testing/in_memory_encoded_destination_access.hpp"
 
 namespace ulog {
 namespace {
@@ -31,15 +35,19 @@ using detail::producer::KernelConfig;
 using detail::producer::KernelSnapshot;
 using detail::producer::ProducerKernel;
 using detail::testing::DestinationWriteClaim;
+using detail::testing::EncodedDestinationStoreResult;
+using detail::testing::EncodedDestinationWriteClaim;
 using detail::testing::InMemoryDestinationAccess;
+using detail::testing::InMemoryEncodedDestinationAccess;
 
 constexpr std::size_t kMinimumRecordBytes = 128;
 constexpr std::size_t kMaximumControlOperations = 64;
 constexpr auto kWorkerRecheckInterval = 10ms;
 constexpr auto kMaximumLifecycleTimeout = std::chrono::hours{24};
 
+template <typename Destination>
 [[nodiscard]] std::optional<RuntimeCreateFailure> ValidateConfig(
-    const RuntimeConfig& config, const testing::InMemoryDestination& destination) noexcept {
+    const RuntimeConfig& config, const Destination& destination) noexcept {
   if (static_cast<std::uint8_t>(config.threshold) > static_cast<std::uint8_t>(Level::kNone)) {
     return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidThreshold};
   }
@@ -156,11 +164,142 @@ struct ControlAction final {
   bool active{false};
 };
 
+struct RouteDeliveryResult final {
+  ConsumeStatus consumed{ConsumeStatus::kEmpty};
+  std::size_t delivered_bytes{0};
+  bool committed{false};
+};
+
+class RuntimeRoute final {
+ public:
+  explicit RuntimeRoute(testing::InMemoryDestination destination) noexcept
+      : destination_(std::move(destination)) {}
+  explicit RuntimeRoute(testing::InMemoryEncodedDestination destination) noexcept
+      : destination_(std::move(destination)) {}
+
+  RuntimeRoute(RuntimeRoute&& other) noexcept
+      : destination_(std::move(other.destination_)),
+        attached_(std::exchange(other.attached_, false)) {}
+  RuntimeRoute& operator=(RuntimeRoute&&) = delete;
+  RuntimeRoute(const RuntimeRoute&) = delete;
+  RuntimeRoute& operator=(const RuntimeRoute&) = delete;
+
+  ~RuntimeRoute() { Detach(); }
+
+  [[nodiscard]] bool TryAttach() noexcept {
+    attached_ = std::visit(
+        [](auto& destination) {
+          using Destination = std::remove_cvref_t<decltype(destination)>;
+          if constexpr (std::is_same_v<Destination, testing::InMemoryDestination>) {
+            return InMemoryDestinationAccess::TryAttachRuntime(destination);
+          } else {
+            return InMemoryEncodedDestinationAccess::TryAttachRuntime(destination);
+          }
+        },
+        destination_);
+    return attached_;
+  }
+
+  [[nodiscard]] RouteDeliveryResult WaitAndDeliver(
+      ProducerKernel& producer, std::chrono::steady_clock::duration recheck_interval) noexcept {
+    return std::visit(
+        [&](auto& destination) -> RouteDeliveryResult {
+          using Destination = std::remove_cvref_t<decltype(destination)>;
+          if constexpr (std::is_same_v<Destination, testing::InMemoryDestination>) {
+            DestinationWriteClaim claim =
+                InMemoryDestinationAccess::WaitForWrite(destination, recheck_interval);
+            if (!claim) {
+              return {};
+            }
+            const ConsumeStatus consumed = producer.TryConsume(&claim, &StoreStructuredRecord);
+            return {.consumed = consumed,
+                    .delivered_bytes = 0U,
+                    .committed = consumed == ConsumeStatus::kRecord};
+          } else {
+            EncodedDestinationWriteClaim claim =
+                InMemoryEncodedDestinationAccess::WaitForWrite(destination, recheck_interval);
+            if (!claim) {
+              return {};
+            }
+            EncodedStoreContext context{.claim = &claim};
+            const ConsumeStatus consumed = producer.TryConsume(&context, &StoreEncodedRecord);
+            return {.consumed = consumed,
+                    .delivered_bytes = context.result.encoded_bytes,
+                    .committed = context.result.committed};
+          }
+        },
+        destination_);
+  }
+
+  void Stop() noexcept {
+    std::visit(
+        [](auto& destination) {
+          using Destination = std::remove_cvref_t<decltype(destination)>;
+          if constexpr (std::is_same_v<Destination, testing::InMemoryDestination>) {
+            InMemoryDestinationAccess::Stop(destination);
+          } else {
+            InMemoryEncodedDestinationAccess::Stop(destination);
+          }
+        },
+        destination_);
+  }
+
+  [[nodiscard]] std::size_t FixedBackingBytes() const noexcept {
+    return std::visit(
+        [](const auto& destination) {
+          using Destination = std::remove_cvref_t<decltype(destination)>;
+          if constexpr (std::is_same_v<Destination, testing::InMemoryDestination>) {
+            return InMemoryDestinationAccess::FixedBackingBytes(destination);
+          } else {
+            return InMemoryEncodedDestinationAccess::FixedBackingBytes(destination);
+          }
+        },
+        destination_);
+  }
+
+ private:
+  struct EncodedStoreContext final {
+    EncodedDestinationWriteClaim* claim{nullptr};
+    EncodedDestinationStoreResult result{};
+  };
+
+  static void StoreStructuredRecord(void* context, std::uint64_t sequence,
+                                    const detail::producer::RecordView& record) noexcept {
+    static_cast<DestinationWriteClaim*>(context)->Store(sequence, record);
+  }
+
+  static void StoreEncodedRecord(void* context, std::uint64_t sequence,
+                                 const detail::producer::RecordView& record) noexcept {
+    auto& store = *static_cast<EncodedStoreContext*>(context);
+    store.result = store.claim->StoreRaw(sequence, record);
+  }
+
+  void Detach() noexcept {
+    if (!attached_) {
+      return;
+    }
+    std::visit(
+        [](auto& destination) {
+          using Destination = std::remove_cvref_t<decltype(destination)>;
+          if constexpr (std::is_same_v<Destination, testing::InMemoryDestination>) {
+            InMemoryDestinationAccess::DetachRuntime(destination);
+          } else {
+            InMemoryEncodedDestinationAccess::DetachRuntime(destination);
+          }
+        },
+        destination_);
+    attached_ = false;
+  }
+
+  std::variant<testing::InMemoryDestination, testing::InMemoryEncodedDestination> destination_;
+  bool attached_{false};
+};
+
 class RuntimeDomain final {
  public:
-  RuntimeDomain(RuntimeConfig runtime_config, testing::InMemoryDestination runtime_destination)
+  RuntimeDomain(RuntimeConfig runtime_config, RuntimeRoute runtime_route)
       : config_(runtime_config),
-        destination_(std::move(runtime_destination)),
+        route_(std::move(runtime_route)),
         producer_(KernelConfig{
             .threshold = config_.threshold,
             .payload_capacity_bytes = config_.payload_capacity_bytes,
@@ -172,16 +311,7 @@ class RuntimeDomain final {
         control_reserve_(config_.control_operations),
         actions_(std::make_unique<ControlAction[]>(config_.control_operations)) {}
 
-  ~RuntimeDomain() {
-    if (destination_attached_) {
-      InMemoryDestinationAccess::DetachRuntime(destination_);
-    }
-  }
-
-  [[nodiscard]] bool TryAttachDestination() noexcept {
-    destination_attached_ = InMemoryDestinationAccess::TryAttachRuntime(destination_);
-    return destination_attached_;
-  }
+  [[nodiscard]] bool TryAttachDestination() noexcept { return route_.TryAttach(); }
 
   [[nodiscard]] Logger GetLogger() noexcept {
     std::lock_guard lock{state_mutex_};
@@ -210,7 +340,10 @@ class RuntimeDomain final {
         producer.rejected_no_producer + producer.rejected_lane_full + producer.rejected_budget;
     return RuntimeSnapshot{
         .accepted_records = producer.accepted_records,
+        .completed_records = completed_records_.load(std::memory_order_relaxed),
         .delivered_records = delivered_records_.load(std::memory_order_relaxed),
+        .delivered_bytes = delivered_bytes_.load(std::memory_order_relaxed),
+        .encoding_failed_records = encoding_failed_records_.load(std::memory_order_relaxed),
         .rejected_no_producer = producer.rejected_no_producer,
         .rejected_lane_full = producer.rejected_lane_full,
         .rejected_budget = producer.rejected_budget,
@@ -219,8 +352,7 @@ class RuntimeDomain final {
         .logical_retained_bytes = producer.logical_retained_bytes,
         .physical_retained_bytes = producer.physical_retained_bytes,
         .payload_capacity_bytes = producer.payload_capacity_bytes,
-        .fixed_backing_bytes = producer.fixed_backing_bytes +
-                               InMemoryDestinationAccess::FixedBackingBytes(destination_) +
+        .fixed_backing_bytes = producer.fixed_backing_bytes + route_.FixedBackingBytes() +
                                controls.node_backing_bytes + controls.dispatcher_state_bytes +
                                config_.control_operations * sizeof(ControlAction),
         .admission_open = producer_.IsAdmissionOpen(),
@@ -240,9 +372,13 @@ class RuntimeDomain final {
       std::lock_guard lock{state_mutex_};
       if (!accepting_actions_) {
         complete_immediately = true;
-        immediate_outcome = destruction_stop_requested_.load(std::memory_order_acquire)
-                                ? OperationOutcome::kCancelled
-                                : OperationOutcome::kSucceeded;
+        if (destruction_stop_requested_.load(std::memory_order_acquire)) {
+          immediate_outcome = OperationOutcome::kCancelled;
+        } else if (delivery_failed_) {
+          immediate_outcome = OperationOutcome::kFailed;
+        } else {
+          immediate_outcome = OperationOutcome::kSucceeded;
+        }
       } else {
         if (kind == ControlActionKind::kShutdown && !shutdown_requested_) {
           shutdown_requested_ = true;
@@ -303,14 +439,20 @@ class RuntimeDomain final {
 
       const KernelSnapshot snapshot = producer_.GetSnapshot();
       if (snapshot.retained_records != 0U) {
-        DestinationWriteClaim destination =
-            InMemoryDestinationAccess::WaitForWrite(destination_, kWorkerRecheckInterval);
-        if (!destination) {
-          continue;
-        }
-        const ConsumeStatus consumed = producer_.TryConsume(&destination, &StoreRecord);
-        if (consumed == ConsumeStatus::kRecord) {
-          delivered_records_.fetch_add(1, std::memory_order_relaxed);
+        const RouteDeliveryResult delivery =
+            route_.WaitAndDeliver(producer_, kWorkerRecheckInterval);
+        if (delivery.consumed == ConsumeStatus::kRecord) {
+          completed_records_.fetch_add(1, std::memory_order_relaxed);
+          if (delivery.committed) {
+            delivered_records_.fetch_add(1, std::memory_order_relaxed);
+            delivered_bytes_.fetch_add(delivery.delivered_bytes, std::memory_order_relaxed);
+          } else {
+            encoding_failed_records_.fetch_add(1, std::memory_order_relaxed);
+            PrepareDeliveryFailure();
+            CompleteActions(OperationOutcome::kFailed);
+            DrainDiscardedRecords();
+            break;
+          }
           continue;
         }
       }
@@ -352,18 +494,13 @@ class RuntimeDomain final {
   void RequestDestructionStop() noexcept {
     destruction_stop_requested_.store(true, std::memory_order_release);
     producer_.CloseAdmission();
-    InMemoryDestinationAccess::Stop(destination_);
+    route_.Stop();
     Notify();
   }
 
  private:
   static void NotifyConsumer(void* context) noexcept {
     static_cast<RuntimeDomain*>(context)->Notify();
-  }
-
-  static void StoreRecord(void* context, std::uint64_t sequence,
-                          const detail::producer::RecordView& record) noexcept {
-    static_cast<DestinationWriteClaim*>(context)->Store(sequence, record);
   }
 
   static void DiscardRecord(void*, std::uint64_t, const detail::producer::RecordView&) noexcept {}
@@ -388,6 +525,16 @@ class RuntimeDomain final {
     std::lock_guard lock{state_mutex_};
     accepting_actions_ = false;
     CloseAdmissionLocked();
+  }
+
+  void PrepareDeliveryFailure() noexcept {
+    {
+      std::lock_guard lock{state_mutex_};
+      delivery_failed_ = true;
+      accepting_actions_ = false;
+      CloseAdmissionLocked();
+    }
+    route_.Stop();
   }
 
   [[nodiscard]] std::optional<OperationCompletion> PopReadyDrain(std::uint64_t delivered) noexcept {
@@ -463,8 +610,7 @@ class RuntimeDomain final {
   }
 
   RuntimeConfig config_;
-  testing::InMemoryDestination destination_;
-  bool destination_attached_{false};
+  RuntimeRoute route_;
   ProducerKernel producer_;
   ControlReserve control_reserve_;
   std::unique_ptr<ControlAction[]> actions_;
@@ -477,9 +623,13 @@ class RuntimeDomain final {
   bool worker_stopped_{false};
   bool accepting_actions_{true};
   bool shutdown_requested_{false};
+  bool delivery_failed_{false};
   std::atomic<bool> destruction_stop_requested_{false};
   std::atomic<bool> worker_running_{false};
+  std::atomic<std::uint64_t> completed_records_{0};
   std::atomic<std::uint64_t> delivered_records_{0};
+  std::atomic<std::uint64_t> delivered_bytes_{0};
+  std::atomic<std::uint64_t> encoding_failed_records_{0};
   std::atomic<std::uint64_t> wake_epoch_{0};
   std::mutex wake_mutex_;
   std::condition_variable wake_condition_;
@@ -490,6 +640,37 @@ enum class WorkerStartStatus : std::uint8_t { kStarted, kThreadFailed, kTimedOut
 }  // namespace
 
 struct Runtime::Impl final {
+  template <typename Destination>
+  [[nodiscard]] static RuntimeCreateResult Create(RuntimeConfig config,
+                                                  Destination destination) noexcept {
+    if (const auto failure = ValidateConfig(config, destination)) {
+      return {.failure = failure};
+    }
+
+    try {
+      auto domain = std::make_shared<RuntimeDomain>(config, RuntimeRoute{std::move(destination)});
+      if (!domain->TryAttachDestination()) {
+        return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidDestination}};
+      }
+      auto impl = std::make_unique<Impl>(domain, config.destruction_timeout);
+      switch (impl->Start(config.startup_timeout)) {
+        case WorkerStartStatus::kStarted:
+          return {.runtime = std::unique_ptr<Runtime>{new Runtime{std::move(impl)}}};
+        case WorkerStartStatus::kThreadFailed:
+          return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kWorkerStartFailed}};
+        case WorkerStartStatus::kTimedOut:
+          return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kWorkerStartupTimedOut}};
+      }
+    } catch (const std::bad_alloc&) {
+      return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kAllocationFailed}};
+    } catch (const std::system_error&) {
+      return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kWorkerStartFailed}};
+    } catch (...) {
+      return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kAllocationFailed}};
+    }
+    return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kWorkerStartFailed}};
+  }
+
   Impl(std::shared_ptr<RuntimeDomain> runtime_domain,
        std::chrono::milliseconds runtime_destruction_timeout) noexcept
       : domain(std::move(runtime_domain)), destruction_timeout(runtime_destruction_timeout) {}
@@ -532,32 +713,12 @@ std::string_view RuntimeCreateFailure::HowToFix() const noexcept { return Failur
 
 RuntimeCreateResult Runtime::Create(RuntimeConfig config,
                                     testing::InMemoryDestination destination) noexcept {
-  if (const auto failure = ValidateConfig(config, destination)) {
-    return {.failure = failure};
-  }
+  return Impl::Create(config, std::move(destination));
+}
 
-  try {
-    auto domain = std::make_shared<RuntimeDomain>(config, std::move(destination));
-    if (!domain->TryAttachDestination()) {
-      return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidDestination}};
-    }
-    auto impl = std::make_unique<Impl>(domain, config.destruction_timeout);
-    switch (impl->Start(config.startup_timeout)) {
-      case WorkerStartStatus::kStarted:
-        return {.runtime = std::unique_ptr<Runtime>{new Runtime{std::move(impl)}}};
-      case WorkerStartStatus::kThreadFailed:
-        return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kWorkerStartFailed}};
-      case WorkerStartStatus::kTimedOut:
-        return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kWorkerStartupTimedOut}};
-    }
-  } catch (const std::bad_alloc&) {
-    return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kAllocationFailed}};
-  } catch (const std::system_error&) {
-    return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kWorkerStartFailed}};
-  } catch (...) {
-    return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kAllocationFailed}};
-  }
-  return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kWorkerStartFailed}};
+RuntimeCreateResult Runtime::Create(RuntimeConfig config,
+                                    testing::InMemoryEncodedDestination destination) noexcept {
+  return Impl::Create(config, std::move(destination));
 }
 
 Runtime::Runtime(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}

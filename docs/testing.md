@@ -5,8 +5,8 @@ The repository establishes seven independent test categories:
 - `unit`: public version and native frontend seams, compile-time erasure,
   Null-Logger allocation/ownership guarantees, atomic Default Logger exchange,
   stale-target completion, bounded producer transactions, Operation polling,
-  deadlines, callback dispatch, control-reserve exhaustion, in-memory Runtime
-  lifecycle and saturation, and test memory resources;
+  deadlines, callback dispatch, control-reserve exhaustion, structured and Raw
+  in-memory Runtime lifecycle, saturation, exact encoding, and test memory resources;
 - `integration`/`package`: install Ulog, configure a copied external project,
   link only `ulog::ulog`, and exercise the frontend and in-memory Runtime tracer
   through installed public headers;
@@ -14,8 +14,9 @@ The repository establishes seven independent test categories:
   the planned libuv dependency boundary;
 - `stress`: deterministic concurrent checks for allocation instrumentation,
   linearizable Default Logger exchange, stale-target dispatch, producer-lane
-  saturation, FIFO publication, byte conservation, retirement, and race-free
-  weak snapshots, plus completion/callback registration races;
+  saturation, FIFO publication and Raw delivery, byte conservation, retirement,
+  bounded destruction, and race-free weak snapshots, plus completion/callback
+  registration races;
 - `tooling`: regression checks for dependency-graph enforcement and benchmark
   result collection, plus the frontend atomic-load and producer hot-path
   source-shape contract;
@@ -42,10 +43,10 @@ the standalone Conan package consumer. Full controlled benchmark execution is
 never part of hosted CI. A timeout is a diagnosable failure, not permission to
 silently raise the limit: first identify the stalled phase or move intentional
 long-running evidence collection to the externally bounded controlled runner.
-The production producer, Operation, and Runtime allocation tests and randomized
-stress tests have 10-second CTest limits; stress executables also have their own
-five-second watchdogs so a stalled thread fails with a focused diagnostic. The
-Default Logger concurrency stress uses the same five-second watchdog and
+The production producer, Operation, structured/Raw Runtime allocation tests, and
+randomized stress tests have 10-second CTest limits; stress executables also have
+their own five-second watchdogs so a stalled thread fails with a focused diagnostic.
+The Default Logger concurrency stress uses the same five-second watchdog and
 10-second CTest limit. The frontend benchmark adds no hosted job: its five-row
 smoke body runs inside the existing static package build with a 30-second CTest
 limit. Its controlled-schedule listing is capped at 10 seconds by the script and
@@ -55,12 +56,13 @@ limit shown in `docs/benchmarking.md`.
 
 ## In-memory Runtime test seam
 
-The installed [`InMemoryDestination`](runtime.md#observing-records) is a
-deterministic pull seam, not a generic production Sink. `TryTake()` returns the
-lowest ready admission sequence without blocking, and each `ObservedRecord`
-pins its fixed destination slot until moved from or destroyed. A full set of
-ready or held slots therefore applies worker-side backpressure while producer
-admission remains non-blocking.
+The installed [`InMemoryDestination`](runtime.md#observing-records) and
+[`InMemoryEncodedDestination`](runtime.md#observing-raw-bytes) are deterministic
+pull seams, not generic production Sinks. `TryTake()` returns the lowest ready
+admission sequence without blocking, and each move-only observation pins its fixed
+destination slot until moved from or destroyed. A full set of ready or held slots
+therefore applies worker-side backpressure while producer admission remains
+non-blocking.
 
 Tests can construct the destination with `start_paused=true` to hold the worker
 before its first destination write, fill bounded ingress deterministically, and

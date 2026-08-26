@@ -145,12 +145,27 @@ class FieldView final {
   [[nodiscard]] bool IsNull() const noexcept;
 
  private:
+  friend class FieldCursor;
   friend class RecordView;
   FieldView(const void* storage, std::uint32_t offset) noexcept
       : storage_(storage), offset_(offset) {}
 
   const void* storage_{nullptr};
   std::uint32_t offset_{0};
+};
+
+class FieldCursor final {
+ public:
+  [[nodiscard]] std::optional<FieldView> Next() noexcept;
+
+ private:
+  friend class RecordView;
+  FieldCursor(const void* storage, std::uint32_t offset, std::uint32_t remaining) noexcept
+      : storage_(storage), offset_(offset), remaining_(remaining) {}
+
+  const void* storage_{nullptr};
+  std::uint32_t offset_{0};
+  std::uint32_t remaining_{0};
 };
 
 class RecordView final {
@@ -165,6 +180,7 @@ class RecordView final {
   [[nodiscard]] std::string_view message() const noexcept;
   [[nodiscard]] bool truncated() const noexcept;
   [[nodiscard]] std::size_t field_count() const noexcept;
+  [[nodiscard]] FieldCursor Fields() const noexcept;
   [[nodiscard]] std::optional<FieldView> FieldAt(std::size_t index) const noexcept;
   [[nodiscard]] std::size_t serialized_bytes() const noexcept { return serialized_bytes_; }
   [[nodiscard]] std::size_t accounting_charge_bytes() const noexcept {

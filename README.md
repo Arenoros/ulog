@@ -3,8 +3,9 @@
 Ulog is a standalone, performance-oriented C++20 logging library under active
 development. Its current production interface exposes native levels, source
 locations, a cheap Logger handle, bounded Operation completion primitives, and
-the basic text/fmt `LOG*` macro family. The installed package also exposes a
-bounded single-route Runtime tracer backed by an in-memory test destination.
+the basic text/fmt `LOG*` macro family. The installed package also exposes
+bounded single-route Runtime tracers backed by structured-record and Raw-encoded
+in-memory test destinations.
 The initial process-wide target is a static Null Logger. Applications can
 atomically replace that non-owning target; Runtime does not install its Logger
 automatically.

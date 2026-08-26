@@ -77,8 +77,9 @@ producer source files; the frontend structural gate enforces that direction.
 ## Runtime actions
 
 `Runtime::Drain()` captures an accepted-record watermark and completes after the
-single worker has copied every Record through that watermark into the in-memory
-destination. It leaves admission open. `Runtime::Shutdown()` closes admission,
+single worker has committed every Record through that watermark into the selected
+structured or Raw-encoded in-memory destination. It leaves admission open.
+`Runtime::Shutdown()` closes admission,
 delivers all already accepted Records, completes, and stops the worker. A
 successful Drain or Shutdown does not mean an application has taken or released
 the destination's observed Records.

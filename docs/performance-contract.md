@@ -116,11 +116,11 @@ Context capture occurs only after admission capacity has been reserved. Encoder
 and Sink extension code never executes on producer threads, and Encoder never
 executes on the libuv loop thread.
 
-The current [in-memory Runtime tracer](runtime.md) exercises the bounded
-producer, single FIFO worker, control reserve, and lifecycle portions of this
-contract. Generic Encoders, Sinks, ContextProviders, libuv I/O, multiple routes,
-and batching remain out of scope for that tracer; route and I/O requirements in
-this document constrain their later implementations.
+The current [in-memory Runtime tracers](runtime.md) exercise the bounded producer,
+single FIFO worker, control reserve, lifecycle, and built-in Raw encoding portions
+of this contract. Generic Encoders, Sinks, ContextProviders, libuv I/O, multiple
+routes, and batching remain out of scope; route and I/O requirements in this
+document constrain their later implementations.
 
 ## Statistics overhead
 
@@ -160,8 +160,8 @@ this document constrain their later implementations.
 ## Ordering
 
 - Each route and sink observes its selected Records in FIFO admission order.
-- The current tracer has one immutable route and its in-memory destination
-  exposes ready Records in FIFO admission order.
+- Each current tracer has one immutable route, and its structured or Raw-encoded
+  in-memory destination exposes ready entries in FIFO admission order.
 - Flush and Reopen provide explicit ordered barriers.
 - Completion order between independent routes is not guaranteed, allowing the
   implementation to execute routes concurrently.

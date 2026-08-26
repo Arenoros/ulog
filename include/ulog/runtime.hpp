@@ -15,7 +15,8 @@ namespace ulog {
 
 namespace testing {
 class InMemoryDestination;
-}
+class InMemoryEncodedDestination;
+}  // namespace testing
 
 struct RuntimeConfig final {
   Level threshold{Level::kInfo};
@@ -54,7 +55,10 @@ struct RuntimeCreateFailure final {
 
 struct RuntimeSnapshot final {
   std::uint64_t accepted_records{0};
+  std::uint64_t completed_records{0};
   std::uint64_t delivered_records{0};
+  std::uint64_t delivered_bytes{0};
+  std::uint64_t encoding_failed_records{0};
   std::uint64_t rejected_no_producer{0};
   std::uint64_t rejected_lane_full{0};
   std::uint64_t rejected_budget{0};
@@ -74,6 +78,8 @@ class Runtime final {
  public:
   [[nodiscard]] static ULOG_API RuntimeCreateResult
   Create(RuntimeConfig config, testing::InMemoryDestination destination) noexcept;
+  [[nodiscard]] static ULOG_API RuntimeCreateResult
+  Create(RuntimeConfig config, testing::InMemoryEncodedDestination destination) noexcept;
 
   Runtime(const Runtime&) = delete;
   Runtime& operator=(const Runtime&) = delete;

@@ -529,6 +529,17 @@ std::optional<bool> FieldView::AsBool() const noexcept {
 
 bool FieldView::IsNull() const noexcept { return kind() == FieldKind::kNull; }
 
+std::optional<FieldView> FieldCursor::Next() noexcept {
+  if (storage_ == nullptr || remaining_ == 0U || offset_ == 0U) {
+    remaining_ = 0U;
+    return std::nullopt;
+  }
+  const std::uint32_t current_offset = offset_;
+  offset_ = record::Field(storage_, current_offset).next_offset;
+  --remaining_;
+  return FieldView{storage_, current_offset};
+}
+
 Level RecordView::level() const noexcept {
   return static_cast<Level>(record::Header(storage_).level);
 }
@@ -566,16 +577,20 @@ std::size_t RecordView::field_count() const noexcept {
   return record::Header(storage_).field_count;
 }
 
-std::optional<FieldView> RecordView::FieldAt(std::size_t index) const noexcept {
+FieldCursor RecordView::Fields() const noexcept {
   const auto header = record::Header(storage_);
-  if (storage_ == nullptr || index >= header.field_count) {
+  return FieldCursor{storage_, header.first_field_offset, header.field_count};
+}
+
+std::optional<FieldView> RecordView::FieldAt(std::size_t index) const noexcept {
+  auto fields = Fields();
+  if (index >= field_count()) {
     return std::nullopt;
   }
-  std::uint32_t offset = header.first_field_offset;
   for (std::size_t current = 0; current < index; ++current) {
-    offset = record::Field(storage_, offset).next_offset;
+    static_cast<void>(fields.Next());
   }
-  return FieldView{storage_, offset};
+  return fields.Next();
 }
 
 }  // namespace ulog::detail::producer

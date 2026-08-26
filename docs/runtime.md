@@ -1,24 +1,29 @@
 # In-memory Runtime tracer
 
 The installed package provides a concrete, bounded `ulog::Runtime` that moves
-accepted native Records through one FIFO worker route into
-`ulog::testing::InMemoryDestination`. This is the first executable Runtime seam:
-it makes admission, ownership, ordering, control, and shutdown behavior observable
-without introducing a generic destination abstraction or asynchronous I/O.
+accepted native Records through one FIFO worker route into either
+`ulog::testing::InMemoryDestination` or
+`ulog::testing::InMemoryEncodedDestination`. The structured destination exposes
+Record contents; the encoded destination runs the built-in Raw encoder on the
+worker and exposes exact bytes. These are executable Runtime test seams: they
+make admission, ownership, ordering, encoding, control, and shutdown behavior
+observable without introducing a generic destination abstraction or
+asynchronous I/O.
 
 Include the public interfaces with:
 
 ```cpp
 #include <ulog/log.hpp>
 #include <ulog/runtime.hpp>
+#include <ulog/testing/in_memory_encoded_destination.hpp>
 #include <ulog/testing/in_memory_destination.hpp>
 ```
 
 ## Construction and ownership
 
-Construct the destination first, then pass a copy to `Runtime::Create`. Destination
-copies share the same bounded state, so the application can keep its copy for
-observation while Runtime owns another:
+Construct one destination first, then pass a copy to the matching
+`Runtime::Create` overload. Destination copies share the same bounded state, so
+the application can keep its copy for observation while Runtime owns another:
 
 ```cpp
 using namespace std::chrono_literals;
@@ -76,12 +81,19 @@ The current tracer accepts these Runtime bounds:
 - the destination has non-zero capacity and a `maximum_record_bytes` at least as
   large as the Runtime value.
 
-`RuntimeSnapshot` exposes weakly consistent admission, delivery, rejection, retained
-payload, and lifecycle counters. `fixed_backing_bytes` reports the capacity-scaled
-ingress Record slots, destination payload and slot metadata, control nodes, and
-action table separately from live retained bytes. It is stable for a Runtime but is
-not a process-memory total: constant-size Runtime objects, allocation bookkeeping,
-platform synchronization objects, and thread stacks are excluded.
+`RuntimeSnapshot` exposes weakly consistent admission, completion, delivery,
+rejection, retained-payload, and lifecycle counters. `completed_records` counts
+Records whose route attempt finished; `delivered_records` counts committed
+destination entries. `delivered_bytes` is the committed byte total for the Raw
+route and remains zero for the structured route. `encoding_failed_records`
+counts internal encoding-invariant failures; such a failure commits no partial
+frame and fails pending Drain or Shutdown Operations.
+
+`fixed_backing_bytes` reports the capacity-scaled ingress Record slots,
+destination payload and slot metadata, control nodes, and action table separately
+from live retained bytes. It is stable for a Runtime but is not a process-memory
+total: constant-size Runtime objects, allocation bookkeeping, platform
+synchronization objects, and thread stacks are excluded.
 
 ## Logger registration and admission
 
@@ -129,6 +141,25 @@ ingress fills.
 The fixed destination backing and drop-newest behavior are the concrete tracer form
 of [ADR 0010](adr/0010-bound-pipeline-memory-and-configure-shedding.md).
 
+### Observing Raw bytes
+
+`InMemoryEncodedDestination` has the same one-shot attachment, pause, FIFO, and
+slot-pinning behavior. Its `maximum_record_bytes` is the Structured Record bound,
+not an independently undersized output limit. Construction derives each encoded
+slot as `2 * maximum_record_bytes + 11` bytes, checks all arithmetic before
+allocation, and reports the value through `MaximumEncodedRecordBytes()`. This
+reserve covers full Raw escaping and framing, so every valid Record either commits
+one complete frame or triggers the terminal internal-failure path; it is never
+silently truncated a second time.
+
+`TryTake()` returns a move-only `ObservedEncodedRecord`. `Bytes()` remains valid
+until that observation is moved from or destroyed. Raw frames begin with `tskv`,
+append ordered fields as tab-separated `key=value` pairs, append `text` last, and
+end with exactly one LF. NUL, tab, CR, LF, and backslash use TSKV escaping; `=` is
+also escaped in keys. Raw intentionally omits timestamp, level, module, and source
+metadata. Encoding executes synchronously inside the worker's consume callback;
+no `RecordView` or borrowed field survives that callback.
+
 `start_paused` is a deterministic test control. While paused, the worker cannot claim
 any destination slot; `Resume()` releases that gate permanently. This makes ingress
 saturation and pre-evaluation rejection reproducible without timing assumptions. It
@@ -143,7 +174,7 @@ succeed when payload ingress is saturated, although it fails explicitly when eve
 control slot is already retained.
 
 - `Drain()` captures the accepted-record watermark at the call and completes after
-  every Record through that watermark has been copied into the destination. It does
+  every Record through that watermark has been committed to the destination. It does
   not require the application to remove Records that already fit, and it leaves
   admission open. Ready and observed Records still occupy destination slots: when
   the watermark exceeds the available slots, Drain waits for the application to
@@ -163,8 +194,9 @@ shared internal state so that it cannot access the destroyed Runtime object. Cal
 
 ## Current boundary
 
-This tracer intentionally has one immutable route, one worker, drop-newest admission,
-and the bounded in-memory test destination. Its fixed topology follows
+Each tracer intentionally has one immutable route, one worker, drop-newest admission,
+and one bounded in-memory test destination. The private route selects either the
+structured copy or built-in Raw encoding at construction. Its fixed topology follows
 [ADR 0015](adr/0015-keep-route-topology-immutable.md). The following remain later
 roadmap work:
 

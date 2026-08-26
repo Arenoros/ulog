@@ -13,7 +13,7 @@ Center:
 
 fmt is a public production requirement because `<ulog/log.hpp>` exposes
 compile-time-checked formatting calls. The installed CMake and Conan metadata
-therefore carry fmt transitively. The current in-memory Runtime tracer has no
+therefore carry fmt transitively. The current in-memory Runtime tracers have no
 I/O dependency, so libuv remains a test requirement until a later production
 filesystem, network, or IPC delivery path uses it.
 

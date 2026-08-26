@@ -35,14 +35,17 @@ set(ULOG_PRODUCER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/producer/producer_kernel.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/producer/record_storage.cpp"
 )
+set(ULOG_ENCODING_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/encoding/raw_encoder.cpp")
 set(ULOG_CONTROL_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/control/control_reserve.cpp"
                                  "${CMAKE_CURRENT_SOURCE_DIR}/src/control/thread_role.cpp"
 )
 add_library(
   ulog
+  ${ULOG_ENCODING_PRIVATE_SOURCES}
   src/logger.cpp
   src/operation.cpp
   src/runtime.cpp
+  src/testing/in_memory_encoded_destination.cpp
   src/testing/in_memory_destination.cpp
   ${ULOG_PRODUCER_SOURCES}
   ${ULOG_CONTROL_PRIVATE_SOURCES}
@@ -122,6 +125,7 @@ install(
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ulog"
 )
 install(FILES include/ulog/testing/in_memory_destination.hpp
+              include/ulog/testing/in_memory_encoded_destination.hpp
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ulog/testing"
 )
 install(
