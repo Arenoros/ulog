@@ -57,6 +57,9 @@ int main() {
   std::size_t message_evaluations = 0;
 
   for (std::size_t iteration = 0; iteration < 10'000; ++iteration) {
+    if (ulog::ExchangeDefaultLogger(initial_logger) != initial_logger) {
+      return 2;
+    }
     const ulog::Logger logger = ulog::GetDefaultLogger();
     logger.Log<ulog::Level::kInfo>(location, [] { return MissingMessageDefinition(); });
     logger.Log<ulog::Level::kCritical>(location, [&]() -> std::string_view {
@@ -66,10 +69,10 @@ int main() {
   }
 
   if (message_evaluations != 0) {
-    return 2;
+    return 3;
   }
   if (g_allocations != allocations_before || g_deallocations != deallocations_before) {
-    return 3;
+    return 4;
   }
   return 0;
 }

@@ -42,8 +42,34 @@ claims a producer-local ingress cell and reserves the complete configured
 worst-case Record charge before evaluating the factory, then copies the source
 and message into bounded owned storage. Rejected calls therefore preserve the
 lazy contract. Runtime construction and ownership of that private kernel remain
-later roadmap work, so the installed public package still exposes only the Null
-and Default Logger accessors.
+later roadmap work.
+
+## Default Logger exchange
+
+`ExchangeDefaultLogger()` atomically installs a non-owning Logger and returns
+the previous target. The exchange is one lock-free pointer operation: it takes
+no lock, performs no reference counting or reclamation, and does not wait for
+producers that already loaded the previous target. Such producers finish the
+whole call against that still-live Logger; an ordinary Logger never reloads the
+process-wide target or checks a forwarding pointer.
+
+No ownership is transferred. Every Logger state ever installed as the Default
+Logger must remain alive at a stable address until application termination,
+including after replacement. A future Runtime will own its Logger states for
+that lifetime. Until Runtime construction is public, the initial Null Logger is
+the only non-test target supplied by the installed package.
+
+An unnamed call uses one loaded handle for filtering and dispatch:
+
+```cpp
+const ulog::Logger target = ulog::GetDefaultLogger();
+target.Log<ulog::Level::kInfo>(ulog::SourceLocation::Current(), []() -> std::string_view {
+  return "one stable target for the complete call";
+});
+```
+
+The later basic `LOG*` macro slice will preserve this single-load form after
+compile-time erasure.
 
 ## Compile-time cutoff
 
@@ -54,6 +80,6 @@ still type-checks the factory contract but does not dispatch or invoke its body.
 `kNone` calls compile and are always suppressed. Invalid cutoff values fail
 compilation with a correction hint.
 
-The complete basic LOG macro family is a later roadmap slice. Its erased
+The complete basic `LOG*` macro family is a later roadmap slice. Its erased
 unnamed forms will apply the same cutoff before loading the process-wide Default
 Logger.

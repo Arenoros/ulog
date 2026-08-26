@@ -11,6 +11,7 @@ std::string_view MissingInstalledMessageDefinition();
 int main() {
   const ulog::Version version = ulog::GetVersion();
   const ulog::Logger logger = ulog::GetDefaultLogger();
+  const ulog::Logger previous_default = ulog::ExchangeDefaultLogger(logger);
   const ulog::SourceLocation location = ulog::SourceLocation::Current();
   std::size_t message_evaluations = 0;
 
@@ -20,10 +21,10 @@ int main() {
     return "must not be evaluated";
   });
 
-  const bool valid = version == ulog::kVersion && logger == ulog::GetNullLogger() &&
-                     logger == LoadInstalledDefaultLogger() &&
-                     logger.GetLevel() == ulog::Level::kNone &&
-                     !logger.ShouldLog(ulog::Level::kCritical) && message_evaluations == 0 &&
-                     location.GetLine() != 0 && !location.GetFileName().empty();
+  const bool valid =
+      version == ulog::kVersion && logger == ulog::GetNullLogger() && previous_default == logger &&
+      ulog::GetDefaultLogger() == logger && logger == LoadInstalledDefaultLogger() &&
+      logger.GetLevel() == ulog::Level::kNone && !logger.ShouldLog(ulog::Level::kCritical) &&
+      message_evaluations == 0 && location.GetLine() != 0 && !location.GetFileName().empty();
   return valid ? 0 : 1;
 }

@@ -9,6 +9,7 @@ std::string_view MissingPackagedMessageDefinition();
 
 int main() {
   const ulog::Logger logger = ulog::GetDefaultLogger();
+  const ulog::Logger previous_default = ulog::ExchangeDefaultLogger(logger);
   const ulog::SourceLocation location = ulog::SourceLocation::Current();
   std::size_t message_evaluations = 0;
 
@@ -19,6 +20,7 @@ int main() {
   });
 
   const bool valid = ulog::GetVersion() == ulog::kVersion && logger == ulog::GetNullLogger() &&
+                     previous_default == logger && ulog::GetDefaultLogger() == logger &&
                      logger.GetLevel() == ulog::Level::kNone && message_evaluations == 0 &&
                      location.GetLine() != 0;
   return valid ? 0 : 1;

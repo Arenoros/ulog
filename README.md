@@ -3,8 +3,8 @@
 Ulog is a standalone, performance-oriented C++20 logging library under active
 development. Its first production interface exposes native levels, source
 locations, and a cheap Logger handle whose initial process-wide target is a
-static Null Logger. Runtime construction and Record delivery are not implemented
-yet.
+static Null Logger. Applications can atomically replace that non-owning target;
+Runtime construction and Record delivery are not implemented yet.
 
 The design preserves the capabilities of the pinned reference implementation
 without source or API compatibility and without depending on that project.
@@ -46,10 +46,12 @@ logger.Log<ulog::Level::kInfo>(ulog::SourceLocation::Current(), []() -> std::str
 });
 ```
 
-Until an application-owned Runtime and Default Logger exchange are introduced,
-the initial target is the Null Logger and suppresses the factory without
-invoking its body. See [`docs/native-frontend.md`](docs/native-frontend.md) for
-the complete current contract and compile-time cutoff.
+The initial target is the Null Logger and suppresses the factory without
+invoking its body. `ExchangeDefaultLogger()` installs a stable non-owning Logger
+and returns the previous target. Every installed target must remain alive at a
+stable address until application termination, even after replacement. See
+[`docs/native-frontend.md`](docs/native-frontend.md) for the complete current
+contract and compile-time cutoff.
 
 For the full Conan, unit, stress, dependency, and benchmark workflow, see
 [`docs/testing.md`](docs/testing.md). The shared performance workload and

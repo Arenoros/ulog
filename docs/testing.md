@@ -3,15 +3,17 @@
 The repository establishes seven independent test categories:
 
 - `unit`: public version and native frontend seams, compile-time erasure,
-  Null-Logger allocation/ownership guarantees, bounded producer transactions,
-  and test memory resources;
+  Null-Logger allocation/ownership guarantees, atomic Default Logger exchange,
+  stale-target completion, bounded producer transactions, and test memory
+  resources;
 - `integration`/`package`: install Ulog, configure a copied external project,
   link only `ulog::ulog`, and exercise the frontend across translation units;
 - `dependencies`: compile and run fmt/libuv integration without linking those
   dependencies into the shipped bootstrap library;
 - `stress`: deterministic concurrent checks for allocation instrumentation,
-  producer-lane saturation, FIFO publication, byte conservation, retirement,
-  and race-free weak snapshots;
+  linearizable Default Logger exchange, stale-target dispatch, producer-lane
+  saturation, FIFO publication, byte conservation, retirement, and race-free
+  weak snapshots;
 - `tooling`: regression checks for dependency-graph enforcement and benchmark
   result collection;
 - `migration`: schema, provenance, manifest-ID, and integrity validation for
@@ -38,7 +40,9 @@ silently raise the limit: first identify the stalled phase or move intentional
 long-running evidence collection to the externally bounded controlled runner.
 The production producer allocation test and randomized stress test have
 10-second CTest limits; the stress executable also has its own five-second
-watchdog so a stalled thread fails with a focused diagnostic.
+watchdog so a stalled thread fails with a focused diagnostic. The Default
+Logger concurrency stress uses the same five-second watchdog and 10-second
+CTest limit.
 
 The dependency-free presets build the library, architecture check, and installed
 consumer:

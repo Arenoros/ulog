@@ -23,6 +23,14 @@ class Logger;
 [[nodiscard]] ULOG_API Logger GetDefaultLogger() noexcept;
 [[nodiscard]] ULOG_API Logger GetNullLogger() noexcept;
 
+/// Atomically replaces the process-wide Default Logger and returns the previous target.
+///
+/// No ownership is transferred. The state referenced by every Logger ever passed here must
+/// remain alive at a stable address until application termination, including after replacement.
+/// Concurrent calls that already loaded the previous target complete against it; replacement
+/// performs no reclamation or quiescence wait.
+ULOG_API Logger ExchangeDefaultLogger(Logger stable_logger) noexcept;
+
 namespace detail {
 
 struct LoggerState;
@@ -84,6 +92,7 @@ class Logger final {
                         detail::TextBuilder build_text) const;
 
   friend struct detail::LoggerAccess;
+  friend Logger ExchangeDefaultLogger(Logger stable_logger) noexcept;
 
   const detail::LoggerState* state_;
 };

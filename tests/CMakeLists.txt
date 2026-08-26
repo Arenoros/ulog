@@ -63,8 +63,8 @@ endif()
 if(ULOG_BUILD_UNIT_TESTS)
   find_package(GTest CONFIG REQUIRED)
   add_executable(
-    ulog-unit-tests default_logger_probe.cpp frontend_test.cpp memory_resource_test.cpp
-                    producer_kernel_test.cpp version_test.cpp
+    ulog-unit-tests default_logger_probe.cpp default_logger_test.cpp frontend_test.cpp
+                    memory_resource_test.cpp producer_kernel_test.cpp version_test.cpp
   )
   target_compile_features(ulog-unit-tests PRIVATE cxx_std_20)
   target_include_directories(
@@ -100,6 +100,16 @@ if(ULOG_BUILD_UNIT_TESTS)
 endif()
 
 if(ULOG_BUILD_STRESS_TESTS)
+  add_executable(ulog-default-logger-stress stress/default_logger_stress.cpp)
+  target_compile_features(ulog-default-logger-stress PRIVATE cxx_std_20)
+  target_include_directories(ulog-default-logger-stress PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_link_libraries(ulog-default-logger-stress PRIVATE ulog::ulog Threads::Threads)
+  ulog_configure_target(ulog-default-logger-stress)
+  add_test(NAME ulog.default-logger-stress COMMAND ulog-default-logger-stress)
+  set_tests_properties(
+    ulog.default-logger-stress PROPERTIES LABELS "stress;default-logger;concurrency" TIMEOUT 10
+  )
+
   add_executable(ulog-stress-tests stress/memory_resource_stress.cpp)
   target_compile_features(ulog-stress-tests PRIVATE cxx_std_20)
   target_include_directories(ulog-stress-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
