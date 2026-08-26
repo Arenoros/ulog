@@ -623,35 +623,38 @@ enum class WorkerStartStatus : std::uint8_t { kStarted, kThreadFailed, kTimedOut
 }  // namespace
 
 struct Runtime::Impl final {
-  template <typename Destination>
-  [[nodiscard]] static RuntimeCreateResult Create(RuntimeConfig config,
-                                                  Destination destination) noexcept {
-    if (const auto failure = ValidateConfig(config, destination)) {
-      return {.failure = failure};
-    }
-
+  static void CreateInto(RuntimeConfig config, RuntimeRoute route,
+                         RuntimeCreateResult& result) noexcept {
+    result = {};
     try {
-      auto domain = std::make_shared<RuntimeDomain>(config, RuntimeRoute{std::move(destination)});
+      auto domain = std::make_shared<RuntimeDomain>(config, std::move(route));
       if (!domain->TryAttachDestination()) {
-        return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidDestination}};
+        result.failure.emplace(RuntimeCreateErrorCode::kInvalidDestination);
+        return;
       }
       auto impl = std::make_unique<Impl>(domain, config.destruction_timeout);
       switch (impl->Start(config.startup_timeout)) {
         case WorkerStartStatus::kStarted:
-          return {.runtime = std::unique_ptr<Runtime>{new Runtime{std::move(impl)}}};
+          result.runtime.reset(new Runtime{std::move(impl)});
+          return;
         case WorkerStartStatus::kThreadFailed:
-          return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kWorkerStartFailed}};
+          result.failure.emplace(RuntimeCreateErrorCode::kWorkerStartFailed);
+          return;
         case WorkerStartStatus::kTimedOut:
-          return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kWorkerStartupTimedOut}};
+          result.failure.emplace(RuntimeCreateErrorCode::kWorkerStartupTimedOut);
+          return;
       }
     } catch (const std::bad_alloc&) {
-      return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kAllocationFailed}};
+      result.failure.emplace(RuntimeCreateErrorCode::kAllocationFailed);
+      return;
     } catch (const std::system_error&) {
-      return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kWorkerStartFailed}};
+      result.failure.emplace(RuntimeCreateErrorCode::kWorkerStartFailed);
+      return;
     } catch (...) {
-      return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kAllocationFailed}};
+      result.failure.emplace(RuntimeCreateErrorCode::kAllocationFailed);
+      return;
     }
-    return {.failure = RuntimeCreateFailure{RuntimeCreateErrorCode::kWorkerStartFailed}};
+    result.failure.emplace(RuntimeCreateErrorCode::kWorkerStartFailed);
   }
 
   Impl(std::shared_ptr<RuntimeDomain> runtime_domain,
@@ -696,12 +699,22 @@ std::string_view RuntimeCreateFailure::HowToFix() const noexcept { return Failur
 
 RuntimeCreateResult Runtime::Create(RuntimeConfig config,
                                     testing::InMemoryDestination destination) noexcept {
-  return Impl::Create(config, std::move(destination));
+  if (const auto failure = ValidateConfig(config, destination)) {
+    return {.failure = failure};
+  }
+  RuntimeCreateResult result;
+  Impl::CreateInto(config, RuntimeRoute{std::move(destination)}, result);
+  return result;
 }
 
 RuntimeCreateResult Runtime::Create(RuntimeConfig config,
                                     testing::InMemoryEncodedDestination destination) noexcept {
-  return Impl::Create(config, std::move(destination));
+  if (const auto failure = ValidateConfig(config, destination)) {
+    return {.failure = failure};
+  }
+  RuntimeCreateResult result;
+  Impl::CreateInto(config, RuntimeRoute{std::move(destination)}, result);
+  return result;
 }
 
 Runtime::Runtime(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
