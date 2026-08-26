@@ -8,6 +8,7 @@ from typing import Callable
 
 from benchmark_results import BenchmarkResultsError, validate_result_file
 from composed_producer_results import validate_result_file as validate_composed_result_file
+from frontend_results import validate_result_file as validate_frontend_result_file
 from ingress_results import validate_result_file as validate_ingress_result_file
 from record_storage_results import validate_result_file as validate_record_storage_result_file
 
@@ -45,11 +46,11 @@ def collect_newest_result(
 
 
 def main() -> int:
-    if len(sys.argv) not in (2, 3, 4, 5):
+    if len(sys.argv) not in (2, 3, 4, 5, 6):
         print(
             "usage: collect_benchmark_results.py <reservation-destination.json> "
             "[record-storage-destination.json] [ingress-destination.json] "
-            "[composed-producer-destination.json]",
+            "[composed-producer-destination.json] [frontend-destination.json]",
             file=sys.stderr,
         )
         return 2
@@ -81,12 +82,20 @@ def main() -> int:
             "ulog-ingress-results/1",
         ):
             return 1
-    if len(sys.argv) == 5 and not collect_newest_result(
+    if len(sys.argv) >= 5 and not collect_newest_result(
         conan_home,
         "composed-producer-results.json",
         Path(sys.argv[4]),
         validate_composed_result_file,
         "ulog-composed-producer-results/1",
+    ):
+        return 1
+    if len(sys.argv) == 6 and not collect_newest_result(
+        conan_home,
+        "frontend-results.json",
+        Path(sys.argv[5]),
+        validate_frontend_result_file,
+        "ulog-frontend-results/1",
     ):
         return 1
     return 0

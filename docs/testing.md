@@ -15,12 +15,14 @@ The repository establishes seven independent test categories:
   saturation, FIFO publication, byte conservation, retirement, and race-free
   weak snapshots;
 - `tooling`: regression checks for dependency-graph enforcement and benchmark
-  result collection;
+  result collection, plus the frontend atomic-load and producer hot-path
+  source-shape contract;
 - `migration`: schema, provenance, manifest-ID, and integrity validation for
   the committed offline baseline corpus and non-format parity scenarios,
   without an external checkout;
 - `benchmark`: run the complete short workload matrix, emit versioned Google
-  Benchmark JSON, and validate its deterministic counters without a timing gate.
+  Benchmark JSON, validate its deterministic counters without a timing gate,
+  and run the five-row frontend allocation/evaluation/accounting gate.
 
 Hosted CI benchmark timing is advisory. It confirms that benchmark executables
 compile, run, and emit machine-readable output. Hard regression thresholds are
@@ -42,7 +44,12 @@ The production producer allocation test and randomized stress test have
 10-second CTest limits; the stress executable also has its own five-second
 watchdog so a stalled thread fails with a focused diagnostic. The Default
 Logger concurrency stress uses the same five-second watchdog and 10-second
-CTest limit.
+CTest limit. The frontend benchmark adds no hosted job: its five-row smoke body
+runs inside the existing static package build with a 30-second CTest limit. Its
+controlled-schedule listing is capped at 10 seconds by the script and 15 seconds
+by CTest, and its result validator is capped at 10 seconds. The full controlled
+frontend body is external-only and has the three-minute supervisor limit shown
+in `docs/benchmarking.md`.
 
 The presets build the library, architecture check, and installed consumer once
 fmt 12 is available to CMake. The pinned Conan setup is:

@@ -28,6 +28,11 @@ if(PROJECT_IS_TOP_LEVEL)
       "${PROJECT_SOURCE_DIR}/docs/migration/capability-manifest.md" --baseline
       "${PROJECT_SOURCE_DIR}/docs/migration/baseline.md"
   )
+  add_test(
+    NAME ulog.frontend-hot-path-contract
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/frontend_hot_path_contract.py"
+            --source-dir "${PROJECT_SOURCE_DIR}"
+  )
   set_tests_properties(
     ulog.script-tools PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS "tooling;unit"
                                  TIMEOUT 90
@@ -39,6 +44,10 @@ if(PROJECT_IS_TOP_LEVEL)
   set_tests_properties(
     ulog.parity-scenarios PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS
                                      "migration;tooling" TIMEOUT 30
+  )
+  set_tests_properties(
+    ulog.frontend-hot-path-contract PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS
+                                               "architecture;frontend;performance" TIMEOUT 10
   )
 endif()
 
@@ -102,12 +111,29 @@ if(ULOG_BUILD_UNIT_TESTS)
     # This test interposes global allocation functions, whose symbols are also owned by TSan.
     add_executable(ulog-producer-allocation-test producer_kernel_allocation_test.cpp)
     target_compile_features(ulog-producer-allocation-test PRIVATE cxx_std_20)
-    target_include_directories(ulog-producer-allocation-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_include_directories(
+      ulog-producer-allocation-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
+                                            "${PROJECT_SOURCE_DIR}/benchmarks"
+    )
     target_link_libraries(ulog-producer-allocation-test PRIVATE ${_ulog_producer_test_library})
     ulog_configure_target(ulog-producer-allocation-test)
     add_test(NAME ulog.producer-allocation COMMAND ulog-producer-allocation-test)
     set_tests_properties(
       ulog.producer-allocation PROPERTIES LABELS "unit;producer;allocation" TIMEOUT 10
+    )
+
+    add_executable(ulog-frontend-performance-test frontend_performance_test.cpp)
+    target_compile_features(ulog-frontend-performance-test PRIVATE cxx_std_20)
+    target_compile_definitions(ulog-frontend-performance-test PRIVATE ULOG_COMPILE_TIME_MIN_LEVEL=5)
+    target_include_directories(
+      ulog-frontend-performance-test PRIVATE "${PROJECT_SOURCE_DIR}/src"
+                                             "${PROJECT_SOURCE_DIR}/benchmarks"
+    )
+    target_link_libraries(ulog-frontend-performance-test PRIVATE ${_ulog_producer_test_library})
+    ulog_configure_target(ulog-frontend-performance-test)
+    add_test(NAME ulog.frontend-performance COMMAND ulog-frontend-performance-test)
+    set_tests_properties(
+      ulog.frontend-performance PROPERTIES LABELS "unit;frontend;performance;allocation" TIMEOUT 10
     )
   endif()
 

@@ -1,101 +1,20 @@
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <exception>
 #include <iostream>
-#include <limits>
-#include <new>
 #include <string_view>
 #include <ulog/level.hpp>
 #include <ulog/source_location.hpp>
 
-#if defined(_MSC_VER)
-#include <malloc.h>
-#endif
-
 #include "producer/producer_kernel.hpp"
-
-namespace allocation_tracking {
-
-std::atomic<std::uint64_t> allocation_count{0};
-
-struct AlignedAllocationRequest final {
-  std::size_t size{0};
-  std::size_t alignment{0};
-};
-
-void* Allocate(std::size_t size) {
-  allocation_count.fetch_add(1, std::memory_order_relaxed);
-  if (void* memory = std::malloc(std::max(size, std::size_t{1}))) {
-    return memory;
-  }
-  throw std::bad_alloc{};
-}
-
-void* AllocateAligned(AlignedAllocationRequest request) {
-  allocation_count.fetch_add(1, std::memory_order_relaxed);
-#if defined(_MSC_VER)
-  if (void* memory = _aligned_malloc(std::max(request.size, std::size_t{1}), request.alignment)) {
-    return memory;
-  }
-#else
-  const std::size_t requested_size = std::max(request.size, std::size_t{1});
-  if (requested_size > std::numeric_limits<std::size_t>::max() - request.alignment + 1U) {
-    throw std::bad_alloc{};
-  }
-  const std::size_t aligned_size =
-      ((requested_size + request.alignment - 1U) / request.alignment) * request.alignment;
-  if (void* memory = std::aligned_alloc(request.alignment, aligned_size)) {
-    return memory;
-  }
-#endif
-  throw std::bad_alloc{};
-}
-
-void FreeAligned(void* memory) noexcept {
-#if defined(_MSC_VER)
-  _aligned_free(memory);
-#else
-  std::free(memory);
-#endif
-}
-
-}  // namespace allocation_tracking
-
-void* operator new(std::size_t size) { return allocation_tracking::Allocate(size); }
-void* operator new[](std::size_t size) { return allocation_tracking::Allocate(size); }
-void operator delete(void* memory) noexcept { std::free(memory); }
-void operator delete[](void* memory) noexcept { std::free(memory); }
-void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
-void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
-
-void* operator new(std::size_t size, std::align_val_t alignment) {
-  return allocation_tracking::AllocateAligned(
-      {.size = size, .alignment = static_cast<std::size_t>(alignment)});
-}
-void* operator new[](std::size_t size, std::align_val_t alignment) {
-  return allocation_tracking::AllocateAligned(
-      {.size = size, .alignment = static_cast<std::size_t>(alignment)});
-}
-void operator delete(void* memory, std::align_val_t) noexcept {
-  allocation_tracking::FreeAligned(memory);
-}
-void operator delete[](void* memory, std::align_val_t) noexcept {
-  allocation_tracking::FreeAligned(memory);
-}
-void operator delete(void* memory, std::size_t, std::align_val_t) noexcept {
-  allocation_tracking::FreeAligned(memory);
-}
-void operator delete[](void* memory, std::size_t, std::align_val_t) noexcept {
-  allocation_tracking::FreeAligned(memory);
-}
+#include "support/allocation_interposer.hpp"
 
 namespace {
 
+namespace allocation_tracking = ulog::benchmark_support::allocation_tracking;
 namespace producer = ulog::detail::producer;
 
 constexpr std::string_view kMessage = "allocation-free";

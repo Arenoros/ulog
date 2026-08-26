@@ -53,6 +53,33 @@ target_link_libraries(
 )
 ulog_configure_target(ulog-composed-producer-benchmarks)
 
+if(NOT ULOG_ENABLE_TSAN)
+  set(_ulog_frontend_benchmark_library ulog::ulog)
+  if(BUILD_SHARED_LIBS)
+    # Private producer symbols stay out of the shared ABI. The benchmark links the same sources.
+    add_library(ulog-frontend-benchmark-support STATIC ${ULOG_PRODUCER_SOURCES})
+    target_compile_features(ulog-frontend-benchmark-support PRIVATE cxx_std_20)
+    target_include_directories(
+      ulog-frontend-benchmark-support
+      PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/include"
+              "${ULOG_GENERATED_INCLUDE_DIR}"
+    )
+    target_link_libraries(ulog-frontend-benchmark-support PUBLIC ulog::ulog)
+    ulog_configure_target(ulog-frontend-benchmark-support)
+    set(_ulog_frontend_benchmark_library ulog-frontend-benchmark-support)
+  endif()
+
+  add_executable(ulog-frontend-benchmarks frontend_benchmark.cpp)
+  target_compile_features(ulog-frontend-benchmarks PRIVATE cxx_std_20)
+  target_compile_definitions(ulog-frontend-benchmarks PRIVATE ULOG_COMPILE_TIME_MIN_LEVEL=5)
+  target_include_directories(ulog-frontend-benchmarks PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_link_libraries(
+    ulog-frontend-benchmarks PRIVATE ${_ulog_frontend_benchmark_library} ulog-workload-support
+                                     benchmark::benchmark
+  )
+  ulog_configure_target(ulog-frontend-benchmarks)
+endif()
+
 add_executable(ulog-workload-harness-test workload_harness_test.cpp)
 target_compile_features(ulog-workload-harness-test PRIVATE cxx_std_20)
 target_link_libraries(ulog-workload-harness-test PRIVATE ulog-workload-support)
@@ -193,6 +220,24 @@ add_test(
   COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/composed_producer_results.py"
           validate "${PROJECT_BINARY_DIR}/composed-producer-results.json"
 )
+if(TARGET ulog-frontend-benchmarks)
+  add_test(
+    NAME ulog.frontend-schedule
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check_frontend_schedule.py"
+            "$<TARGET_FILE:ulog-frontend-benchmarks>"
+  )
+  add_test(
+    NAME ulog.frontend-benchmark-smoke
+    COMMAND
+      ulog-frontend-benchmarks --ulog_mode=smoke --benchmark_min_time=0.001s
+      --benchmark_color=false "--benchmark_out=${PROJECT_BINARY_DIR}/frontend-results.json"
+      --benchmark_out_format=json
+  )
+  add_test(NAME ulog.frontend-benchmark-results
+           COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/frontend_results.py"
+                   validate "${PROJECT_BINARY_DIR}/frontend-results.json"
+  )
+endif()
 if(ULOG_BUILD_STRESS_TESTS)
   add_test(NAME ulog.ingress-topology-stress COMMAND ulog-ingress-topology-stress)
   add_test(NAME ulog.composed-producer-kernel-stress COMMAND ulog-composed-producer-kernel-stress)
@@ -282,6 +327,26 @@ set_tests_properties(
              TIMEOUT
              30
 )
+if(TEST ulog.frontend-benchmark-smoke)
+  set_tests_properties(
+    ulog.frontend-schedule PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" LABELS
+                                      "benchmark;frontend;performance;tooling" TIMEOUT 15
+  )
+  set_tests_properties(
+    ulog.frontend-benchmark-smoke PROPERTIES LABELS "benchmark;frontend;performance" TIMEOUT 30
+  )
+  set_tests_properties(
+    ulog.frontend-benchmark-results
+    PROPERTIES DEPENDS
+               ulog.frontend-benchmark-smoke
+               ENVIRONMENT
+               "PYTHONDONTWRITEBYTECODE=1"
+               LABELS
+               "benchmark;frontend;performance;tooling"
+               TIMEOUT
+               10
+  )
+endif()
 if(ULOG_BUILD_STRESS_TESTS)
   set_tests_properties(
     ulog.ingress-topology-stress PROPERTIES LABELS "benchmark;stress;concurrency" TIMEOUT 10

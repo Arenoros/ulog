@@ -84,7 +84,7 @@ jobs:
       - name: Collect benchmark output
         if: steps.static-build.outcome == 'success'
         timeout-minutes: 2
-        run: python scripts/collect_benchmark_results.py out/benchmark-results.json out/record-storage-results.json out/ingress-results.json out/composed-producer-results.json
+        run: python scripts/collect_benchmark_results.py out/benchmark-results.json out/record-storage-results.json out/ingress-results.json out/composed-producer-results.json out/frontend-results.json
       - uses: actions/upload-artifact@v6
         if: steps.static-build.outcome == 'success'
         timeout-minutes: 3
@@ -95,6 +95,7 @@ jobs:
             out/record-storage-results.json
             out/ingress-results.json
             out/composed-producer-results.json
+            out/frontend-results.json
           retention-days: 14
       - name: Trim Conan dependency cache
         if: always() && github.event_name == 'push' && steps.conan-dependencies.outcome == 'success' && steps.conan-cache.outputs.cache-hit != 'true'

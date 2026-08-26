@@ -169,6 +169,59 @@ selected in
 but this executable remains benchmark infrastructure rather than public logging
 API.
 
+## Frontend performance gate
+
+`ulog-frontend-benchmarks` is a short sibling workload for the public logging
+frontend. It emits `ulog-frontend-results/1` with exactly five rows per
+repetition, in this order:
+
+1. `compile-erased`;
+2. `runtime-filtered`;
+3. `null-logger`;
+4. `admission-rejected` with a full producer lane;
+5. `ordinary-accepted` using the fmt path.
+
+The separate deterministic frontend test also covers the native accepted path
+and the no-producer, byte-budget, and lane-full rejection reasons. Keeping those
+variants out of the timed matrix prevents a small frontend check from expanding
+the common producer/thread workload.
+
+Each measured row reports overall producer p50, p99, and p99.9 latency,
+accepted/rejected latency summaries, attempts and accepted Record/byte
+throughput, process CPU, message evaluations, Default Logger loads, Ulog heap
+allocations, exact admission accounting, and final retained accounting. The
+validator requires zero Ulog allocations and allocation failures, no disabled
+message evaluation, exactly one Default Logger load for every non-erased call,
+and zero accounting or retained-bound errors. A source-shape guard separately
+locks the macro-to-producer atomic inventory, requires one acquire load in
+`GetDefaultLogger`, allows only exceptional counter mutations in
+`TryPublishSlot`, and keeps accepted totals derived from the mandatory admission
+sequence rather than a dedicated shared statistics counter.
+
+Hosted CI runs only one warm-up plus 1,024 measured attempts for each of the
+five paths. The benchmark smoke test has a 30-second CTest limit, its controlled
+35-row registration check has a 10-second process limit and 15-second CTest
+limit, and result validation has a 10-second CTest limit. Timing remains
+advisory, while allocation, evaluation, Default Logger load, admission, and
+retained-accounting failures block CI. The validated artifact is
+`frontend-results.json`.
+
+For a comparable measurement on controlled hardware, run the seven-repetition,
+100,000-attempt-per-path body under an external three-minute wall-clock limit:
+
+```shell
+timeout --signal=TERM --kill-after=30s 180s \
+  <build-dir>/bin/ulog-frontend-benchmarks --ulog_mode=controlled \
+  --benchmark_color=false \
+  --benchmark_out=frontend-controlled-results.json \
+  --benchmark_out_format=json
+python scripts/frontend_results.py validate frontend-controlled-results.json
+```
+
+The controlled result is comparable only when revision, compiler, build type,
+dependency lock, operating-system state, power policy, and timeout provenance
+are recorded. It is never run in a GitHub-hosted workflow.
+
 ## Controlled mode
 
 Use a dedicated, otherwise idle machine with a stable power policy and thermal
