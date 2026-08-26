@@ -92,7 +92,6 @@ class Logger final {
                         detail::TextBuilder build_text) const;
 
   friend struct detail::LoggerAccess;
-  friend Logger ExchangeDefaultLogger(Logger stable_logger) noexcept;
 
   const detail::LoggerState* state_;
 };

@@ -54,8 +54,8 @@ Logger GetDefaultLogger() noexcept {
 Logger GetNullLogger() noexcept { return detail::LoggerAccess::FromState(&kNullLoggerState); }
 
 Logger ExchangeDefaultLogger(Logger stable_logger) noexcept {
-  const detail::LoggerState* const previous =
-      kDefaultLoggerState.exchange(stable_logger.state_, std::memory_order_acq_rel);
+  const detail::LoggerState* const previous = kDefaultLoggerState.exchange(
+      detail::LoggerAccess::GetState(stable_logger), std::memory_order_acq_rel);
   return detail::LoggerAccess::FromState(previous);
 }
 

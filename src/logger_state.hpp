@@ -22,6 +22,7 @@ struct LoggerState final {
 
 struct LoggerAccess final {
   [[nodiscard]] static Logger FromState(const LoggerState* state) noexcept { return Logger{state}; }
+  [[nodiscard]] static const LoggerState* GetState(Logger logger) noexcept { return logger.state_; }
 };
 
 }  // namespace ulog::detail
