@@ -251,7 +251,8 @@ TEST(Operation, CallbackRegisteredAfterCompletionIsStillDispatchedAsynchronously
 }
 
 TEST(Operation, CallbackMoveMayReenterWithoutHoldingTheStateLock) {
-  ControlReserve reserve{1};
+  ManualCallbackDispatcher dispatcher;
+  ControlReserve reserve{1, dispatcher.GetDispatcher()};
   auto started = reserve.TryStart();
   ASSERT_TRUE(started);
   std::size_t moves = 0;
@@ -266,11 +267,13 @@ TEST(Operation, CallbackMoveMayReenterWithoutHoldingTheStateLock) {
   EXPECT_EQ(registered.status, OperationCallbackStatus::kRegistered);
   EXPECT_EQ(reentrant_status, OperationCallbackStatus::kAlreadyRegistered);
   ASSERT_TRUE(started.completion.TryComplete(OperationOutcome::kSucceeded));
-  EXPECT_TRUE(invoked.try_acquire_for(kTestDeadline));
+  EXPECT_TRUE(dispatcher.RunOne());
+  EXPECT_TRUE(invoked.try_acquire());
 }
 
 TEST(Operation, CallbackInstallationPinsStateAcrossReentrantCompletionAndRelease) {
-  ControlReserve reserve{1};
+  ManualCallbackDispatcher dispatcher;
+  ControlReserve reserve{1, dispatcher.GetDispatcher()};
   auto started = reserve.TryStart();
   ASSERT_TRUE(started);
   std::size_t moves = 0;
@@ -287,12 +290,14 @@ TEST(Operation, CallbackInstallationPinsStateAcrossReentrantCompletionAndRelease
   EXPECT_TRUE(completion_won);
   EXPECT_FALSE(started.operation);
   EXPECT_FALSE(started.completion);
-  EXPECT_TRUE(invoked.try_acquire_for(kTestDeadline));
+  EXPECT_TRUE(dispatcher.RunOne());
+  EXPECT_TRUE(invoked.try_acquire());
   EXPECT_TRUE(WaitForIdle(reserve));
 }
 
 TEST(Operation, CallbackDestructorMayReenterWithoutHoldingTheStateLock) {
-  ControlReserve reserve{1};
+  ManualCallbackDispatcher dispatcher;
+  ControlReserve reserve{1, dispatcher.GetDispatcher()};
   auto started = reserve.TryStart();
   ASSERT_TRUE(started);
   OperationCallbackStatus reentrant_status = OperationCallbackStatus::kInvalidOperation;
@@ -303,7 +308,8 @@ TEST(Operation, CallbackDestructorMayReenterWithoutHoldingTheStateLock) {
   ASSERT_EQ(registered.status, OperationCallbackStatus::kRegistered);
   ASSERT_TRUE(started.completion.TryComplete(OperationOutcome::kSucceeded));
 
-  ASSERT_TRUE(callback_destroyed.try_acquire_for(kTestDeadline));
+  ASSERT_TRUE(dispatcher.RunOne());
+  ASSERT_TRUE(callback_destroyed.try_acquire());
   EXPECT_EQ(reentrant_status, OperationCallbackStatus::kAlreadyRegistered);
 }
 
