@@ -282,7 +282,9 @@ if(ULOG_BUILD_STRESS_TESTS)
 
   add_executable(ulog-default-logger-stress stress/default_logger_stress.cpp)
   target_compile_features(ulog-default-logger-stress PRIVATE cxx_std_20)
-  target_include_directories(ulog-default-logger-stress PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_include_directories(
+    ulog-default-logger-stress PRIVATE "${PROJECT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
   target_link_libraries(ulog-default-logger-stress PRIVATE ulog::ulog Threads::Threads)
   ulog_configure_target(ulog-default-logger-stress)
   add_test(NAME ulog.default-logger-stress COMMAND ulog-default-logger-stress)

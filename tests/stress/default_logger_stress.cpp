@@ -1,6 +1,5 @@
 #include <array>
 #include <atomic>
-#include <barrier>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -16,6 +15,7 @@
 #include <ulog/source_location.hpp>
 
 #include "logger_state.hpp"
+#include "support/phase_barrier.hpp"
 
 namespace {
 
@@ -107,11 +107,11 @@ std::array<StableTarget, kTargetCount>& GetTargets() {
   auto& targets = GetTargets();
   std::array<ulog::Logger, kConcurrentExchangeCount> previous_targets;
   std::array<std::thread, kExchangeThreadCount> exchange_threads;
-  std::barrier start{static_cast<std::ptrdiff_t>(kExchangeThreadCount)};
+  ulog::test_support::PhaseBarrier start{kExchangeThreadCount};
 
   for (std::size_t thread_index = 0; thread_index < kExchangeThreadCount; ++thread_index) {
     exchange_threads[thread_index] = std::thread{[&, thread_index] {
-      start.arrive_and_wait();
+      start.ArriveAndWait();
       for (std::size_t exchange_index = 0; exchange_index < kExchangesPerThread; ++exchange_index) {
         const std::size_t target_index = thread_index * kExchangesPerThread + exchange_index;
         previous_targets[target_index] =
@@ -155,12 +155,12 @@ std::array<StableTarget, kTargetCount>& GetTargets() {
   observation.Reset();
   static_cast<void>(ulog::ExchangeDefaultLogger(first.GetLogger()));
 
-  std::barrier phase{static_cast<std::ptrdiff_t>(kProducerCount + 1U)};
+  ulog::test_support::PhaseBarrier phase{kProducerCount + 1U};
   std::array<std::thread, kProducerCount> producers;
   for (std::size_t producer_index = 0; producer_index < kProducerCount; ++producer_index) {
     producers[producer_index] = std::thread{[&, producer_index] {
       for (std::size_t round = 0; round < kProducerRounds; ++round) {
-        phase.arrive_and_wait();
+        phase.ArriveAndWait();
         for (std::size_t call = 0; call < kCallsPerProducerRound; ++call) {
           const std::uint64_t record_id =
               (producer_index * kProducerRounds + round) * kCallsPerProducerRound + call;
@@ -174,13 +174,13 @@ std::array<StableTarget, kTargetCount>& GetTargets() {
             std::this_thread::yield();
           }
         }
-        phase.arrive_and_wait();
+        phase.ArriveAndWait();
       }
     }};
   }
 
   for (std::size_t round = 0; round < kProducerRounds; ++round) {
-    phase.arrive_and_wait();
+    phase.ArriveAndWait();
     for (std::size_t exchange = 0; exchange < kExchangesPerProducerRound; ++exchange) {
       StableTarget& target =
           ((round * kExchangesPerProducerRound + exchange) & 1U) == 0U ? second : first;
@@ -189,7 +189,7 @@ std::array<StableTarget, kTargetCount>& GetTargets() {
         std::this_thread::yield();
       }
     }
-    phase.arrive_and_wait();
+    phase.ArriveAndWait();
   }
   for (auto& thread : producers) {
     thread.join();
