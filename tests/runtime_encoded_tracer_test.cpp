@@ -201,6 +201,42 @@ TEST(RuntimeEncodedTracer, PausedAndHeldSlotBackpressurePreservesFifoAndExactAcc
   ExpectSucceeded(shutdown);
 }
 
+TEST(RuntimeEncodedTracer, PausedDestinationClaimsNoSlotAcrossWorkerRechecks) {
+  ulog::testing::InMemoryEncodedDestination destination{{
+      .capacity_records = 1,
+      .maximum_record_bytes = 512,
+      .start_paused = true,
+  }};
+  auto created = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
+  ASSERT_TRUE(created) << created.failure->Message();
+  const ulog::Logger logger = created.runtime->GetLogger();
+
+  LOG_INFO_TO(logger, "held");
+  auto drain = created.runtime->Drain();
+  ASSERT_TRUE(drain);
+  // The deadline spans several private worker recheck intervals.
+  const auto paused = drain.operation.WaitUntil(std::chrono::steady_clock::now() + 100ms);
+  EXPECT_EQ(paused.status, ulog::OperationWaitStatus::kDeadlineExceeded);
+
+  const auto held = created.runtime->GetSnapshot();
+  EXPECT_EQ(held.accepted_records, 1U);
+  EXPECT_EQ(held.completed_records, 0U);
+  EXPECT_EQ(held.delivered_records, 0U);
+  EXPECT_EQ(held.delivered_bytes, 0U);
+  EXPECT_EQ(held.retained_records, 1U);
+  EXPECT_FALSE(destination.TryTake().has_value());
+
+  destination.Resume();
+  ExpectSucceeded(drain);
+  auto frame = destination.TryTake();
+  ASSERT_TRUE(frame.has_value());
+  EXPECT_EQ(frame->AdmissionSequence(), 0U);
+  EXPECT_EQ(frame->Bytes(), "tskv\ttext=held\n");
+
+  auto shutdown = created.runtime->Shutdown();
+  ExpectSucceeded(shutdown);
+}
+
 TEST(RuntimeEncodedTracer, ObservationRemainsValidAfterDestinationAndRuntimeDestruction) {
   std::optional<ulog::testing::ObservedEncodedRecord> observed;
   {

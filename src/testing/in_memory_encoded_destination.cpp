@@ -257,7 +257,7 @@ EncodedDestinationWriteClaim InMemoryEncodedDestinationAccess::WaitForWrite(
       return state->stopped.load(std::memory_order_acquire) ||
              (!state->paused && state->FindFreeSlot().has_value());
     });
-    if (state->stopped.load(std::memory_order_acquire)) {
+    if (state->stopped.load(std::memory_order_acquire) || state->paused) {
       return {};
     }
     const auto slot_index = state->FindFreeSlot();

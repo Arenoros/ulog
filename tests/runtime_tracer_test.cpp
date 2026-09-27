@@ -283,6 +283,42 @@ TEST(RuntimeTracer, SaturationDropsNewestBeforeEvaluationWhileControlReserveStil
   ExpectSucceeded(shutdown);
 }
 
+TEST(RuntimeTracer, PausedDestinationClaimsNoSlotAcrossWorkerRechecks) {
+  testing::InMemoryDestination destination{{
+      .capacity_records = 1,
+      .maximum_record_bytes = 512,
+      .start_paused = true,
+  }};
+  auto created = Runtime::Create(SmallRuntimeConfig(), destination);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  Runtime& runtime = *created.runtime;
+  const Logger logger = runtime.GetLogger();
+
+  LOG_INFO_TO(logger, "held");
+  auto drain = runtime.Drain();
+  ASSERT_TRUE(drain);
+  // The deadline spans several private worker recheck intervals.
+  const auto paused = drain.operation.WaitUntil(std::chrono::steady_clock::now() + 100ms);
+  EXPECT_EQ(paused.status, OperationWaitStatus::kDeadlineExceeded);
+
+  const auto held = runtime.GetSnapshot();
+  EXPECT_EQ(held.accepted_records, 1U);
+  EXPECT_EQ(held.completed_records, 0U);
+  EXPECT_EQ(held.delivered_records, 0U);
+  EXPECT_EQ(held.retained_records, 1U);
+  EXPECT_FALSE(destination.TryTake());
+
+  destination.Resume();
+  ExpectSucceeded(drain);
+  auto record = destination.TryTake();
+  ASSERT_TRUE(record);
+  EXPECT_EQ(RequireValue(record).AdmissionSequence(), 0U);
+  EXPECT_EQ(RequireValue(record).Message(), "held");
+
+  auto shutdown = runtime.Shutdown();
+  ExpectSucceeded(shutdown);
+}
+
 TEST(RuntimeTracer, OversizedUtf8MessageIsCapturedAsAnImmutableTruncatedPrefix) {
   testing::InMemoryDestination destination{{
       .capacity_records = 1,
