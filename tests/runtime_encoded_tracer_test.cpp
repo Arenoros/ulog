@@ -19,6 +19,22 @@ namespace {
 using namespace std::chrono_literals;
 using namespace std::string_view_literals;
 
+template <typename T>
+[[nodiscard]] T& RequireValue(std::optional<T>& value) {
+  if (!value.has_value()) {
+    throw std::logic_error{"expected an optional value"};
+  }
+  return *value;
+}
+
+template <typename T>
+[[nodiscard]] const T& RequireValue(const std::optional<T>& value) {
+  if (!value.has_value()) {
+    throw std::logic_error{"expected an optional value"};
+  }
+  return *value;
+}
+
 [[nodiscard]] ulog::RuntimeConfig SmallRuntimeConfig() {
   return ulog::RuntimeConfig{
       .threshold = ulog::Level::kTrace,
@@ -38,7 +54,7 @@ void ExpectSucceeded(ulog::OperationStartResult& started) {
   const auto completed = started.operation.WaitUntil(std::chrono::steady_clock::now() + 1s);
   ASSERT_EQ(completed.status, ulog::OperationWaitStatus::kCompleted);
   ASSERT_TRUE(completed.completion.has_value());
-  EXPECT_EQ(completed.completion->Outcome(), ulog::OperationOutcome::kSucceeded);
+  EXPECT_EQ(RequireValue(completed.completion).Outcome(), ulog::OperationOutcome::kSucceeded);
 }
 
 [[nodiscard]] std::optional<ulog::testing::ObservedEncodedRecord> WaitForEncodedRecord(
@@ -59,7 +75,7 @@ TEST(RuntimeEncodedTracer, PublicLoggerDeliversBaselineRawFrame) {
       .maximum_record_bytes = 512,
   }};
   auto created = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
-  ASSERT_TRUE(created) << created.failure->Message();
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
 
   const ulog::Logger logger = created.runtime->GetLogger();
   LOG_INFO_TO(logger, "hello");
@@ -69,12 +85,12 @@ TEST(RuntimeEncodedTracer, PublicLoggerDeliversBaselineRawFrame) {
   const auto completed = shutdown.operation.WaitUntil(std::chrono::steady_clock::now() + 1s);
   ASSERT_EQ(completed.status, ulog::OperationWaitStatus::kCompleted);
   ASSERT_TRUE(completed.completion.has_value());
-  EXPECT_EQ(completed.completion->Outcome(), ulog::OperationOutcome::kSucceeded);
+  EXPECT_EQ(RequireValue(completed.completion).Outcome(), ulog::OperationOutcome::kSucceeded);
 
   auto frame = destination.TryTake();
   ASSERT_TRUE(frame.has_value());
-  EXPECT_EQ(frame->AdmissionSequence(), 0U);
-  EXPECT_EQ(frame->Bytes(), "tskv\ttext=hello\n");
+  EXPECT_EQ(RequireValue(frame).AdmissionSequence(), 0U);
+  EXPECT_EQ(RequireValue(frame).Bytes(), "tskv\ttext=hello\n");
   EXPECT_FALSE(destination.TryTake().has_value());
 }
 
@@ -87,7 +103,7 @@ TEST(RuntimeEncodedTracer, EmptyAndUnicodeControlMessagesMatchIndependentRawLite
   config.payload_capacity_bytes = 1'024;
   config.ingress_cells = 2;
   auto created = ulog::Runtime::Create(config, destination);
-  ASSERT_TRUE(created) << created.failure->Message();
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
 
   const ulog::Logger logger = created.runtime->GetLogger();
   LOG_INFO_TO(logger, "");
@@ -103,16 +119,16 @@ TEST(RuntimeEncodedTracer, EmptyAndUnicodeControlMessagesMatchIndependentRawLite
   const auto completed = shutdown.operation.WaitUntil(std::chrono::steady_clock::now() + 1s);
   ASSERT_EQ(completed.status, ulog::OperationWaitStatus::kCompleted);
   ASSERT_TRUE(completed.completion.has_value());
-  EXPECT_EQ(completed.completion->Outcome(), ulog::OperationOutcome::kSucceeded);
+  EXPECT_EQ(RequireValue(completed.completion).Outcome(), ulog::OperationOutcome::kSucceeded);
 
   auto empty = destination.TryTake();
   auto controls = destination.TryTake();
   ASSERT_TRUE(empty.has_value());
   ASSERT_TRUE(controls.has_value());
-  EXPECT_EQ(empty->AdmissionSequence(), 0U);
-  EXPECT_EQ(empty->Bytes(), "tskv\ttext=\n");
-  EXPECT_EQ(controls->AdmissionSequence(), 1U);
-  EXPECT_EQ(controls->Bytes(), kExpectedFrame);
+  EXPECT_EQ(RequireValue(empty).AdmissionSequence(), 0U);
+  EXPECT_EQ(RequireValue(empty).Bytes(), "tskv\ttext=\n");
+  EXPECT_EQ(RequireValue(controls).AdmissionSequence(), 1U);
+  EXPECT_EQ(RequireValue(controls).Bytes(), kExpectedFrame);
 }
 
 TEST(RuntimeEncodedTracer, TruncationMarkerIsEncodedBeforeTheRetainedMessagePrefix) {
@@ -121,7 +137,7 @@ TEST(RuntimeEncodedTracer, TruncationMarkerIsEncodedBeforeTheRetainedMessagePref
       .maximum_record_bytes = 512,
   }};
   auto created = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
-  ASSERT_TRUE(created) << created.failure->Message();
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
   const ulog::Logger logger = created.runtime->GetLogger();
   const std::string oversized(1'024, 'x');
 
@@ -131,11 +147,11 @@ TEST(RuntimeEncodedTracer, TruncationMarkerIsEncodedBeforeTheRetainedMessagePref
   const auto completed = shutdown.operation.WaitUntil(std::chrono::steady_clock::now() + 1s);
   ASSERT_EQ(completed.status, ulog::OperationWaitStatus::kCompleted);
   ASSERT_TRUE(completed.completion.has_value());
-  ASSERT_EQ(completed.completion->Outcome(), ulog::OperationOutcome::kSucceeded);
+  ASSERT_EQ(RequireValue(completed.completion).Outcome(), ulog::OperationOutcome::kSucceeded);
 
   auto frame = destination.TryTake();
   ASSERT_TRUE(frame.has_value());
-  const std::string_view encoded = frame->Bytes();
+  const std::string_view encoded = RequireValue(frame).Bytes();
   constexpr std::string_view kPrefix{"tskv\tulog.truncated=1\ttext="};
   ASSERT_TRUE(encoded.starts_with(kPrefix));
   ASSERT_TRUE(encoded.ends_with("\n"));
@@ -155,7 +171,7 @@ TEST(RuntimeEncodedTracer, PausedAndHeldSlotBackpressurePreservesFifoAndExactAcc
   config.payload_capacity_bytes = 1'024;
   config.ingress_cells = 2;
   auto created = ulog::Runtime::Create(config, destination);
-  ASSERT_TRUE(created) << created.failure->Message();
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
   const ulog::Logger logger = created.runtime->GetLogger();
 
   LOG_INFO_TO(logger, "first");
@@ -176,19 +192,19 @@ TEST(RuntimeEncodedTracer, PausedAndHeldSlotBackpressurePreservesFifoAndExactAcc
 
   auto first = WaitForEncodedRecord(destination, std::chrono::steady_clock::now() + 1s);
   ASSERT_TRUE(first.has_value());
-  EXPECT_EQ(first->AdmissionSequence(), 0U);
-  EXPECT_EQ(first->Bytes(), "tskv\ttext=first\n");
-  const std::string_view pinned_bytes = first->Bytes();
+  EXPECT_EQ(RequireValue(first).AdmissionSequence(), 0U);
+  EXPECT_EQ(RequireValue(first).Bytes(), "tskv\ttext=first\n");
+  const std::string_view pinned_bytes = RequireValue(first).Bytes();
   const auto blocked = drain.operation.WaitUntil(std::chrono::steady_clock::now() + 50ms);
   EXPECT_EQ(blocked.status, ulog::OperationWaitStatus::kDeadlineExceeded);
-  EXPECT_EQ(first->Bytes(), pinned_bytes);
+  EXPECT_EQ(RequireValue(first).Bytes(), pinned_bytes);
 
   first.reset();
   ExpectSucceeded(drain);
   auto second = destination.TryTake();
   ASSERT_TRUE(second.has_value());
-  EXPECT_EQ(second->AdmissionSequence(), 1U);
-  EXPECT_EQ(second->Bytes(), "tskv\ttext=second\n");
+  EXPECT_EQ(RequireValue(second).AdmissionSequence(), 1U);
+  EXPECT_EQ(RequireValue(second).Bytes(), "tskv\ttext=second\n");
 
   const auto drained = created.runtime->GetSnapshot();
   EXPECT_EQ(drained.completed_records, 2U);
@@ -208,7 +224,7 @@ TEST(RuntimeEncodedTracer, PausedDestinationClaimsNoSlotAcrossWorkerRechecks) {
       .start_paused = true,
   }};
   auto created = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
-  ASSERT_TRUE(created) << created.failure->Message();
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
   const ulog::Logger logger = created.runtime->GetLogger();
 
   LOG_INFO_TO(logger, "held");
@@ -230,8 +246,8 @@ TEST(RuntimeEncodedTracer, PausedDestinationClaimsNoSlotAcrossWorkerRechecks) {
   ExpectSucceeded(drain);
   auto frame = destination.TryTake();
   ASSERT_TRUE(frame.has_value());
-  EXPECT_EQ(frame->AdmissionSequence(), 0U);
-  EXPECT_EQ(frame->Bytes(), "tskv\ttext=held\n");
+  EXPECT_EQ(RequireValue(frame).AdmissionSequence(), 0U);
+  EXPECT_EQ(RequireValue(frame).Bytes(), "tskv\ttext=held\n");
 
   auto shutdown = created.runtime->Shutdown();
   ExpectSucceeded(shutdown);
@@ -245,7 +261,7 @@ TEST(RuntimeEncodedTracer, ObservationRemainsValidAfterDestinationAndRuntimeDest
         .maximum_record_bytes = 512,
     }};
     auto created = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
-    ASSERT_TRUE(created) << created.failure->Message();
+    ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
     const ulog::Logger logger = created.runtime->GetLogger();
     LOG_INFO_TO(logger, "survives");
     auto shutdown = created.runtime->Shutdown();
@@ -255,8 +271,8 @@ TEST(RuntimeEncodedTracer, ObservationRemainsValidAfterDestinationAndRuntimeDest
     created.runtime.reset();
   }
 
-  EXPECT_EQ(observed->AdmissionSequence(), 0U);
-  EXPECT_EQ(observed->Bytes(), "tskv\ttext=survives\n");
+  EXPECT_EQ(RequireValue(observed).AdmissionSequence(), 0U);
+  EXPECT_EQ(RequireValue(observed).Bytes(), "tskv\ttext=survives\n");
 }
 
 TEST(RuntimeEncodedTracer, DestinationBoundIsDerivedAndStateAttachesOnlyOnce) {
@@ -269,12 +285,14 @@ TEST(RuntimeEncodedTracer, DestinationBoundIsDerivedAndStateAttachesOnlyOnce) {
   EXPECT_EQ(destination.MaximumEncodedRecordBytes(), 1'035U);
 
   auto first = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
-  ASSERT_TRUE(first) << first.failure->Message();
+  ASSERT_TRUE(first) << (first.failure ? first.failure->Message() : "missing Runtime");
   auto concurrent = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
   ASSERT_FALSE(concurrent);
   ASSERT_TRUE(concurrent.failure.has_value());
-  EXPECT_EQ(concurrent.failure->code, ulog::RuntimeCreateErrorCode::kInvalidDestination);
-  EXPECT_NE(concurrent.failure->HowToFix().find("destination"), std::string_view::npos);
+  EXPECT_EQ(RequireValue(concurrent.failure).code,
+            ulog::RuntimeCreateErrorCode::kInvalidDestination);
+  EXPECT_NE(RequireValue(concurrent.failure).HowToFix().find("destination"),
+            std::string_view::npos);
 
   auto shutdown = first.runtime->Shutdown();
   ExpectSucceeded(shutdown);
@@ -283,7 +301,8 @@ TEST(RuntimeEncodedTracer, DestinationBoundIsDerivedAndStateAttachesOnlyOnce) {
   auto sequential = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
   ASSERT_FALSE(sequential);
   ASSERT_TRUE(sequential.failure.has_value());
-  EXPECT_EQ(sequential.failure->code, ulog::RuntimeCreateErrorCode::kInvalidDestination);
+  EXPECT_EQ(RequireValue(sequential.failure).code,
+            ulog::RuntimeCreateErrorCode::kInvalidDestination);
 }
 
 TEST(RuntimeEncodedTracer, RuntimeRejectsDestinationWhoseRecordBoundIsTooSmall) {
@@ -294,8 +313,9 @@ TEST(RuntimeEncodedTracer, RuntimeRejectsDestinationWhoseRecordBoundIsTooSmall) 
   auto created = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
   ASSERT_FALSE(created);
   ASSERT_TRUE(created.failure.has_value());
-  EXPECT_EQ(created.failure->code, ulog::RuntimeCreateErrorCode::kInvalidDestination);
-  EXPECT_NE(created.failure->HowToFix().find("maximum_record_bytes"), std::string_view::npos);
+  EXPECT_EQ(RequireValue(created.failure).code, ulog::RuntimeCreateErrorCode::kInvalidDestination);
+  EXPECT_NE(RequireValue(created.failure).HowToFix().find("maximum_record_bytes"),
+            std::string_view::npos);
 }
 
 TEST(RuntimeEncodedTracer, DestinationConfigurationErrorsAreActionableBeforeAllocation) {
