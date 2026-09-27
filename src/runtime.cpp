@@ -1058,8 +1058,11 @@ struct Runtime::Impl final {
         result.failure.emplace(RuntimeCreateErrorCode::kInvalidFilePath);
         return;
       }
-      sink = std::make_unique<RawFileSink>(std::move(*path), route.write_buffers,
-                                           config.maximum_record_bytes, faults);
+      sink = std::make_unique<RawFileSink>(
+          detail::io::FileSinkConfig{.path_utf8 = std::move(*path),
+                                     .write_buffers = route.write_buffers,
+                                     .maximum_record_bytes = config.maximum_record_bytes,
+                                     .faults = faults});
     } catch (const std::bad_alloc&) {
       result.failure.emplace(RuntimeCreateErrorCode::kAllocationFailed);
       return;
@@ -1132,7 +1135,8 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config,
   return result;
 }
 
-RuntimeCreateResult Runtime::Create(RuntimeConfig config, RawFileRouteConfig route) noexcept {
+RuntimeCreateResult Runtime::Create(RuntimeConfig config,
+                                    const RawFileRouteConfig& route) noexcept {
   RuntimeCreateResult result;
   Impl::CreateFileInto(config, route, {}, result);
   return result;

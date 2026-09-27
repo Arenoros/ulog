@@ -48,6 +48,19 @@ struct FileSinkStartResult final {
   std::int32_t io_error{0};
 };
 
+struct FileSinkConfig final {
+  /// Path bytes passed to libuv: UTF-8 on Windows and native bytes elsewhere.
+  std::string path_utf8;
+  std::size_t write_buffers{0};
+  std::size_t maximum_record_bytes{0};
+  FileFaultPlan faults{};
+};
+
+struct FileSlotIdentity final {
+  std::size_t index{0};
+  std::uint64_t generation{0};
+};
+
 struct RawFileSinkState;
 
 /// Exclusive worker ownership of one Runtime-owned encoded frame buffer.
@@ -68,13 +81,11 @@ class FileWriteClaim final {
  private:
   friend class RawFileSink;
 
-  FileWriteClaim(std::shared_ptr<RawFileSinkState> state, std::size_t index,
-                 std::uint64_t generation) noexcept;
+  FileWriteClaim(std::shared_ptr<RawFileSinkState> state, FileSlotIdentity identity) noexcept;
   void Reset() noexcept;
 
   std::shared_ptr<RawFileSinkState> state_;
-  std::size_t index_{0};
-  std::uint64_t generation_{0};
+  FileSlotIdentity identity_{};
 };
 
 /// Appends Raw frames to one file through a Runtime-owned libuv loop on a dedicated thread.
@@ -84,8 +95,7 @@ class FileWriteClaim final {
 /// continues partial writes from the known frame offset, and never replays a failed frame.
 class RawFileSink final {
  public:
-  RawFileSink(std::string path_utf8, std::size_t write_buffers, std::size_t maximum_record_bytes,
-              FileFaultPlan faults);
+  explicit RawFileSink(FileSinkConfig config);
   ~RawFileSink();
 
   RawFileSink(const RawFileSink&) = delete;

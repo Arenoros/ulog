@@ -58,12 +58,11 @@ constexpr std::uint64_t kDirectoryType = 0040000;
 }  // namespace
 
 struct RawFileSinkState final {
-  RawFileSinkState(std::string path_utf8, std::size_t write_buffers,
-                   std::size_t maximum_record_bytes, FileFaultPlan fault_plan)
-      : path(std::move(path_utf8)),
-        buffer_count(write_buffers),
-        buffer_bytes(encoding::MaximumRawEncodedBytes(maximum_record_bytes)),
-        faults(fault_plan),
+  explicit RawFileSinkState(FileSinkConfig config)
+      : path(std::move(config.path_utf8)),
+        buffer_count(config.write_buffers),
+        buffer_bytes(encoding::MaximumRawEncodedBytes(config.maximum_record_bytes)),
+        faults(config.faults),
         buffers(std::make_unique<char[]>(buffer_count * buffer_bytes)),
         slots(std::make_unique<FileSlot[]>(buffer_count)) {}
 
@@ -344,21 +343,18 @@ void RunLoop(RawFileSinkState& state) noexcept {
 
 }  // namespace
 
-FileWriteClaim::FileWriteClaim(std::shared_ptr<RawFileSinkState> state, std::size_t index,
-                               std::uint64_t generation) noexcept
-    : state_(std::move(state)), index_(index), generation_(generation) {}
+FileWriteClaim::FileWriteClaim(std::shared_ptr<RawFileSinkState> state,
+                               FileSlotIdentity identity) noexcept
+    : state_(std::move(state)), identity_(identity) {}
 
 FileWriteClaim::FileWriteClaim(FileWriteClaim&& other) noexcept
-    : state_(std::move(other.state_)),
-      index_(std::exchange(other.index_, 0)),
-      generation_(std::exchange(other.generation_, 0)) {}
+    : state_(std::move(other.state_)), identity_(std::exchange(other.identity_, {})) {}
 
 FileWriteClaim& FileWriteClaim::operator=(FileWriteClaim&& other) noexcept {
   if (this != &other) {
     Reset();
     state_ = std::move(other.state_);
-    index_ = std::exchange(other.index_, 0);
-    generation_ = std::exchange(other.generation_, 0);
+    identity_ = std::exchange(other.identity_, {});
   }
   return *this;
 }
@@ -371,8 +367,8 @@ void FileWriteClaim::Reset() noexcept {
   }
   const auto state = std::move(state_);
   std::lock_guard lock{state->mutex};
-  auto& slot = state->slots[index_];
-  if (slot.state == FileSlotState::kReserved && slot.generation == generation_) {
+  auto& slot = state->slots[identity_.index];
+  if (slot.state == FileSlotState::kReserved && slot.generation == identity_.generation) {
     slot.state = FileSlotState::kFree;
   }
 }
@@ -383,8 +379,8 @@ route::StoreResult FileWriteClaim::StoreRaw(std::uint64_t admission_sequence,
     return {};
   }
   auto& state = *state_;
-  const auto encoded =
-      encoding::EncodeRawRecord(record, std::span<char>{state.Buffer(index_), state.buffer_bytes});
+  const auto encoded = encoding::EncodeRawRecord(
+      record, std::span<char>{state.Buffer(identity_.index), state.buffer_bytes});
   if (!encoded.complete) {
     Reset();
     return {};
@@ -392,8 +388,8 @@ route::StoreResult FileWriteClaim::StoreRaw(std::uint64_t admission_sequence,
 
   {
     std::lock_guard lock{state.mutex};
-    auto& slot = state.slots[index_];
-    if (slot.state != FileSlotState::kReserved || slot.generation != generation_) {
+    auto& slot = state.slots[identity_.index];
+    if (slot.state != FileSlotState::kReserved || slot.generation != identity_.generation) {
       return {};
     }
     slot.admission_sequence = admission_sequence;
@@ -412,10 +408,8 @@ route::StoreResult FileWriteClaim::StoreRaw(std::uint64_t admission_sequence,
   return {.encoded_bytes = encoded.encoded_bytes, .submitted = true};
 }
 
-RawFileSink::RawFileSink(std::string path_utf8, std::size_t write_buffers,
-                         std::size_t maximum_record_bytes, FileFaultPlan faults)
-    : state_(std::make_shared<RawFileSinkState>(std::move(path_utf8), write_buffers,
-                                                maximum_record_bytes, faults)) {}
+RawFileSink::RawFileSink(FileSinkConfig config)
+    : state_(std::make_shared<RawFileSinkState>(std::move(config))) {}
 
 RawFileSink::~RawFileSink() {
   Stop();
@@ -465,7 +459,7 @@ FileWriteClaim RawFileSink::TryClaimWrite() noexcept {
     if (slot.state == FileSlotState::kFree && slot.delivery == FileDeliveryState::kRetired) {
       slot.generation = NextGeneration(slot.generation);
       slot.state = FileSlotState::kReserved;
-      return FileWriteClaim{state_, index, slot.generation};
+      return FileWriteClaim{state_, {.index = index, .generation = slot.generation}};
     }
   }
   return {};

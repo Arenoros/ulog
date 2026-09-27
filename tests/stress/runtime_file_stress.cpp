@@ -70,7 +70,7 @@ class Watchdog final {
 [[nodiscard]] ulog::RuntimeConfig StressConfig() noexcept {
   return ulog::RuntimeConfig{
       .threshold = ulog::Level::kTrace,
-      .payload_capacity_bytes = 4U * 256U,
+      .payload_capacity_bytes = kProducerCount * std::size_t{256},
       .maximum_record_bytes = 256,
       .producer_slots = kProducerCount,
       .ingress_cells = kProducerCount,

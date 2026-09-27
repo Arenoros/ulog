@@ -111,8 +111,8 @@ class Runtime final {
   [[nodiscard]] static ULOG_API RuntimeCreateResult
   Create(RuntimeConfig config, testing::InMemoryEncodedDestination destination) noexcept;
   /// Opens the file on a dedicated I/O loop thread before returning a usable Runtime.
-  [[nodiscard]] static ULOG_API RuntimeCreateResult Create(RuntimeConfig config,
-                                                           RawFileRouteConfig route) noexcept;
+  [[nodiscard]] static ULOG_API RuntimeCreateResult
+  Create(RuntimeConfig config, const RawFileRouteConfig& route) noexcept;
 
   Runtime(const Runtime&) = delete;
   Runtime& operator=(const Runtime&) = delete;
