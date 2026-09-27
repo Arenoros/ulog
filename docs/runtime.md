@@ -1,16 +1,17 @@
-# In-memory Runtime tracer
+# Runtime
 
 The installed package provides a concrete, bounded `ulog::Runtime` that moves
-accepted native Records through one FIFO worker route into either
-`ulog::testing::InMemoryDestination` or
-`ulog::testing::InMemoryEncodedDestination`. The structured destination exposes
+accepted native Records through one FIFO worker route. The production route is the
+[Raw file route](#raw-file-route), which appends encoded frames to a file through
+Ulog's private libuv loop. Two in-memory test destinations,
+`ulog::testing::InMemoryDestination` and
+`ulog::testing::InMemoryEncodedDestination`, make the same pipeline observable. The structured destination exposes
 Record contents; the encoded destination runs the built-in Raw encoder on the
 worker, submits each frame as one serialized delivery, and exposes exact bytes.
 Its deliveries can complete inline, fail inline, or stay held until the test
 completes them. These are executable Runtime test seams: they make admission,
 ownership, ordering, encoding, delivery completion, control, and shutdown
-behavior observable without introducing a generic destination abstraction or
-asynchronous I/O.
+behavior observable without introducing a generic destination abstraction.
 
 Include the public interfaces with:
 
@@ -66,10 +67,10 @@ the worker before returning a usable Runtime. It reports creation failures throu
 `RuntimeCreateResult`; it does not throw. The separately constructed
 `InMemoryDestination` rejects invalid destination configuration with
 `std::invalid_argument`. This lifecycle follows
-[ADR 0012](adr/0012-own-runtime-and-libuv-lifecycle-explicitly.md) without adding the
-later libuv loop.
+[ADR 0012](adr/0012-own-runtime-and-libuv-lifecycle-explicitly.md); only the file
+route adds the private libuv loop.
 
-The current tracer accepts these Runtime bounds:
+The current Runtime accepts these bounds:
 
 - `threshold` is `kTrace` through `kNone`;
 - `maximum_record_bytes` is a 64-byte multiple from 128 through 16,384;
@@ -80,8 +81,9 @@ The current tracer accepts these Runtime bounds:
 - `control_operations` is from 1 through 64;
 - `worker_threads` is exactly 1;
 - startup and destruction timeouts are positive and no greater than 24 hours; and
-- the destination has non-zero capacity and a `maximum_record_bytes` at least as
-  large as the Runtime value.
+- an in-memory destination has non-zero capacity and a `maximum_record_bytes` at
+  least as large as the Runtime value; and
+- a file route has a non-empty file path and 1 through 64 `write_buffers`.
 
 `RuntimeSnapshot` exposes weakly consistent admission, completion, delivery,
 rejection, retained-payload, and lifecycle counters. `processed_records` and
@@ -96,8 +98,13 @@ route. `encoding_failed_records` counts internal encoding-invariant failures; su
 a failure commits no partial frame, cancels unfinished deliveries, and fails
 pending Drain or Shutdown Operations.
 
-`fixed_backing_bytes` reports the capacity-scaled ingress Record slots,
-destination payload and slot metadata, control nodes, and action table separately
+`route_failed` reports a route stopped by an encoding, write, or close failure, and
+`route_io_error` holds the libuv error of a failed file route. Pass it to
+`ulog::IoErrorName()` for a stable name such as `EIO`.
+
+`fixed_backing_bytes` reports the capacity-scaled ingress Record slots, destination
+payload or file write buffers with their slot metadata, file-sink loop state,
+control nodes, and action table separately
 from live retained bytes. It is stable for a Runtime but is not a process-memory
 total: constant-size Runtime objects, allocation bookkeeping, platform
 synchronization objects, and thread stacks are excluded.
@@ -222,6 +229,60 @@ any destination slot; `Resume()` releases that gate permanently. This makes ingr
 saturation and pre-evaluation rejection reproducible without timing assumptions. It
 is not a production flow-control API.
 
+## Raw file route
+
+`Runtime::Create(RuntimeConfig, RawFileRouteConfig)` builds one immutable Raw route
+that appends every accepted Record to a file:
+
+```cpp
+auto created = ulog::Runtime::Create(
+    ulog::RuntimeConfig{.threshold = ulog::Level::kInfo},
+    ulog::RawFileRouteConfig{.path = "logs/app.log", .write_buffers = 8});
+if (!created) {
+  const ulog::RuntimeCreateFailure& failure = *created.failure;
+  ReportConfigurationError(failure.Message(), failure.HowToFix(),
+                           ulog::IoErrorName(failure.io_error));
+  return;
+}
+```
+
+The path is created when missing and always opened for append; existing bytes are
+kept. It is passed to libuv as UTF-8 on Windows and as native bytes elsewhere, so
+Unicode names work on every supported platform. An empty path, a path containing
+NUL, a path without a file name such as `logs/`, or a name without a UTF-8
+representation fails as `kInvalidFilePath`.
+
+`write_buffers` is the number of Runtime-owned complete-frame buffers, from 1
+through 64. Each holds one Raw frame of up to `2 * maximum_record_bytes + 11`
+bytes, so the setting bounds queued and in-flight appends and their bytes. The
+buffers, their metadata, and the loop state are allocated during `Create` and
+reported in `fixed_backing_bytes`.
+
+`Create` validates the configuration, allocates the buffers, starts the worker,
+and starts a dedicated I/O thread that owns a private libuv loop. That thread
+opens the file before `Create` returns. A loop that cannot start fails as
+`kIoLoopStartFailed`; a file that cannot be opened fails as `kFileOpenFailed`.
+Both failures carry the negative libuv error in `io_error`, and `HowToFix()` names
+the usual corrections, such as creating the parent directory or granting write
+permission. Ulog never reads or changes the process-wide `UV_THREADPOOL_SIZE`.
+
+Producers only publish Records. The worker encodes each Record into a free buffer
+and queues it; the I/O thread performs one `uv_fs_write` append at a time in
+admission order and runs every filesystem callback. A short write continues from
+the frame's known offset, so frames never interleave. When every buffer is queued,
+being written, or waiting for the worker to retire its outcome, the worker stops
+taking Records from ingress and producers shed later Records as drop-newest
+without waiting.
+
+A write error, or a write that makes no progress, stops the route. That Record is
+counted as failed and is never retried or replayed, even though the file may keep
+the prefix already written. Queued frames are cancelled, admission closes, pending
+Drain and Shutdown Operations complete as `kFailed` with exact reports, and
+`RuntimeSnapshot::route_failed` and `route_io_error` expose the failure. Ulog
+reports it only through these values: it throws nothing and writes nothing to
+stderr. A later Runtime with a new file route is the recovery path until Reopen
+exists.
+
 ## Drain, Shutdown, and destruction
 
 `Drain()` and `Shutdown()` return the public
@@ -238,11 +299,16 @@ control slot is already retained.
   Ready and observed Records still occupy destination slots: when the watermark
   exceeds the available slots, Drain waits for the application to call `TryTake()`
   and release enough observations for the remaining copies.
+- On the file route, a Record reaches its terminal outcome when libuv reports that
+  its whole frame was written to the file. Drain neither performs nor claims
+  `fsync`, as defined by
+  [ADR 0013](adr/0013-separate-drain-from-durable-file-flush.md).
 - The first `Shutdown()` closes admission before returning, so later logging through
   an existing Logger is rejected before evaluation. The worker finishes every
-  accepted Record, including held deliveries, completes the action, and exits.
-  Shutdown is not a durable file flush; the distinction remains defined by
-  [ADR 0013](adr/0013-separate-drain-from-durable-file-flush.md).
+  accepted Record, including held deliveries. The file route then closes its file
+  and loop; a close failure completes Shutdown as `kFailed` after delivery.
+  Shutdown then completes and the worker exits. Shutdown is not a durable file
+  flush.
 
 Both actions succeed when their barrier is reached, even if some deliveries failed.
 The [`OperationReport`](operations.md#completion-report) returned with the result
@@ -253,24 +319,28 @@ completed earlier. Shutdown reports every admitted Record. A caller that needs t
 outcome of one interval compares consecutive reports.
 
 Runtime destruction is bounded best-effort cleanup, not an implicit successful
-Drain. It closes admission, stops any destination wait, cancels held deliveries,
-completes pending Operations as `kCancelled` with their exact reports, and discards
-retained ingress Records. Cancelled deliveries and discarded Records are reported as
-unfinished. It waits at most `destruction_timeout` for the worker; if the worker
-has not reported completion, the thread detaches while retaining shared internal
-state so that it cannot access the destroyed Runtime object. Call `Shutdown()` and
+Drain. It closes admission, stops any destination wait, cancels held deliveries and
+queued file appends, completes pending Operations as `kCancelled` with their exact
+reports, and discards retained ingress Records. Cancelled deliveries and discarded
+Records are reported as unfinished. An append already submitted to the operating
+system cannot be cancelled: the I/O thread finishes that frame, closes the file,
+and exits, so the file keeps only whole frames. Destruction waits at most
+`destruction_timeout` for the worker and the I/O thread; a thread that has not
+finished detaches while retaining shared internal state so that it cannot access
+the destroyed Runtime object. Call `Shutdown()` and
 observe its successful Operation when delivery is required.
 
 ## Current boundary
 
-Each tracer intentionally has one immutable route, one worker, drop-newest admission,
-and one bounded in-memory test destination. The private route selects either the
-structured copy or built-in Raw encoding at construction. Its fixed topology follows
+Each Runtime intentionally has one immutable route, one worker, and drop-newest
+admission. The private route selects the Raw file route, the structured in-memory
+copy, or the Raw-encoded in-memory destination at construction. Its fixed topology follows
 [ADR 0015](adr/0015-keep-route-topology-immutable.md). The following remain later
 roadmap work:
 
 - generic Encoder, Sink, and ContextProvider extension seams;
-- filesystem, network, IPC, or libuv-backed delivery;
+- file truncation, Reopen, rotation, and Durable Flush;
+- network and IPC delivery;
 - multiple routes, route reliability classes, and route-local budgets;
 - batching, retry, reconnect, and durable flush; and
 - alternative shedding policies.

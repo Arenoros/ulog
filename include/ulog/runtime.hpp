@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -18,6 +19,10 @@ class InMemoryDestination;
 class InMemoryEncodedDestination;
 }  // namespace testing
 
+namespace detail {
+struct RuntimeFactoryAccess;
+}  // namespace detail
+
 struct RuntimeConfig final {
   Level threshold{Level::kInfo};
   std::size_t payload_capacity_bytes{1U << 20U};
@@ -28,6 +33,14 @@ struct RuntimeConfig final {
   std::size_t worker_threads{1};
   std::chrono::milliseconds startup_timeout{5'000};
   std::chrono::milliseconds destruction_timeout{1'000};
+};
+
+/// One immutable route that appends Raw frames to a file through Ulog's private I/O loop.
+struct RawFileRouteConfig final {
+  /// File created if missing and always opened for append. Must name a file, not a directory.
+  std::filesystem::path path{};
+  /// Runtime-owned complete-frame buffers; bounds queued and in-flight appends and their bytes.
+  std::size_t write_buffers{8};
 };
 
 enum class RuntimeCreateErrorCode : std::uint8_t {
@@ -44,10 +57,16 @@ enum class RuntimeCreateErrorCode : std::uint8_t {
   kAllocationFailed,
   kWorkerStartFailed,
   kWorkerStartupTimedOut,
+  kInvalidFilePath,
+  kInvalidWriteBuffers,
+  kIoLoopStartFailed,
+  kFileOpenFailed,
 };
 
 struct RuntimeCreateFailure final {
   RuntimeCreateErrorCode code{RuntimeCreateErrorCode::kAllocationFailed};
+  /// Negative libuv error for I/O loop or file-open failures; zero otherwise. See IoErrorName().
+  std::int32_t io_error{0};
 
   [[nodiscard]] ULOG_API std::string_view Message() const noexcept;
   [[nodiscard]] ULOG_API std::string_view HowToFix() const noexcept;
@@ -74,7 +93,14 @@ struct RuntimeSnapshot final {
   std::size_t fixed_backing_bytes{0};
   bool admission_open{false};
   bool worker_running{false};
+  /// The route stopped after an encoding, write, or close failure.
+  bool route_failed{false};
+  /// Negative libuv error that failed a file route; zero for other failures or a healthy route.
+  std::int32_t route_io_error{0};
 };
+
+/// Returns the stable libuv error name for a Ulog I/O error, such as "ENOENT", or "UNKNOWN".
+[[nodiscard]] ULOG_API std::string_view IoErrorName(std::int32_t io_error) noexcept;
 
 struct RuntimeCreateResult;
 
@@ -84,6 +110,9 @@ class Runtime final {
   Create(RuntimeConfig config, testing::InMemoryDestination destination) noexcept;
   [[nodiscard]] static ULOG_API RuntimeCreateResult
   Create(RuntimeConfig config, testing::InMemoryEncodedDestination destination) noexcept;
+  /// Opens the file on a dedicated I/O loop thread before returning a usable Runtime.
+  [[nodiscard]] static ULOG_API RuntimeCreateResult Create(RuntimeConfig config,
+                                                           RawFileRouteConfig route) noexcept;
 
   Runtime(const Runtime&) = delete;
   Runtime& operator=(const Runtime&) = delete;
@@ -98,6 +127,7 @@ class Runtime final {
   [[nodiscard]] ULOG_API OperationStartResult Shutdown() noexcept;
 
  private:
+  friend struct detail::RuntimeFactoryAccess;
   struct Impl;
   explicit Runtime(std::unique_ptr<Impl> impl) noexcept;
 

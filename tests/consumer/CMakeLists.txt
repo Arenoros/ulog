@@ -18,11 +18,16 @@ add_executable(ulog-installed-raw-runtime-consumer raw_runtime_main.cpp)
 target_compile_features(ulog-installed-raw-runtime-consumer PRIVATE cxx_std_20)
 target_link_libraries(ulog-installed-raw-runtime-consumer PRIVATE ulog::ulog)
 
+add_executable(ulog-installed-file-runtime-consumer file_runtime_main.cpp)
+target_compile_features(ulog-installed-file-runtime-consumer PRIVATE cxx_std_20)
+target_link_libraries(ulog-installed-file-runtime-consumer PRIVATE ulog::ulog)
+
 if(WIN32)
   get_target_property(_ulog_imported_type ulog::ulog TYPE)
   if(_ulog_imported_type STREQUAL "SHARED_LIBRARY")
-    foreach(_ulog_consumer IN ITEMS ulog-installed-consumer ulog-installed-runtime-consumer
-                                    ulog-installed-raw-runtime-consumer
+    foreach(_ulog_consumer IN
+            ITEMS ulog-installed-consumer ulog-installed-runtime-consumer
+                  ulog-installed-raw-runtime-consumer ulog-installed-file-runtime-consumer
     )
       add_custom_command(
         TARGET ${_ulog_consumer}
@@ -38,6 +43,8 @@ endif()
 add_test(NAME ulog.installed-consumer COMMAND ulog-installed-consumer)
 add_test(NAME ulog.installed-runtime-consumer COMMAND ulog-installed-runtime-consumer)
 add_test(NAME ulog.installed-raw-runtime-consumer COMMAND ulog-installed-raw-runtime-consumer)
+add_test(NAME ulog.installed-file-runtime-consumer COMMAND ulog-installed-file-runtime-consumer)
 set_tests_properties(
-  ulog.installed-runtime-consumer ulog.installed-raw-runtime-consumer PROPERTIES TIMEOUT 10
+  ulog.installed-runtime-consumer ulog.installed-raw-runtime-consumer
+  ulog.installed-file-runtime-consumer PROPERTIES TIMEOUT 10
 )

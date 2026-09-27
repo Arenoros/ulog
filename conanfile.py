@@ -93,14 +93,14 @@ class UlogConan(ConanFile):
 
     def requirements(self):
         self.requires("fmt/12.1.0", transitive_headers=True, transitive_libs=True)
+        # Private I/O backend: no libuv header or type appears in Ulog's public API.
+        self.requires("libuv/1.51.0")
 
     def build_requirements(self):
         if self.options.build_tests:
             self.test_requires("gtest/1.17.0")
         if self.options.build_benchmarks:
             self.test_requires("benchmark/1.9.5")
-        if self.options.dependency_smoke:
-            self.test_requires("libuv/1.51.0")
 
     def package_id(self):
         for option in (
@@ -167,7 +167,7 @@ class UlogConan(ConanFile):
         self.cpp_info.set_property("cmake_file_name", "ulog")
         self.cpp_info.set_property("cmake_target_name", "ulog::ulog")
         self.cpp_info.libs = ["ulog"]
-        self.cpp_info.requires = ["fmt::fmt"]
+        self.cpp_info.requires = ["fmt::fmt", "libuv::libuv"]
         if self.settings.os == "Linux":
             self.cpp_info.system_libs = ["pthread"]
         if not self.options.shared:

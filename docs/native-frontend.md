@@ -38,7 +38,7 @@ The result must be usable as `std::string_view` and is consumed before the
 factory result is destroyed. Caller exceptions can only occur if the factory is
 admitted and remain outside Ulog's no-exception guarantee.
 
-The concrete [in-memory Runtime tracer](runtime.md) uses this same Logger
+The concrete [Runtime](runtime.md) uses this same Logger
 dispatch. It claims a producer-local ingress cell and reserves the complete
 configured worst-case Record charge before evaluating the factory, then copies
 the source and message into bounded owned storage. Rejected calls therefore

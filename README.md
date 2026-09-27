@@ -3,18 +3,19 @@
 Ulog is a standalone, performance-oriented C++20 logging library under active
 development. Its current production interface exposes native levels, source
 locations, a cheap Logger handle, bounded Operation completion primitives, and
-the basic text/fmt `LOG*` macro family. The installed package also exposes
-bounded single-route Runtime tracers backed by structured-record and Raw-encoded
-in-memory test destinations, including deferred Raw delivery completion with
-exact Drain and Shutdown reports.
+the basic text/fmt `LOG*` macro family. The installed package also exposes a
+bounded single-route Runtime whose production route appends Raw frames to a file
+through a private libuv loop, plus structured-record and Raw-encoded in-memory
+test destinations with deferred delivery completion and exact Drain and Shutdown
+reports.
 The initial process-wide target is a static Null Logger. Applications can
 atomically replace that non-owning target; Runtime does not install its Logger
 automatically.
 
 The design preserves the capabilities of the pinned reference implementation
 without source or API compatibility and without depending on that project.
-Windows, Linux, and macOS are first-class targets. Native asynchronous file,
-network, and IPC implementations will use libuv.
+Windows, Linux, and macOS are first-class targets. Asynchronous file delivery
+uses a private libuv loop; network and IPC delivery will use it as well.
 
 ## Build the bootstrap
 
@@ -22,8 +23,8 @@ CMake 3.20 or newer is required. Presets require CMake 3.25 or newer. On
 Windows, run CMake from a Visual Studio developer shell. Agents and automation
 may use `scripts\\with-msvc.cmd` to locate and activate the newest installed MSVC
 toolchain without hard-coding a Visual Studio version. fmt 12 is a public
-dependency; make its CMake package available directly or prepare the pinned
-Conan dependencies first:
+dependency and libuv 1.51 a private one; make their CMake packages available
+directly or prepare the pinned Conan dependencies first:
 
 ```shell
 conan profile detect --force
@@ -51,6 +52,19 @@ The native frontend is available from public package headers:
 LOG_INFO("startup reached");
 LOG_WARNING("retry {} of {}", retry, maximum_retries);
 LOG_ERROR_TO(logger, "request failed: {}", error_text);
+```
+
+A Runtime writes to a file through its Raw file route:
+
+```cpp
+#include <ulog/runtime.hpp>
+
+auto created = ulog::Runtime::Create(ulog::RuntimeConfig{},
+                                     ulog::RawFileRouteConfig{.path = "logs/app.log"});
+if (!created) return Report(created.failure->Message(), created.failure->HowToFix());
+const ulog::Logger logger = created.runtime->GetLogger();
+LOG_INFO_TO(logger, "written by the I/O loop thread");
+auto shutdown = created.runtime->Shutdown();  // wait on shutdown.operation before exit
 ```
 
 The initial target is the Null Logger and suppresses the factory without

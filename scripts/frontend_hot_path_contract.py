@@ -59,6 +59,13 @@ FORBIDDEN_CONTROL_REFERENCES = (
     "OperationCallback",
     "OperationWait",
 )
+FORBIDDEN_IO_REFERENCES = (
+    "<uv.h>",
+    '#include "io/',
+    "detail::io",
+    "uv_fs_",
+    "uv_loop",
+)
 FORBIDDEN_BLOCKING_OR_OWNING_PRIMITIVES = (
     "std::mutex",
     "std::recursive_mutex",
@@ -131,6 +138,18 @@ def validate_control_isolation(sources: dict[str, str]) -> None:
         raise FrontendHotPathContractError(
             "The ordinary logger/producer path gained a control-state dependency. Operation and "
             f"control-reserve code must remain outside LOG* calls: {control_references}."
+        )
+
+    io_references = sorted(
+        (path, token)
+        for path, source in sources.items()
+        for token in FORBIDDEN_IO_REFERENCES
+        if token in source
+    )
+    if io_references:
+        raise FrontendHotPathContractError(
+            "The ordinary logger/producer path gained an I/O dependency. Producers must not call "
+            f"libuv or file delivery; keep I/O on the Runtime loop thread: {io_references}."
         )
 
     forbidden_primitives = sorted(

@@ -6,16 +6,19 @@ The repository establishes seven independent test categories:
   Null-Logger allocation/ownership guarantees, atomic Default Logger exchange,
   stale-target completion, bounded producer transactions, Operation polling,
   deadlines, callback dispatch, control-reserve exhaustion, structured and Raw
-  in-memory Runtime lifecycle, saturation, exact encoding, and test memory resources;
+  in-memory Runtime lifecycle, saturation, exact encoding, Raw file-route
+  append, Unicode paths, validation and open errors, injected partial writes and
+  open/write/close failures, and test memory resources;
 - `integration`/`package`: install Ulog, configure a copied external project,
-  link only `ulog::ulog`, and exercise the frontend and in-memory Runtime tracer
-  through installed public headers;
+  link only `ulog::ulog`, and exercise the frontend, in-memory Runtime tracers,
+  and a Raw file route writing a temporary file through installed public headers;
 - `dependencies`: compile and run the production fmt integration together with
-  the planned libuv dependency boundary;
+  the private libuv dependency;
 - `stress`: deterministic concurrent checks for allocation instrumentation,
   linearizable Default Logger exchange, stale-target dispatch, producer-lane
   saturation, FIFO publication and Raw delivery, byte conservation, retirement,
-  bounded destruction, and race-free weak snapshots, plus completion/callback
+  bounded destruction, concurrent split file appends, Runtime destruction during
+  active appends, and race-free weak snapshots, plus completion/callback
   registration races;
 - `tooling`: regression checks for dependency-graph enforcement and benchmark
   result collection, plus the frontend atomic-load and producer hot-path
@@ -75,8 +78,15 @@ in-flight pressure, and cancellation observable without timing assumptions. Runt
 explicit Drain or Shutdown Operations and bounded deadlines; none relies on
 destructor timing for successful delivery.
 
+File-route tests create unique directories below the system temporary directory
+and remove them afterwards. Deterministic file faults use a private Runtime factory
+that injects open, write, partial-write, and close outcomes on the I/O thread and
+counts filesystem operations per thread; that factory is not part of the installed
+API. In shared builds those tests link a private static copy of the library,
+because the shared library hides its internal symbols.
+
 The presets build the library, architecture check, and installed consumer once
-fmt 12 is available to CMake. The pinned Conan setup is:
+fmt 12 and libuv 1.51 are available to CMake. The pinned Conan setup is:
 
 ```shell
 conan profile detect --force

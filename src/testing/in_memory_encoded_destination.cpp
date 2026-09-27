@@ -139,11 +139,7 @@ struct InMemoryEncodedDestinationState final {
     }
     return selected;
   }
-  void WakeRuntimeLocked() const noexcept {
-    if (wake.notify != nullptr) {
-      wake.notify(wake.context);
-    }
-  }
+  void WakeRuntimeLocked() const noexcept { wake.Notify(); }
 
   std::mutex mutex;
   std::unique_ptr<char[]> backing;

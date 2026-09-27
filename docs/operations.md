@@ -1,8 +1,7 @@
 # Operations
 
 `ulog::Operation` is the move-only completion handle for ordered Runtime
-actions. The public [in-memory Runtime tracer](runtime.md) uses it for Drain and
-Shutdown. Operation state is allocated from a control reserve that is
+actions. The public [Runtime](runtime.md) uses it for Drain and Shutdown. Operation state is allocated from a control reserve that is
 independent of producer payload credits, so a control action can still start
 when retained Records fill the payload budget.
 
@@ -104,15 +103,20 @@ producer source files; the frontend structural gate enforces that direction.
 
 `Runtime::Drain()` captures an accepted-record watermark and completes after the
 single worker has retired a terminal delivery outcome for every Record through
-that watermark in the selected structured or Raw-encoded in-memory destination. It
-leaves admission open. `Runtime::Shutdown()` closes admission, finishes all
+that watermark in its Raw file route or in-memory test destination. On the file
+route that outcome is local write completion, not `fsync`. It leaves admission
+open. `Runtime::Shutdown()` closes admission, finishes all
 already accepted Records, completes, and stops the worker. Both succeed once
 their barrier is reached; failed deliveries are counted in the report rather
 than turning the barrier into `kFailed`. A successful Drain or Shutdown does not
 mean an application has taken or released the destination's observed Records.
 
-`kFailed` reports a route that stopped after an internal encoding failure; its
-report counts that Record as failed and the remaining work as unfinished.
+`kFailed` reports a route that stopped after an internal encoding failure or a
+file write failure; its report counts the failing Record as failed and the
+remaining work as unfinished. Every pending Drain, including one whose watermark
+the failing Record just reached, completes as `kFailed`. A Shutdown whose file
+fails to close also completes as `kFailed`, after reporting every Record as
+delivered.
 
 Runtime destruction is a separate bounded cancellation path. Pending actions
 complete as `kCancelled` with reports of the work that finished first; callers

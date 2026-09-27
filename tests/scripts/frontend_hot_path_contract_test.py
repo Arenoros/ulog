@@ -111,6 +111,26 @@ class FrontendHotPathContractTest(unittest.TestCase):
         ):
             contract.validate_sources(sources)
 
+    def test_rejects_a_libuv_dependency_in_the_producer_path(self):
+        sources = self.sources()
+        sources["src/producer/producer_kernel.cpp"] = (
+            "#include <uv.h>\n" + sources["src/producer/producer_kernel.cpp"]
+        )
+        with self.assertRaisesRegex(
+            contract.FrontendHotPathContractError, "I/O dependency"
+        ):
+            contract.validate_sources(sources)
+
+    def test_rejects_the_file_sink_in_the_logger_path(self):
+        sources = self.sources()
+        sources["src/logger.cpp"] = (
+            '#include "io/raw_file_sink.hpp"\n' + sources["src/logger.cpp"]
+        )
+        with self.assertRaisesRegex(
+            contract.FrontendHotPathContractError, "I/O dependency"
+        ):
+            contract.validate_sources(sources)
+
     def test_rejects_a_lock_in_the_producer_path(self):
         sources = self.sources()
         sources["src/producer/producer_kernel.cpp"] = sources[

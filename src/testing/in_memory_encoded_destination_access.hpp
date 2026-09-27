@@ -7,36 +7,15 @@
 #include <ulog/testing/in_memory_encoded_destination.hpp>
 
 #include "producer/producer_kernel.hpp"
+#include "route/delivery_accounting.hpp"
 
 namespace ulog::detail::testing {
 
-struct EncodedDestinationStoreResult final {
-  std::size_t encoded_bytes{0};
-  bool submitted{false};
-};
-
-/// Wakes the attached Runtime worker; invoked under the destination lock.
-struct EncodedDestinationWake final {
-  void* context{nullptr};
-  void (*notify)(void*) noexcept {nullptr};
-};
-
-enum class EncodedDeliveryOutcome : std::uint8_t { kDelivered, kFailed };
-
-struct EncodedDeliveryRetirement final {
-  EncodedDeliveryOutcome outcome{EncodedDeliveryOutcome::kFailed};
-  std::size_t encoded_bytes{0};
-};
-
-/// Submitted deliveries that the worker has not retired yet, limited to one watermark.
-struct EncodedInFlightSummary final {
-  std::uint64_t records{0};
-  std::uint64_t bytes{0};
-  std::uint64_t delivered_records{0};
-  std::uint64_t delivered_bytes{0};
-  std::uint64_t failed_records{0};
-  std::uint64_t failed_bytes{0};
-};
+using EncodedDestinationStoreResult = route::StoreResult;
+using EncodedDestinationWake = route::RouteWake;
+using EncodedDeliveryOutcome = route::DeliveryOutcome;
+using EncodedDeliveryRetirement = route::DeliveryRetirement;
+using EncodedInFlightSummary = route::InFlightSummary;
 
 class EncodedDestinationWriteClaim final {
  public:

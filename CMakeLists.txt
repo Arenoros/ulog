@@ -25,7 +25,21 @@ include(cmake/UlogTooling.cmake)
 ulog_define_options()
 
 find_package(fmt 12 CONFIG REQUIRED)
+# libuv's own CMake package has no version file; src/io checks 1.51+ at compile time.
+find_package(libuv CONFIG REQUIRED)
 find_package(Threads REQUIRED)
+
+# libuv exports libuv::uv_a for a static build and libuv::uv for a shared one.
+if(TARGET libuv::uv_a)
+  set(ULOG_LIBUV_TARGET libuv::uv_a)
+elseif(TARGET libuv::uv)
+  set(ULOG_LIBUV_TARGET libuv::uv)
+else()
+  message(
+    FATAL_ERROR
+      "libuv was found but exported neither libuv::uv_a nor libuv::uv. Use the Conan profile documented in docs/dependencies.md or a libuv 1.51 CMake package."
+  )
+endif()
 
 set(ULOG_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 configure_file(include/ulog/version.hpp.in "${ULOG_GENERATED_INCLUDE_DIR}/ulog/version.hpp" @ONLY)
@@ -39,18 +53,22 @@ set(ULOG_ENCODING_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/encoding/raw_
 set(ULOG_CONTROL_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/control/control_reserve.cpp"
                                  "${CMAKE_CURRENT_SOURCE_DIR}/src/control/thread_role.cpp"
 )
-add_library(
-  ulog
-  ${ULOG_ENCODING_PRIVATE_SOURCES}
-  src/logger.cpp
-  src/operation.cpp
-  src/runtime.cpp
-  src/testing/in_memory_encoded_destination.cpp
-  src/testing/in_memory_destination.cpp
-  ${ULOG_PRODUCER_SOURCES}
-  ${ULOG_CONTROL_PRIVATE_SOURCES}
-  src/version.cpp
+set(ULOG_IO_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/io/io_error.cpp"
+                            "${CMAKE_CURRENT_SOURCE_DIR}/src/io/raw_file_sink.cpp"
 )
+set(ULOG_LIBRARY_SOURCES
+    ${ULOG_ENCODING_PRIVATE_SOURCES}
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/logger.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/operation.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/testing/in_memory_encoded_destination.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/testing/in_memory_destination.cpp"
+    ${ULOG_PRODUCER_SOURCES}
+    ${ULOG_CONTROL_PRIVATE_SOURCES}
+    ${ULOG_IO_PRIVATE_SOURCES}
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/version.cpp"
+)
+add_library(ulog ${ULOG_LIBRARY_SOURCES})
 add_library(ulog::ulog ALIAS ulog)
 
 target_compile_features(ulog PUBLIC cxx_std_20)
@@ -63,7 +81,7 @@ target_include_directories(
 )
 target_link_libraries(
   ulog
-  PRIVATE Threads::Threads
+  PRIVATE Threads::Threads ${ULOG_LIBUV_TARGET}
   PUBLIC fmt::fmt
 )
 
@@ -94,6 +112,12 @@ if(BUILD_TESTING)
 endif()
 
 set(ULOG_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/ulog")
+# A static Ulog carries its private libuv link requirement to consumers; a shared one does not.
+if(BUILD_SHARED_LIBS)
+  set(ULOG_PACKAGE_REQUIRES_LIBUV OFF)
+else()
+  set(ULOG_PACKAGE_REQUIRES_LIBUV ON)
+endif()
 configure_package_config_file(
   cmake/ulogConfig.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/ulogConfig.cmake"
   INSTALL_DESTINATION "${ULOG_INSTALL_CMAKEDIR}"

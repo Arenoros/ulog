@@ -4,11 +4,13 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
@@ -20,7 +22,10 @@
 
 #include "control/control_reserve.hpp"
 #include "control/thread_role.hpp"
+#include "io/raw_file_sink.hpp"
 #include "producer/producer_kernel.hpp"
+#include "route/delivery_accounting.hpp"
+#include "runtime_factory.hpp"
 #include "testing/in_memory_destination_access.hpp"
 #include "testing/in_memory_encoded_destination_access.hpp"
 
@@ -30,17 +35,18 @@ namespace {
 using namespace std::chrono_literals;
 using detail::control::ControlReserve;
 using detail::control::OperationCompletion;
+using detail::io::RawFileSink;
 using detail::producer::ConsumeStatus;
 using detail::producer::KernelConfig;
 using detail::producer::KernelSnapshot;
 using detail::producer::ProducerKernel;
+using detail::route::DeliveryOutcome;
+using detail::route::DeliveryRetirement;
+using detail::route::InFlightSummary;
+using detail::route::RouteWake;
+using detail::route::StoreResult;
 using detail::testing::DestinationWriteClaim;
-using detail::testing::EncodedDeliveryOutcome;
-using detail::testing::EncodedDeliveryRetirement;
-using detail::testing::EncodedDestinationStoreResult;
-using detail::testing::EncodedDestinationWake;
 using detail::testing::EncodedDestinationWriteClaim;
-using detail::testing::EncodedInFlightSummary;
 using detail::testing::InMemoryDestinationAccess;
 using detail::testing::InMemoryEncodedDestinationAccess;
 
@@ -49,9 +55,10 @@ constexpr std::size_t kMaximumControlOperations = 64;
 constexpr auto kWorkerRecheckInterval = 10ms;
 constexpr auto kMaximumLifecycleTimeout = std::chrono::hours{24};
 
-template <typename Destination>
-[[nodiscard]] std::optional<RuntimeCreateFailure> ValidateConfig(
-    const RuntimeConfig& config, const Destination& destination) noexcept {
+constexpr std::size_t kMaximumWriteBuffers = 64;
+
+[[nodiscard]] std::optional<RuntimeCreateFailure> ValidateRuntimeConfig(
+    const RuntimeConfig& config) noexcept {
   if (static_cast<std::uint8_t>(config.threshold) > static_cast<std::uint8_t>(Level::kNone)) {
     return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidThreshold};
   }
@@ -86,6 +93,15 @@ template <typename Destination>
       config.destruction_timeout > kMaximumLifecycleTimeout) {
     return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidDestructionTimeout};
   }
+  return std::nullopt;
+}
+
+template <typename Destination>
+[[nodiscard]] std::optional<RuntimeCreateFailure> ValidateConfig(
+    const RuntimeConfig& config, const Destination& destination) noexcept {
+  if (auto failure = ValidateRuntimeConfig(config)) {
+    return failure;
+  }
   if (destination.Capacity() == 0U ||
       destination.MaximumRecordBytes() < config.maximum_record_bytes) {
     return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidDestination};
@@ -108,7 +124,7 @@ template <typename Destination>
     case RuntimeCreateErrorCode::kInvalidControlCapacity:
       return "Runtime control_operations is outside the supported bounded range.";
     case RuntimeCreateErrorCode::kInvalidWorkerCount:
-      return "The in-memory Runtime tracer supports exactly one worker.";
+      return "The current Runtime supports exactly one worker thread.";
     case RuntimeCreateErrorCode::kInvalidStartupTimeout:
       return "Runtime startup_timeout must be positive and no greater than 24 hours.";
     case RuntimeCreateErrorCode::kInvalidDestructionTimeout:
@@ -121,6 +137,14 @@ template <typename Destination>
       return "Runtime could not start its configured worker thread.";
     case RuntimeCreateErrorCode::kWorkerStartupTimedOut:
       return "Runtime worker did not report readiness before startup_timeout.";
+    case RuntimeCreateErrorCode::kInvalidFilePath:
+      return "The file route path is empty, contains NUL, is not valid UTF-8, or names no file.";
+    case RuntimeCreateErrorCode::kInvalidWriteBuffers:
+      return "The file route write_buffers is outside the supported bounded range.";
+    case RuntimeCreateErrorCode::kIoLoopStartFailed:
+      return "Runtime could not start its private I/O loop thread before startup_timeout.";
+    case RuntimeCreateErrorCode::kFileOpenFailed:
+      return "Runtime could not create or append-open the file route path.";
   }
   return "Runtime creation failed.";
 }
@@ -140,7 +164,7 @@ template <typename Destination>
     case RuntimeCreateErrorCode::kInvalidControlCapacity:
       return "Set control_operations from 1 through 64.";
     case RuntimeCreateErrorCode::kInvalidWorkerCount:
-      return "Set worker_threads to 1 for the in-memory tracer.";
+      return "Set worker_threads to 1; the current Runtime has one worker.";
     case RuntimeCreateErrorCode::kInvalidStartupTimeout:
       return "Set startup_timeout to a positive duration no greater than 24 hours.";
     case RuntimeCreateErrorCode::kInvalidDestructionTimeout:
@@ -155,8 +179,59 @@ template <typename Destination>
     case RuntimeCreateErrorCode::kWorkerStartupTimedOut:
       return "Inspect host scheduling pressure; retry only after the worker-start stall is "
              "understood.";
+    case RuntimeCreateErrorCode::kInvalidFilePath:
+      return "Set RawFileRouteConfig::path to a UTF-8 file path such as logs/app.log, not an "
+             "empty path or a directory.";
+    case RuntimeCreateErrorCode::kInvalidWriteBuffers:
+      return "Set RawFileRouteConfig::write_buffers from 1 through 64.";
+    case RuntimeCreateErrorCode::kIoLoopStartFailed:
+      return "Check IoErrorName(io_error); make an OS thread and event handle available or "
+             "raise startup_timeout, then retry.";
+    case RuntimeCreateErrorCode::kFileOpenFailed:
+      return "Check IoErrorName(io_error): create the parent directory, grant write permission, "
+             "or choose a path that is not a directory, then retry.";
   }
   return "Correct the Runtime configuration and retry.";
+}
+
+/// Returns the libuv path bytes: UTF-8 on Windows and native bytes elsewhere.
+[[nodiscard]] std::optional<std::string> FilePathBytes(const std::filesystem::path& path) {
+#if defined(_WIN32)
+  const std::u8string utf8 = path.u8string();
+  std::string bytes{reinterpret_cast<const char*>(utf8.data()), utf8.size()};
+#else
+  std::string bytes = path.native();
+#endif
+  if (bytes.empty() || bytes.find('\0') != std::string::npos || !path.has_filename()) {
+    return std::nullopt;
+  }
+  return bytes;
+}
+
+[[nodiscard]] std::optional<RuntimeCreateFailure> ValidateFileRoute(
+    const RawFileRouteConfig& route) noexcept {
+  if (route.path.empty()) {
+    return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidFilePath};
+  }
+  if (route.write_buffers == 0U || route.write_buffers > kMaximumWriteBuffers) {
+    return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidWriteBuffers};
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] RuntimeCreateFailure MapFileSinkStart(
+    detail::io::FileSinkStartResult started) noexcept {
+  switch (started.status) {
+    case detail::io::FileSinkStartStatus::kStarted:
+      break;
+    case detail::io::FileSinkStartStatus::kOpenFailed:
+      return {.code = RuntimeCreateErrorCode::kFileOpenFailed, .io_error = started.io_error};
+    case detail::io::FileSinkStartStatus::kThreadFailed:
+    case detail::io::FileSinkStartStatus::kLoopFailed:
+    case detail::io::FileSinkStartStatus::kTimedOut:
+      return {.code = RuntimeCreateErrorCode::kIoLoopStartFailed, .io_error = started.io_error};
+  }
+  return {.code = RuntimeCreateErrorCode::kIoLoopStartFailed, .io_error = started.io_error};
 }
 
 enum class ControlActionKind : std::uint8_t { kDrain, kShutdown };
@@ -196,6 +271,8 @@ class RuntimeRoute final {
       : destination_(std::move(destination)) {}
   explicit RuntimeRoute(testing::InMemoryEncodedDestination destination) noexcept
       : destination_(std::move(destination)) {}
+  explicit RuntimeRoute(std::unique_ptr<RawFileSink> sink) noexcept
+      : destination_(std::move(sink)) {}
 
   RuntimeRoute(RuntimeRoute&& other) noexcept
       : destination_(std::move(other.destination_)),
@@ -206,16 +283,25 @@ class RuntimeRoute final {
 
   ~RuntimeRoute() { Detach(); }
 
-  [[nodiscard]] bool TryAttach(EncodedDestinationWake wake) noexcept {
+  /// Attaches an in-memory destination, or starts the file sink's loop and opens its file.
+  [[nodiscard]] std::optional<RuntimeCreateFailure> Attach(
+      RouteWake wake, std::chrono::steady_clock::time_point deadline) noexcept {
     if (auto* structured_destination = std::get_if<testing::InMemoryDestination>(&destination_)) {
       attached_ = InMemoryDestinationAccess::TryAttachRuntime(*structured_destination);
     } else if (auto* encoded_destination =
                    std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
       attached_ = InMemoryEncodedDestinationAccess::TryAttachRuntime(*encoded_destination, wake);
-    } else {
-      attached_ = false;
+    } else if (auto* sink = FileSink()) {
+      const auto started = sink->Start(wake, deadline);
+      attached_ = started.status == detail::io::FileSinkStartStatus::kStarted;
+      if (!attached_) {
+        return MapFileSinkStart(started);
+      }
     }
-    return attached_;
+    if (!attached_) {
+      return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidDestination};
+    }
+    return std::nullopt;
   }
 
   void Detach() noexcept {
@@ -227,12 +313,14 @@ class RuntimeRoute final {
     } else if (auto* encoded_destination =
                    std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
       InMemoryEncodedDestinationAccess::DetachRuntime(*encoded_destination);
+    } else if (auto* sink = FileSink()) {
+      sink->DetachWake();
     }
     attached_ = false;
   }
 
   /// Consumes at most one Record. A structured Record retires immediately; an encoded Record
-  /// becomes one serialized delivery that retires after its destination completion.
+  /// becomes one serialized delivery that retires after its destination or file completion.
   [[nodiscard]] RouteDeliveryResult Deliver(
       ProducerKernel& producer, std::chrono::steady_clock::duration recheck_interval) noexcept {
     if (auto* destination = std::get_if<testing::InMemoryDestination>(&destination_)) {
@@ -246,34 +334,39 @@ class RuntimeRoute final {
       return {.consumed = consumed, .submitted = stored, .retired = stored};
     }
     if (auto* destination = std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
-      EncodedDestinationWriteClaim claim =
-          InMemoryEncodedDestinationAccess::TryClaimWrite(*destination);
-      if (!claim) {
-        return {};
-      }
-      EncodedStoreContext context{.claim = &claim};
-      const ConsumeStatus consumed = producer.TryConsume(&context, &StoreEncodedRecord);
-      return {.consumed = consumed,
-              .admission_sequence = context.admission_sequence,
-              .encoded_bytes = context.result.encoded_bytes,
-              .submitted = context.result.submitted};
+      return DeliverRaw(producer, InMemoryEncodedDestinationAccess::TryClaimWrite(*destination));
+    }
+    if (auto* sink = FileSink()) {
+      return DeliverRaw(producer, sink->TryClaimWrite());
     }
     return {};
   }
 
-  [[nodiscard]] std::optional<EncodedDeliveryRetirement> TryRetire(
+  [[nodiscard]] std::optional<DeliveryRetirement> TryRetire(
       std::uint64_t admission_sequence) noexcept {
     if (auto* destination = std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
       return InMemoryEncodedDestinationAccess::TryRetire(*destination, admission_sequence);
     }
+    if (auto* sink = FileSink()) {
+      return sink->TryRetire(admission_sequence);
+    }
     return std::nullopt;
   }
 
-  [[nodiscard]] EncodedInFlightSummary SummarizeInFlight(std::uint64_t watermark) const noexcept {
+  [[nodiscard]] InFlightSummary SummarizeInFlight(std::uint64_t watermark) const noexcept {
     if (const auto* destination = std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
       return InMemoryEncodedDestinationAccess::SummarizeInFlight(*destination, watermark);
     }
+    if (const auto* sink = FileSink()) {
+      return sink->SummarizeInFlight(watermark);
+    }
     return {};
+  }
+
+  /// Returns the libuv error that failed a file route; in-memory routes never fail this way.
+  [[nodiscard]] std::int32_t TerminalError() const noexcept {
+    const auto* sink = FileSink();
+    return sink != nullptr ? sink->FailureError() : 0;
   }
 
   void Stop() noexcept {
@@ -282,12 +375,33 @@ class RuntimeRoute final {
     } else if (auto* encoded_destination =
                    std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
       InMemoryEncodedDestinationAccess::Stop(*encoded_destination);
+    } else if (auto* sink = FileSink()) {
+      sink->Stop();
     }
+  }
+
+  void RequestClose() noexcept {
+    if (auto* sink = FileSink()) {
+      sink->RequestClose();
+    }
+  }
+
+  /// Returns the close result; in-memory routes have nothing to close.
+  [[nodiscard]] std::optional<std::int32_t> CloseResult() const noexcept {
+    const auto* sink = FileSink();
+    return sink != nullptr ? sink->CloseResult() : std::optional<std::int32_t>{0};
+  }
+
+  bool JoinIo(std::chrono::steady_clock::time_point deadline) noexcept {
+    auto* sink = FileSink();
+    return sink == nullptr || sink->JoinUntil(deadline);
   }
 
   void DiscardInFlight() noexcept {
     if (auto* destination = std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
       InMemoryEncodedDestinationAccess::DiscardInFlight(*destination);
+    } else if (auto* sink = FileSink()) {
+      sink->DiscardInFlight();
     }
   }
 
@@ -298,29 +412,59 @@ class RuntimeRoute final {
     if (const auto* destination = std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
       return InMemoryEncodedDestinationAccess::FixedBackingBytes(*destination);
     }
+    if (const auto* sink = FileSink()) {
+      return sink->FixedBackingBytes();
+    }
     return 0U;
   }
 
  private:
-  struct EncodedStoreContext final {
-    EncodedDestinationWriteClaim* claim{nullptr};
+  template <typename Claim>
+  struct RawStoreContext final {
+    Claim* claim{nullptr};
     std::uint64_t admission_sequence{0};
-    EncodedDestinationStoreResult result{};
+    StoreResult result{};
   };
+
+  [[nodiscard]] RawFileSink* FileSink() noexcept {
+    auto* sink = std::get_if<std::unique_ptr<RawFileSink>>(&destination_);
+    return sink != nullptr ? sink->get() : nullptr;
+  }
+  [[nodiscard]] const RawFileSink* FileSink() const noexcept {
+    const auto* sink = std::get_if<std::unique_ptr<RawFileSink>>(&destination_);
+    return sink != nullptr ? sink->get() : nullptr;
+  }
+
+  template <typename Claim>
+  [[nodiscard]] static RouteDeliveryResult DeliverRaw(ProducerKernel& producer,
+                                                      Claim claim) noexcept {
+    if (!claim) {
+      return {};
+    }
+    RawStoreContext<Claim> context{.claim = &claim};
+    const ConsumeStatus consumed = producer.TryConsume(&context, &StoreRawRecord<Claim>);
+    return {.consumed = consumed,
+            .admission_sequence = context.admission_sequence,
+            .encoded_bytes = context.result.encoded_bytes,
+            .submitted = context.result.submitted};
+  }
 
   static void StoreStructuredRecord(void* context, std::uint64_t sequence,
                                     const detail::producer::RecordView& record) noexcept {
     static_cast<DestinationWriteClaim*>(context)->Store(sequence, record);
   }
 
-  static void StoreEncodedRecord(void* context, std::uint64_t sequence,
-                                 const detail::producer::RecordView& record) noexcept {
-    auto& store = *static_cast<EncodedStoreContext*>(context);
+  template <typename Claim>
+  static void StoreRawRecord(void* context, std::uint64_t sequence,
+                             const detail::producer::RecordView& record) noexcept {
+    auto& store = *static_cast<RawStoreContext<Claim>*>(context);
     store.admission_sequence = sequence;
     store.result = store.claim->StoreRaw(sequence, record);
   }
 
-  std::variant<testing::InMemoryDestination, testing::InMemoryEncodedDestination> destination_;
+  std::variant<testing::InMemoryDestination, testing::InMemoryEncodedDestination,
+               std::unique_ptr<RawFileSink>>
+      destination_;
   bool attached_{false};
 };
 
@@ -348,8 +492,14 @@ class RuntimeDomain final {
   // Detach before the wake members are destroyed so late destination completions cannot wake us.
   ~RuntimeDomain() { route_.Detach(); }
 
-  [[nodiscard]] bool TryAttachDestination() noexcept {
-    return route_.TryAttach({.context = this, .notify = &RuntimeDomain::NotifyFromDestination});
+  [[nodiscard]] std::optional<RuntimeCreateFailure> AttachRoute(
+      std::chrono::steady_clock::time_point deadline) noexcept {
+    return route_.Attach({.context = this, .notify = &RuntimeDomain::NotifyFromDestination},
+                         deadline);
+  }
+
+  bool JoinIo(std::chrono::steady_clock::time_point deadline) noexcept {
+    return route_.JoinIo(deadline);
   }
 
   [[nodiscard]] Logger GetLogger() noexcept {
@@ -376,9 +526,13 @@ class RuntimeDomain final {
     const KernelSnapshot producer = producer_.GetSnapshot();
     const auto controls = control_reserve_.GetSnapshot();
     RouteLedger ledger;
+    bool route_failed = false;
+    std::int32_t route_io_error = 0;
     {
       std::lock_guard lock{state_mutex_};
       ledger = ledger_;
+      route_failed = route_failed_;
+      route_io_error = route_io_error_;
     }
     const std::uint64_t rejected =
         producer.rejected_no_producer + producer.rejected_lane_full + producer.rejected_budget;
@@ -406,6 +560,8 @@ class RuntimeDomain final {
                                config_.control_operations * sizeof(ControlAction),
         .admission_open = producer_.IsAdmissionOpen(),
         .worker_running = worker_running_.load(std::memory_order_acquire),
+        .route_failed = route_failed,
+        .route_io_error = route_io_error,
     };
   }
 
@@ -475,7 +631,7 @@ class RuntimeDomain final {
     }
     lifecycle_condition_.notify_all();
 
-    bool shutdown_succeeded = false;
+    std::optional<OperationOutcome> shutdown_outcome;
     std::uint64_t observed_epoch = wake_epoch_.load(std::memory_order_acquire);
     while (true) {
       if (DestructionStopRequested()) {
@@ -487,8 +643,16 @@ class RuntimeDomain final {
       }
 
       RetireCompletedDeliveries();
-      if (TryFinishShutdown()) {
-        shutdown_succeeded = true;
+      if (const std::int32_t error = route_.TerminalError(); error != 0) {
+        RecordRouteIoError(error);
+        PrepareRouteFailure();
+        CompleteActions(OperationOutcome::kFailed);
+        SettleInFlight();
+        DrainDiscardedRecords();
+        break;
+      }
+      shutdown_outcome = TryFinishShutdown();
+      if (shutdown_outcome) {
         break;
       }
 
@@ -521,8 +685,8 @@ class RuntimeDomain final {
       accepting_actions_ = false;
       worker_running_.store(false, std::memory_order_release);
     }
-    if (shutdown_succeeded) {
-      CompleteActions(OperationOutcome::kSucceeded);
+    if (shutdown_outcome) {
+      CompleteActions(*shutdown_outcome);
     }
     {
       std::lock_guard lock{state_mutex_};
@@ -620,9 +784,9 @@ class RuntimeDomain final {
       report.failed_records = ledger_.failed_records + ledger_.encoding_failed_records;
       report.failed_bytes = ledger_.failed_bytes;
     } else {
-      const EncodedInFlightSummary in_flight = ledger_.retired_records < watermark
-                                                   ? route_.SummarizeInFlight(watermark)
-                                                   : EncodedInFlightSummary{};
+      const InFlightSummary in_flight = ledger_.retired_records < watermark
+                                            ? route_.SummarizeInFlight(watermark)
+                                            : InFlightSummary{};
       const std::uint64_t encoding_failed =
           ledger_.encoding_failed_sequence && *ledger_.encoding_failed_sequence < watermark ? 1U
                                                                                             : 0U;
@@ -673,13 +837,18 @@ class RuntimeDomain final {
       {
         std::lock_guard lock{state_mutex_};
         ++ledger_.retired_records;
-        if (retirement->outcome == EncodedDeliveryOutcome::kDelivered) {
+        if (retirement->outcome == DeliveryOutcome::kDelivered) {
           ++ledger_.delivered_records;
           ledger_.delivered_bytes += retirement->encoded_bytes;
         } else {
           ++ledger_.failed_records;
           ledger_.failed_bytes += retirement->encoded_bytes;
         }
+      }
+      if (retirement->outcome == DeliveryOutcome::kFailed && route_.TerminalError() != 0) {
+        // A route-stopping failure completes every pending action, including Drains that now
+        // reach their watermark, as failed on the route-failure path.
+        return;
       }
       CompleteReadyDrains();
     }
@@ -689,7 +858,7 @@ class RuntimeDomain final {
   void SettleInFlight() noexcept {
     {
       std::lock_guard lock{state_mutex_};
-      const EncodedInFlightSummary in_flight =
+      const InFlightSummary in_flight =
           route_.SummarizeInFlight(std::numeric_limits<std::uint64_t>::max());
       ledger_.delivered_records += in_flight.delivered_records;
       ledger_.delivered_bytes += in_flight.delivered_bytes;
@@ -732,19 +901,40 @@ class RuntimeDomain final {
     }
   }
 
-  [[nodiscard]] bool TryFinishShutdown() noexcept {
+  /// Returns the Shutdown outcome once every admitted Record retired and the route closed.
+  [[nodiscard]] std::optional<OperationOutcome> TryFinishShutdown() noexcept {
     {
       std::lock_guard lock{state_mutex_};
       if (!shutdown_requested_) {
-        return false;
+        return std::nullopt;
       }
     }
     if (!producer_.IsQuiescent()) {
-      return false;
+      return std::nullopt;
     }
     const auto snapshot = producer_.GetSnapshot();
+    {
+      std::lock_guard lock{state_mutex_};
+      if (ledger_.retired_records != snapshot.accepted_records) {
+        return std::nullopt;
+      }
+    }
+    route_.RequestClose();
+    const auto closed = route_.CloseResult();
+    if (!closed) {
+      return std::nullopt;
+    }
+    if (*closed != 0) {
+      RecordRouteIoError(*closed);
+      return OperationOutcome::kFailed;
+    }
+    return OperationOutcome::kSucceeded;
+  }
+
+  void RecordRouteIoError(std::int32_t error) noexcept {
     std::lock_guard lock{state_mutex_};
-    return ledger_.retired_records == snapshot.accepted_records;
+    route_failed_ = true;
+    route_io_error_ = error;
   }
 
   void CompleteActions(OperationOutcome outcome) noexcept {
@@ -801,6 +991,7 @@ class RuntimeDomain final {
   bool accepting_actions_{true};
   bool shutdown_requested_{false};
   bool route_failed_{false};
+  std::int32_t route_io_error_{0};
   std::atomic<bool> destruction_stop_requested_{false};
   std::atomic<bool> worker_running_{false};
   std::atomic<std::uint64_t> wake_epoch_{0};
@@ -818,8 +1009,9 @@ struct Runtime::Impl final {
     result = {};
     try {
       auto domain = std::make_shared<RuntimeDomain>(config, std::move(route));
-      if (!domain->TryAttachDestination()) {
-        result.failure.emplace(RuntimeCreateErrorCode::kInvalidDestination);
+      if (auto failure =
+              domain->AttachRoute(std::chrono::steady_clock::now() + config.startup_timeout)) {
+        result.failure = failure;
         return;
       }
       auto impl = std::make_unique<Impl>(domain, config.destruction_timeout);
@@ -847,6 +1039,38 @@ struct Runtime::Impl final {
     result.failure.emplace(RuntimeCreateErrorCode::kWorkerStartFailed);
   }
 
+  static void CreateFileInto(RuntimeConfig config, const RawFileRouteConfig& route,
+                             const detail::io::FileFaultPlan& faults,
+                             RuntimeCreateResult& result) noexcept {
+    result = {};
+    if (auto failure = ValidateRuntimeConfig(config)) {
+      result.failure = failure;
+      return;
+    }
+    if (auto failure = ValidateFileRoute(route)) {
+      result.failure = failure;
+      return;
+    }
+    std::unique_ptr<RawFileSink> sink;
+    try {
+      auto path = FilePathBytes(route.path);
+      if (!path) {
+        result.failure.emplace(RuntimeCreateErrorCode::kInvalidFilePath);
+        return;
+      }
+      sink = std::make_unique<RawFileSink>(std::move(*path), route.write_buffers,
+                                           config.maximum_record_bytes, faults);
+    } catch (const std::bad_alloc&) {
+      result.failure.emplace(RuntimeCreateErrorCode::kAllocationFailed);
+      return;
+    } catch (...) {
+      // Path conversion rejects names that have no UTF-8 representation.
+      result.failure.emplace(RuntimeCreateErrorCode::kInvalidFilePath);
+      return;
+    }
+    CreateInto(config, RuntimeRoute{std::move(sink)}, result);
+  }
+
   Impl(std::shared_ptr<RuntimeDomain> runtime_domain,
        std::chrono::milliseconds runtime_destruction_timeout) noexcept
       : domain(std::move(runtime_domain)), destruction_timeout(runtime_destruction_timeout) {}
@@ -866,16 +1090,17 @@ struct Runtime::Impl final {
   }
 
   void StopAndJoin() noexcept {
-    if (!worker.joinable()) {
-      return;
-    }
     const auto deadline = std::chrono::steady_clock::now() + destruction_timeout;
     domain->RequestDestructionStop();
-    if (domain->WaitUntilStopped(deadline)) {
-      worker.join();
-    } else {
-      worker.detach();
+    if (worker.joinable()) {
+      if (domain->WaitUntilStopped(deadline)) {
+        worker.join();
+      } else {
+        worker.detach();
+      }
     }
+    // A file route's loop thread finishes its active append and closes the file after Stop.
+    static_cast<void>(domain->JoinIo(deadline));
   }
 
   std::shared_ptr<RuntimeDomain> domain;
@@ -904,6 +1129,20 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config,
   }
   RuntimeCreateResult result;
   Impl::CreateInto(config, RuntimeRoute{std::move(destination)}, result);
+  return result;
+}
+
+RuntimeCreateResult Runtime::Create(RuntimeConfig config, RawFileRouteConfig route) noexcept {
+  RuntimeCreateResult result;
+  Impl::CreateFileInto(config, route, {}, result);
+  return result;
+}
+
+RuntimeCreateResult detail::RuntimeFactoryAccess::CreateRawFileRuntime(
+    RuntimeConfig config, const RawFileRouteConfig& route,
+    const io::FileFaultPlan& faults) noexcept {
+  RuntimeCreateResult result;
+  Runtime::Impl::CreateFileInto(config, route, faults, result);
   return result;
 }
 

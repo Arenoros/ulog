@@ -72,6 +72,24 @@ if(BUILD_SHARED_LIBS AND (ULOG_BUILD_UNIT_TESTS OR ULOG_BUILD_STRESS_TESTS))
   set(_ulog_private_test_library ulog-private-test-support)
 endif()
 
+set(_ulog_private_runtime_library ulog::ulog)
+if(BUILD_SHARED_LIBS AND (ULOG_BUILD_UNIT_TESTS OR ULOG_BUILD_STRESS_TESTS))
+  # Fault-injection tests reach the private Runtime factory, which the shared ABI hides.
+  add_library(ulog-private-runtime-support STATIC ${ULOG_LIBRARY_SOURCES})
+  target_compile_features(ulog-private-runtime-support PUBLIC cxx_std_20)
+  target_compile_definitions(ulog-private-runtime-support PUBLIC ULOG_STATIC_DEFINE)
+  target_include_directories(
+    ulog-private-runtime-support
+    PUBLIC "${PROJECT_SOURCE_DIR}/include" "${ULOG_GENERATED_INCLUDE_DIR}"
+    PRIVATE "${PROJECT_SOURCE_DIR}/src"
+  )
+  target_link_libraries(
+    ulog-private-runtime-support PUBLIC fmt::fmt Threads::Threads ${ULOG_LIBUV_TARGET}
+  )
+  ulog_configure_target(ulog-private-runtime-support)
+  set(_ulog_private_runtime_library ulog-private-runtime-support)
+endif()
+
 if(ULOG_BUILD_UNIT_TESTS)
   find_package(GTest CONFIG REQUIRED)
   add_executable(
@@ -103,6 +121,33 @@ if(ULOG_BUILD_UNIT_TESTS)
   ulog_configure_target(ulog-runtime-tracer)
   add_test(NAME ulog.runtime-tracer COMMAND ulog-runtime-tracer)
   set_tests_properties(ulog.runtime-tracer PROPERTIES LABELS "unit;integration;runtime" TIMEOUT 10)
+
+  add_executable(ulog-runtime-file-route runtime_file_route_test.cpp)
+  target_compile_features(ulog-runtime-file-route PRIVATE cxx_std_20)
+  target_include_directories(ulog-runtime-file-route PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(
+    ulog-runtime-file-route PRIVATE ulog::ulog GTest::gtest_main Threads::Threads
+  )
+  ulog_configure_target(ulog-runtime-file-route)
+  add_test(NAME ulog.runtime-file-route COMMAND ulog-runtime-file-route)
+  set_tests_properties(
+    ulog.runtime-file-route PROPERTIES LABELS "unit;integration;runtime;io" TIMEOUT 20
+  )
+
+  add_executable(ulog-runtime-file-faults runtime_file_fault_test.cpp)
+  target_compile_features(ulog-runtime-file-faults PRIVATE cxx_std_20)
+  target_include_directories(
+    ulog-runtime-file-faults PRIVATE "${PROJECT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  target_link_libraries(
+    ulog-runtime-file-faults PRIVATE ${_ulog_private_runtime_library} ${ULOG_LIBUV_TARGET}
+                                     GTest::gtest_main Threads::Threads
+  )
+  ulog_configure_target(ulog-runtime-file-faults)
+  add_test(NAME ulog.runtime-file-faults COMMAND ulog-runtime-file-faults)
+  set_tests_properties(
+    ulog.runtime-file-faults PROPERTIES LABELS "unit;integration;runtime;io;faults" TIMEOUT 20
+  )
 
   add_executable(ulog-runtime-encoded-tracer runtime_encoded_tracer_test.cpp)
   target_compile_features(ulog-runtime-encoded-tracer PRIVATE cxx_std_20)
@@ -185,6 +230,19 @@ if(ULOG_BUILD_UNIT_TESTS)
                                                  10
     )
 
+    add_executable(ulog-runtime-file-allocation-test runtime_file_allocation_test.cpp)
+    target_compile_features(ulog-runtime-file-allocation-test PRIVATE cxx_std_20)
+    target_include_directories(
+      ulog-runtime-file-allocation-test PRIVATE "${PROJECT_SOURCE_DIR}/benchmarks"
+                                                "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(ulog-runtime-file-allocation-test PRIVATE ulog::ulog Threads::Threads)
+    ulog_configure_target(ulog-runtime-file-allocation-test)
+    add_test(NAME ulog.runtime-file-allocation COMMAND ulog-runtime-file-allocation-test)
+    set_tests_properties(
+      ulog.runtime-file-allocation PROPERTIES LABELS "unit;runtime;io;allocation" TIMEOUT 20
+    )
+
     add_executable(ulog-frontend-performance-test frontend_performance_test.cpp)
     target_compile_features(ulog-frontend-performance-test PRIVATE cxx_std_20)
     target_compile_definitions(ulog-frontend-performance-test PRIVATE ULOG_COMPILE_TIME_MIN_LEVEL=5)
@@ -259,6 +317,20 @@ if(ULOG_BUILD_STRESS_TESTS)
   add_test(NAME ulog.runtime-stress COMMAND ulog-runtime-stress)
   set_tests_properties(
     ulog.runtime-stress PROPERTIES LABELS "stress;runtime;concurrency" TIMEOUT 10
+  )
+
+  add_executable(ulog-runtime-file-stress stress/runtime_file_stress.cpp)
+  target_compile_features(ulog-runtime-file-stress PRIVATE cxx_std_20)
+  target_include_directories(
+    ulog-runtime-file-stress PRIVATE "${PROJECT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  target_link_libraries(
+    ulog-runtime-file-stress PRIVATE ${_ulog_private_runtime_library} Threads::Threads
+  )
+  ulog_configure_target(ulog-runtime-file-stress)
+  add_test(NAME ulog.runtime-file-stress COMMAND ulog-runtime-file-stress)
+  set_tests_properties(
+    ulog.runtime-file-stress PROPERTIES LABELS "stress;runtime;io;concurrency" TIMEOUT 20
   )
 
   add_executable(ulog-runtime-encoded-stress stress/runtime_encoded_stress.cpp)

@@ -68,9 +68,10 @@ all payload pools, and the independent control and progress reserves.
   handoff; ordinary Runtime Logger calls retain the no-forwarding contract.
 - Runtime construction validates configuration, reserves global pools, and
   starts the configured fixed workers before logging begins; producer-local
-  storage may be initialized during warm-up. The current in-memory tracer
-  accepts exactly one worker and prepares each producer thread through
-  `Runtime::GetLogger()`.
+  storage may be initialized during warm-up. The current Runtime accepts
+  exactly one worker and prepares each producer thread through
+  `Runtime::GetLogger()`. A file route also starts its I/O thread and opens its
+  file before `Create` returns.
 - Ulog-owned payload memory is bounded by a configurable pipeline byte limit.
   It covers open RecordWriters, ingress Records, encoded batches, retry queues,
   and Ulog-owned in-flight buffers. Control operations use a separate bounded
@@ -116,12 +117,15 @@ Context capture occurs only after admission capacity has been reserved. Encoder
 and Sink extension code never executes on producer threads, and Encoder never
 executes on the libuv loop thread.
 
-The current [in-memory Runtime tracers](runtime.md) exercise the bounded producer,
-single FIFO worker, control reserve, lifecycle, built-in Raw encoding, deferred
-single-destination delivery completion, and exact barrier-report portions of this
-contract. Generic Encoders, Sinks, ContextProviders, libuv I/O, multiple
-routes, and batching remain out of scope; route and I/O requirements in this
-document constrain their later implementations.
+The current [Runtime](runtime.md) exercises the bounded producer, single FIFO
+worker, control reserve, lifecycle, built-in Raw encoding, deferred
+single-destination delivery completion, exact barrier reports, and one private
+libuv loop appending to a file through fixed Runtime-owned buffers. The file route
+performs one append at a time, submits bounded filesystem work, and leaves
+`UV_THREADPOOL_SIZE` to the application. Generic Encoders, Sinks,
+ContextProviders, network and IPC I/O, multiple routes, and batching remain out
+of scope; route and I/O requirements in this document constrain their later
+implementations.
 
 ## Statistics overhead
 
