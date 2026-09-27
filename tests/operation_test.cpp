@@ -167,6 +167,43 @@ TEST(Operation, PendingOperationBecomesCompletedForPollingAndWaiting) {
   EXPECT_EQ(waited.completion.value_or(OperationResult{}).Outcome(), OperationOutcome::kSucceeded);
 }
 
+TEST(Operation, PollWaitAndCallbackObserveTheSameImmutableReport) {
+  ControlReserve reserve{1};
+  auto started = reserve.TryStart();
+  ASSERT_TRUE(started);
+  const OperationReport report{.watermark_records = 5,
+                               .processed_records = 4,
+                               .processed_bytes = 64,
+                               .delivered_records = 2,
+                               .delivered_bytes = 30,
+                               .failed_records = 1,
+                               .failed_bytes = 14,
+                               .unfinished_records = 2,
+                               .unfinished_bytes = 20};
+
+  std::binary_semaphore callback_done{0};
+  OperationReport callback_report{};
+  const auto registered = started.operation.OnComplete([&](const OperationResult& result) noexcept {
+    callback_report = result.Report();
+    callback_done.release();
+  });
+  ASSERT_EQ(registered.status, OperationCallbackStatus::kRegistered);
+
+  EXPECT_TRUE(started.completion.TryComplete(OperationOutcome::kCancelled, report));
+  EXPECT_FALSE(started.completion.TryComplete(OperationOutcome::kSucceeded));
+
+  const auto polled = started.operation.Poll();
+  ASSERT_EQ(polled.status, OperationPollStatus::kCompleted);
+  EXPECT_EQ(polled.completion.value_or(OperationResult{}).Outcome(), OperationOutcome::kCancelled);
+  EXPECT_EQ(polled.completion.value_or(OperationResult{}).Report(), report);
+  const auto waited = started.operation.WaitUntil(std::chrono::steady_clock::now());
+  ASSERT_EQ(waited.status, OperationWaitStatus::kCompleted);
+  EXPECT_EQ(waited.completion.value_or(OperationResult{}).Report(), report);
+  ASSERT_TRUE(callback_done.try_acquire_for(kTestDeadline));
+  EXPECT_EQ(callback_report, report);
+  EXPECT_EQ(OperationResult{}.Report(), OperationReport{});
+}
+
 TEST(Operation, CompletionDispatchesTheSingleCallbackAwayFromCompletingThread) {
   ControlReserve reserve{1};
   auto started = reserve.TryStart();

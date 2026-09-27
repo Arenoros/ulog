@@ -1,5 +1,3 @@
-#include <atomic>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -10,7 +8,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 #include "encoding/raw_encoder.hpp"
@@ -19,10 +16,28 @@
 namespace ulog::detail::testing {
 namespace {
 
-enum class EncodedSlotState : std::uint8_t { kFree, kReserved, kReady, kHeld };
+/// Application-visible ownership of one slot's frame backing.
+enum class EncodedSlotState : std::uint8_t {
+  kFree,
+  kReserved,
+  kPending,
+  kDelivering,
+  kReady,
+  kHeld
+};
+
+/// Runtime-visible delivery state. A slot is reusable only after the worker retires it.
+enum class EncodedDeliveryState : std::uint8_t {
+  kRetired,
+  kInFlight,
+  kDelivered,
+  kFailed,
+  kCancelled,
+};
 
 struct EncodedSlotMetadata final {
   EncodedSlotState state{EncodedSlotState::kFree};
+  EncodedDeliveryState delivery{EncodedDeliveryState::kRetired};
   std::uint64_t generation{0};
   std::uint64_t admission_sequence{0};
   std::size_t encoded_bytes{0};
@@ -70,6 +85,16 @@ struct EncodedSlotMetadata final {
   return generation == 0U ? 1U : generation;
 }
 
+[[nodiscard]] constexpr bool IsKnownDeliveryMode(ulog::testing::EncodedDeliveryMode mode) noexcept {
+  switch (mode) {
+    case ulog::testing::EncodedDeliveryMode::kCompleteInline:
+    case ulog::testing::EncodedDeliveryMode::kHold:
+    case ulog::testing::EncodedDeliveryMode::kFailInline:
+      return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 struct InMemoryEncodedDestinationState final {
@@ -91,26 +116,48 @@ struct InMemoryEncodedDestinationState final {
   [[nodiscard]] const char* SlotBacking(std::size_t slot_index) const noexcept {
     return backing.get() + slot_index * maximum_encoded_record_bytes;
   }
-  [[nodiscard]] std::optional<std::size_t> FindFreeSlot() const noexcept {
+  [[nodiscard]] std::optional<std::size_t> FindClaimableSlot() const noexcept {
     for (std::size_t index = 0; index < capacity_records; ++index) {
-      if (slots[index].state == EncodedSlotState::kFree) {
+      if (slots[index].state == EncodedSlotState::kFree &&
+          slots[index].delivery == EncodedDeliveryState::kRetired) {
         return index;
       }
     }
     return std::nullopt;
   }
+  [[nodiscard]] std::optional<std::size_t> FindLowestSequence(
+      EncodedSlotState state) const noexcept {
+    std::optional<std::size_t> selected;
+    for (std::size_t index = 0; index < capacity_records; ++index) {
+      const auto& slot = slots[index];
+      if (slot.state != state) {
+        continue;
+      }
+      if (!selected || slot.admission_sequence < slots[*selected].admission_sequence) {
+        selected = index;
+      }
+    }
+    return selected;
+  }
+  void WakeRuntimeLocked() const noexcept {
+    if (wake.notify != nullptr) {
+      wake.notify(wake.context);
+    }
+  }
 
   std::mutex mutex;
-  std::condition_variable writable;
   std::unique_ptr<char[]> backing;
   std::unique_ptr<EncodedSlotMetadata[]> slots;
   const std::size_t capacity_records;
   const std::size_t maximum_record_bytes;
   const std::size_t maximum_encoded_record_bytes;
   const std::size_t fixed_backing_bytes;
-  std::atomic<bool> runtime_attached{false};
+  EncodedDestinationWake wake{};
+  ulog::testing::EncodedDeliveryMode delivery_mode{
+      ulog::testing::EncodedDeliveryMode::kCompleteInline};
+  bool runtime_attached{false};
   bool paused{false};
-  std::atomic<bool> stopped{false};
+  bool stopped{false};
 };
 
 namespace {
@@ -128,22 +175,18 @@ void ReleaseSlotHandle(std::shared_ptr<InMemoryEncodedDestinationState>& owner,
     return;
   }
   auto state = std::move(owner);
-  bool released = false;
   {
     std::lock_guard lock{state->mutex};
     if (identity.index < state->capacity_records) {
       auto& slot = state->slots[identity.index];
       if (slot.state == expected_state && slot.generation == identity.generation) {
+        // Keep encoded_bytes: an unretired delivery still reports them to the worker.
         slot.state = EncodedSlotState::kFree;
-        slot.encoded_bytes = 0U;
-        released = true;
+        state->WakeRuntimeLocked();
       }
     }
   }
   identity = {};
-  if (released) {
-    state->writable.notify_one();
-  }
 }
 
 [[nodiscard]] const EncodedSlotMetadata* FindHeldSlot(
@@ -199,90 +242,173 @@ EncodedDestinationStoreResult EncodedDestinationWriteClaim::StoreRaw(
     return {};
   }
 
-  bool committed = false;
+  bool submitted = false;
   {
     std::lock_guard lock{state_->mutex};
     if (slot.state == EncodedSlotState::kReserved && slot.generation == identity_.generation) {
       slot.admission_sequence = admission_sequence;
       slot.encoded_bytes = encoded.encoded_bytes;
-      slot.state = EncodedSlotState::kReady;
-      committed = true;
+      if (state_->stopped) {
+        slot.state = EncodedSlotState::kFree;
+        slot.delivery = EncodedDeliveryState::kCancelled;
+      } else {
+        switch (state_->delivery_mode) {
+          case ulog::testing::EncodedDeliveryMode::kCompleteInline:
+            slot.state = EncodedSlotState::kReady;
+            slot.delivery = EncodedDeliveryState::kDelivered;
+            break;
+          case ulog::testing::EncodedDeliveryMode::kHold:
+            slot.state = EncodedSlotState::kPending;
+            slot.delivery = EncodedDeliveryState::kInFlight;
+            break;
+          case ulog::testing::EncodedDeliveryMode::kFailInline:
+            slot.state = EncodedSlotState::kFree;
+            slot.delivery = EncodedDeliveryState::kFailed;
+            break;
+        }
+      }
+      submitted = true;
     }
   }
 
-  if (!committed) {
+  if (!submitted) {
     Reset();
     return {};
   }
   state_.reset();
   identity_ = {};
-  return {.encoded_bytes = encoded.encoded_bytes, .committed = true};
+  return {.encoded_bytes = encoded.encoded_bytes, .submitted = true};
 }
 
 bool InMemoryEncodedDestinationAccess::TryAttachRuntime(
-    ulog::testing::InMemoryEncodedDestination& destination) noexcept {
-  auto state = destination.state_;
-  if (state == nullptr || state->stopped.load(std::memory_order_acquire)) {
+    ulog::testing::InMemoryEncodedDestination& destination, EncodedDestinationWake wake) noexcept {
+  const auto& state = destination.state_;
+  if (state == nullptr) {
     return false;
   }
-  bool expected = false;
-  if (!state->runtime_attached.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+  std::lock_guard lock{state->mutex};
+  if (state->stopped || state->runtime_attached) {
     return false;
   }
-  if (state->stopped.load(std::memory_order_acquire)) {
-    state->runtime_attached.store(false, std::memory_order_release);
-    return false;
-  }
+  state->runtime_attached = true;
+  state->wake = wake;
   return true;
 }
 
 void InMemoryEncodedDestinationAccess::DetachRuntime(
     ulog::testing::InMemoryEncodedDestination& destination) noexcept {
-  auto state = destination.state_;
-  if (state != nullptr) {
-    state->runtime_attached.store(false, std::memory_order_release);
+  const auto& state = destination.state_;
+  if (state == nullptr) {
+    return;
   }
+  std::lock_guard lock{state->mutex};
+  state->runtime_attached = false;
+  state->wake = {};
 }
 
-EncodedDestinationWriteClaim InMemoryEncodedDestinationAccess::WaitForWrite(
-    ulog::testing::InMemoryEncodedDestination& destination,
-    std::chrono::steady_clock::duration recheck_interval) noexcept {
-  try {
-    auto state = destination.state_;
-    if (state == nullptr) {
-      return {};
-    }
-    std::unique_lock lock{state->mutex};
-    state->writable.wait_for(lock, recheck_interval, [&state] {
-      return state->stopped.load(std::memory_order_acquire) ||
-             (!state->paused && state->FindFreeSlot().has_value());
-    });
-    if (state->stopped.load(std::memory_order_acquire) || state->paused) {
-      return {};
-    }
-    const auto slot_index = state->FindFreeSlot();
-    if (!slot_index) {
-      return {};
-    }
-    auto& slot = state->slots[*slot_index];
-    slot.generation = NextGeneration(slot.generation);
-    slot.state = EncodedSlotState::kReserved;
-    return EncodedDestinationWriteClaim{
-        std::move(state),
-        EncodedDestinationSlotIdentity{.index = *slot_index, .generation = slot.generation}};
-  } catch (const std::system_error&) {
+EncodedDestinationWriteClaim InMemoryEncodedDestinationAccess::TryClaimWrite(
+    ulog::testing::InMemoryEncodedDestination& destination) noexcept {
+  auto state = destination.state_;
+  if (state == nullptr) {
     return {};
   }
+  std::lock_guard lock{state->mutex};
+  if (state->stopped || state->paused) {
+    return {};
+  }
+  const auto slot_index = state->FindClaimableSlot();
+  if (!slot_index) {
+    return {};
+  }
+  auto& slot = state->slots[*slot_index];
+  slot.generation = NextGeneration(slot.generation);
+  slot.state = EncodedSlotState::kReserved;
+  const EncodedDestinationSlotIdentity identity{.index = *slot_index,
+                                                .generation = slot.generation};
+  return EncodedDestinationWriteClaim{std::move(state), identity};
+}
+
+std::optional<EncodedDeliveryRetirement> InMemoryEncodedDestinationAccess::TryRetire(
+    ulog::testing::InMemoryEncodedDestination& destination,
+    std::uint64_t admission_sequence) noexcept {
+  const auto& state = destination.state_;
+  if (state == nullptr) {
+    return std::nullopt;
+  }
+  std::lock_guard lock{state->mutex};
+  for (std::size_t index = 0; index < state->capacity_records; ++index) {
+    auto& slot = state->slots[index];
+    const bool completed = slot.delivery == EncodedDeliveryState::kDelivered ||
+                           slot.delivery == EncodedDeliveryState::kFailed;
+    if (!completed || slot.admission_sequence != admission_sequence) {
+      continue;
+    }
+    const EncodedDeliveryRetirement retirement{
+        .outcome = slot.delivery == EncodedDeliveryState::kDelivered
+                       ? EncodedDeliveryOutcome::kDelivered
+                       : EncodedDeliveryOutcome::kFailed,
+        .encoded_bytes = slot.encoded_bytes,
+    };
+    slot.delivery = EncodedDeliveryState::kRetired;
+    return retirement;
+  }
+  return std::nullopt;
+}
+
+EncodedInFlightSummary InMemoryEncodedDestinationAccess::SummarizeInFlight(
+    const ulog::testing::InMemoryEncodedDestination& destination,
+    std::uint64_t watermark) noexcept {
+  const auto& state = destination.state_;
+  EncodedInFlightSummary summary;
+  if (state == nullptr) {
+    return summary;
+  }
+  std::lock_guard lock{state->mutex};
+  for (std::size_t index = 0; index < state->capacity_records; ++index) {
+    const auto& slot = state->slots[index];
+    if (slot.delivery == EncodedDeliveryState::kRetired || slot.admission_sequence >= watermark) {
+      continue;
+    }
+    ++summary.records;
+    summary.bytes += slot.encoded_bytes;
+    if (slot.delivery == EncodedDeliveryState::kDelivered) {
+      ++summary.delivered_records;
+      summary.delivered_bytes += slot.encoded_bytes;
+    } else if (slot.delivery == EncodedDeliveryState::kFailed) {
+      ++summary.failed_records;
+      summary.failed_bytes += slot.encoded_bytes;
+    }
+  }
+  return summary;
 }
 
 void InMemoryEncodedDestinationAccess::Stop(
     ulog::testing::InMemoryEncodedDestination& destination) noexcept {
-  auto state = destination.state_;
+  const auto& state = destination.state_;
   if (state == nullptr) {
     return;
   }
-  state->stopped.store(true, std::memory_order_release);
-  state->writable.notify_all();
+  std::lock_guard lock{state->mutex};
+  state->stopped = true;
+  for (std::size_t index = 0; index < state->capacity_records; ++index) {
+    auto& slot = state->slots[index];
+    if (slot.state == EncodedSlotState::kPending || slot.state == EncodedSlotState::kDelivering) {
+      slot.state = EncodedSlotState::kFree;
+      slot.delivery = EncodedDeliveryState::kCancelled;
+    }
+  }
+}
+
+void InMemoryEncodedDestinationAccess::DiscardInFlight(
+    ulog::testing::InMemoryEncodedDestination& destination) noexcept {
+  const auto& state = destination.state_;
+  if (state == nullptr) {
+    return;
+  }
+  std::lock_guard lock{state->mutex};
+  for (std::size_t index = 0; index < state->capacity_records; ++index) {
+    state->slots[index].delivery = EncodedDeliveryState::kRetired;
+  }
 }
 
 std::size_t InMemoryEncodedDestinationAccess::FixedBackingBytes(
@@ -293,6 +419,67 @@ std::size_t InMemoryEncodedDestinationAccess::FixedBackingBytes(
 }  // namespace ulog::detail::testing
 
 namespace ulog::testing {
+
+PendingEncodedDelivery::PendingEncodedDelivery(
+    std::shared_ptr<detail::testing::InMemoryEncodedDestinationState> state,
+    detail::testing::EncodedDestinationSlotIdentity identity, std::uint64_t admission_sequence,
+    std::string_view bytes) noexcept
+    : state_(std::move(state)),
+      identity_(identity),
+      admission_sequence_(admission_sequence),
+      bytes_(bytes) {}
+
+PendingEncodedDelivery::PendingEncodedDelivery(PendingEncodedDelivery&& other) noexcept
+    : state_(std::move(other.state_)),
+      identity_(std::exchange(other.identity_, {})),
+      admission_sequence_(std::exchange(other.admission_sequence_, 0)),
+      bytes_(std::exchange(other.bytes_, {})) {}
+
+PendingEncodedDelivery& PendingEncodedDelivery::operator=(PendingEncodedDelivery&& other) noexcept {
+  if (this != &other) {
+    static_cast<void>(Finish(false));
+    state_ = std::move(other.state_);
+    identity_ = std::exchange(other.identity_, {});
+    admission_sequence_ = std::exchange(other.admission_sequence_, 0);
+    bytes_ = std::exchange(other.bytes_, {});
+  }
+  return *this;
+}
+
+PendingEncodedDelivery::~PendingEncodedDelivery() { static_cast<void>(Finish(false)); }
+
+EncodedDeliveryCompletionStatus PendingEncodedDelivery::Complete() noexcept { return Finish(true); }
+
+EncodedDeliveryCompletionStatus PendingEncodedDelivery::Fail() noexcept { return Finish(false); }
+
+EncodedDeliveryCompletionStatus PendingEncodedDelivery::Finish(bool delivered) noexcept {
+  if (state_ == nullptr) {
+    return EncodedDeliveryCompletionStatus::kInvalidHandle;
+  }
+  const auto state = std::move(state_);
+  const auto identity = std::exchange(identity_, {});
+  admission_sequence_ = 0;
+  bytes_ = {};
+
+  std::lock_guard lock{state->mutex};
+  if (identity.index >= state->capacity_records) {
+    return EncodedDeliveryCompletionStatus::kCancelled;
+  }
+  auto& slot = state->slots[identity.index];
+  if (slot.state != detail::testing::EncodedSlotState::kDelivering ||
+      slot.generation != identity.generation) {
+    return EncodedDeliveryCompletionStatus::kCancelled;
+  }
+  if (delivered) {
+    slot.state = detail::testing::EncodedSlotState::kReady;
+    slot.delivery = detail::testing::EncodedDeliveryState::kDelivered;
+  } else {
+    slot.state = detail::testing::EncodedSlotState::kFree;
+    slot.delivery = detail::testing::EncodedDeliveryState::kFailed;
+  }
+  state->WakeRuntimeLocked();
+  return EncodedDeliveryCompletionStatus::kCompleted;
+}
 
 ObservedEncodedRecord::ObservedEncodedRecord(
     std::shared_ptr<detail::testing::InMemoryEncodedDestinationState> state,
@@ -337,16 +524,7 @@ std::optional<ObservedEncodedRecord> InMemoryEncodedDestination::TryTake() noexc
     return std::nullopt;
   }
   std::lock_guard lock{state_->mutex};
-  std::optional<std::size_t> selected;
-  for (std::size_t index = 0; index < state_->capacity_records; ++index) {
-    const auto& slot = state_->slots[index];
-    if (slot.state != detail::testing::EncodedSlotState::kReady) {
-      continue;
-    }
-    if (!selected || slot.admission_sequence < state_->slots[*selected].admission_sequence) {
-      selected = index;
-    }
-  }
+  const auto selected = state_->FindLowestSequence(detail::testing::EncodedSlotState::kReady);
   if (!selected) {
     return std::nullopt;
   }
@@ -357,15 +535,42 @@ std::optional<ObservedEncodedRecord> InMemoryEncodedDestination::TryTake() noexc
   return std::optional<ObservedEncodedRecord>{std::move(record)};
 }
 
+std::optional<PendingEncodedDelivery>
+InMemoryEncodedDestination::TryTakePendingDelivery() noexcept {
+  if (state_ == nullptr) {
+    return std::nullopt;
+  }
+  std::lock_guard lock{state_->mutex};
+  const auto selected = state_->FindLowestSequence(detail::testing::EncodedSlotState::kPending);
+  if (!selected) {
+    return std::nullopt;
+  }
+  auto& slot = state_->slots[*selected];
+  slot.state = detail::testing::EncodedSlotState::kDelivering;
+  PendingEncodedDelivery delivery{
+      state_,
+      detail::testing::EncodedDestinationSlotIdentity{.index = *selected,
+                                                      .generation = slot.generation},
+      slot.admission_sequence,
+      std::string_view{state_->SlotBacking(*selected), slot.encoded_bytes}};
+  return std::optional<PendingEncodedDelivery>{std::move(delivery)};
+}
+
+void InMemoryEncodedDestination::SetDeliveryMode(EncodedDeliveryMode mode) noexcept {
+  if (state_ == nullptr || !detail::testing::IsKnownDeliveryMode(mode)) {
+    return;
+  }
+  std::lock_guard lock{state_->mutex};
+  state_->delivery_mode = mode;
+}
+
 void InMemoryEncodedDestination::Resume() noexcept {
   if (state_ == nullptr) {
     return;
   }
-  {
-    std::lock_guard lock{state_->mutex};
-    state_->paused = false;
-  }
-  state_->writable.notify_all();
+  std::lock_guard lock{state_->mutex};
+  state_->paused = false;
+  state_->WakeRuntimeLocked();
 }
 
 std::size_t InMemoryEncodedDestination::Capacity() const noexcept {

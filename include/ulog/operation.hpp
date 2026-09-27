@@ -22,24 +22,44 @@ struct OperationResultAccess;
 struct OperationVTable;
 }  // namespace detail
 
+/// Exact single-route accounting for the admitted Records before an Operation watermark.
+///
+/// Byte counts are encoded route bytes; a route without an encoder reports zero bytes.
+/// `delivered_records + failed_records + unfinished_records == watermark_records`.
+struct OperationReport final {
+  std::uint64_t watermark_records{0};
+  std::uint64_t processed_records{0};
+  std::uint64_t processed_bytes{0};
+  std::uint64_t delivered_records{0};
+  std::uint64_t delivered_bytes{0};
+  std::uint64_t failed_records{0};
+  std::uint64_t failed_bytes{0};
+  std::uint64_t unfinished_records{0};
+  std::uint64_t unfinished_bytes{0};
+
+  friend constexpr bool operator==(const OperationReport&,
+                                   const OperationReport&) noexcept = default;
+};
+
 class OperationResult final {
  public:
   constexpr OperationResult() noexcept = default;
 
   /// Returns the immutable terminal outcome published for this Operation.
-  [[nodiscard]] constexpr OperationOutcome Outcome() const noexcept {
-    return static_cast<OperationOutcome>(storage_);
-  }
+  [[nodiscard]] constexpr OperationOutcome Outcome() const noexcept { return outcome_; }
+  /// Returns the immutable accounting captured when this Operation completed.
+  [[nodiscard]] constexpr const OperationReport& Report() const noexcept { return report_; }
 
   friend constexpr bool operator==(const OperationResult&,
                                    const OperationResult&) noexcept = default;
 
  private:
   friend struct detail::OperationResultAccess;
-  explicit constexpr OperationResult(const OperationOutcome outcome) noexcept
-      : storage_{static_cast<std::uintptr_t>(outcome)} {}
+  constexpr OperationResult(const OperationOutcome outcome, const OperationReport& report) noexcept
+      : outcome_{outcome}, report_{report} {}
 
-  std::uintptr_t storage_{static_cast<std::uintptr_t>(OperationOutcome::kFailed)};
+  OperationOutcome outcome_{OperationOutcome::kFailed};
+  OperationReport report_{};
 };
 
 inline constexpr std::size_t kOperationCallbackInlineBytes = 64;

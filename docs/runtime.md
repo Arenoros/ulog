@@ -5,9 +5,11 @@ accepted native Records through one FIFO worker route into either
 `ulog::testing::InMemoryDestination` or
 `ulog::testing::InMemoryEncodedDestination`. The structured destination exposes
 Record contents; the encoded destination runs the built-in Raw encoder on the
-worker and exposes exact bytes. These are executable Runtime test seams: they
-make admission, ownership, ordering, encoding, control, and shutdown behavior
-observable without introducing a generic destination abstraction or
+worker, submits each frame as one serialized delivery, and exposes exact bytes.
+Its deliveries can complete inline, fail inline, or stay held until the test
+completes them. These are executable Runtime test seams: they make admission,
+ownership, ordering, encoding, delivery completion, control, and shutdown
+behavior observable without introducing a generic destination abstraction or
 asynchronous I/O.
 
 Include the public interfaces with:
@@ -82,12 +84,17 @@ The current tracer accepts these Runtime bounds:
   large as the Runtime value.
 
 `RuntimeSnapshot` exposes weakly consistent admission, completion, delivery,
-rejection, retained-payload, and lifecycle counters. `completed_records` counts
-Records whose route attempt finished; `delivered_records` counts committed
-destination entries. `delivered_bytes` is the committed byte total for the Raw
-route and remains zero for the structured route. `encoding_failed_records`
-counts internal encoding-invariant failures; such a failure commits no partial
-frame and fails pending Drain or Shutdown Operations.
+rejection, retained-payload, and lifecycle counters. `processed_records` and
+`processed_bytes` count Records the worker has taken from ingress and, for the Raw
+route, encoded and submitted. `completed_records` counts Records whose route
+attempt the worker has retired: `delivered_records` plus
+`delivery_failed_records` plus `encoding_failed_records`. The worker retires
+delivery outcomes in admission order, so a delivery completed ahead of an earlier
+held delivery is not yet counted as completed. `delivered_bytes` and
+`delivery_failed_bytes` are Raw frame totals and remain zero for the structured
+route. `encoding_failed_records` counts internal encoding-invariant failures; such
+a failure commits no partial frame, cancels unfinished deliveries, and fails
+pending Drain or Shutdown Operations.
 
 `fixed_backing_bytes` reports the capacity-scaled ingress Record slots,
 destination payload and slot metadata, control nodes, and action table separately
@@ -160,6 +167,56 @@ also escaped in keys. Raw intentionally omits timestamp, level, module, and sour
 metadata. Encoding executes synchronously inside the worker's consume callback;
 no `RecordView` or borrowed field survives that callback.
 
+### Deferred Raw delivery
+
+After the worker encodes a frame into a free slot, it submits that frame to the
+destination as one delivery. Submissions are serialized by the single worker and
+follow admission order. `SetDeliveryMode()` selects how later submissions
+complete:
+
+- `kCompleteInline` commits the frame for `TryTake()` during submission. This is
+  the default.
+- `kFailInline` fails the delivery during submission and discards the frame.
+- `kHold` keeps the delivery pending until the test calls
+  `TryTakePendingDelivery()` and then `Complete()` or `Fail()` on the returned
+  move-only `PendingEncodedDelivery`.
+
+```cpp
+destination.SetDeliveryMode(ulog::testing::EncodedDeliveryMode::kHold);
+LOG_INFO_TO(logger, "held");
+auto drain = runtime->Drain();
+
+auto delivery = destination.TryTakePendingDelivery();  // poll until the worker submits it
+if (delivery && delivery->Complete() ==
+                    ulog::testing::EncodedDeliveryCompletionStatus::kCompleted) {
+  // Drain can now succeed; the frame is ready for destination.TryTake().
+}
+```
+
+A held frame stays pinned in its slot until its delivery completes, and a slot is
+reused only after the worker retires that outcome. Held, ready, and observed
+frames therefore share the destination's fixed slot bound. When every slot is
+occupied, the worker stops taking Records from ingress; producers still never
+wait and reject later Records as drop-newest once their bounded ingress fills.
+Completing or failing a held delivery wakes the worker, which retires the outcome
+and resumes progress.
+
+Each delivery completes exactly once. The first `Complete()` or `Fail()` returns
+`kCompleted` and empties the handle; later calls, calls on a moved-from handle, or
+calls on an empty handle return `kInvalidHandle`. Destroying or move-assigning over
+an uncompleted handle fails its delivery. After Runtime destruction or a route
+failure cancels a delivery, its completion returns `kCancelled` and changes no
+accounting. A handle keeps the destination state alive, so `Bytes()` remains valid
+until the handle completes, is moved from, or is destroyed, even after the Runtime
+is gone. Completion runs no Runtime callback on the calling thread; it only
+records the outcome and wakes the worker.
+
+Deliveries may be completed in any order. The worker retires their outcomes
+strictly in admission order, so ordered Operation reports never count a later
+admission ahead of an earlier held one. A successful out-of-order completion is
+ready for `TryTake()` immediately, which returns the lowest ready admission
+sequence at that moment.
+
 `start_paused` is a deterministic test control. While paused, the worker cannot claim
 any destination slot; `Resume()` releases that gate permanently. This makes ingress
 saturation and pre-evaluation rejection reproducible without timing assumptions. It
@@ -174,23 +231,35 @@ succeed when payload ingress is saturated, although it fails explicitly when eve
 control slot is already retained.
 
 - `Drain()` captures the accepted-record watermark at the call and completes after
-  every Record through that watermark has been committed to the destination. It does
-  not require the application to remove Records that already fit, and it leaves
-  admission open. Ready and observed Records still occupy destination slots: when
-  the watermark exceeds the available slots, Drain waits for the application to
-  call `TryTake()` and release enough observations for the remaining copies.
+  every Record through that watermark has reached a terminal delivery outcome:
+  delivered to the destination or failed. A held delivery before the watermark
+  keeps Drain pending until it completes or fails. Drain does not require the
+  application to remove Records that already fit, and it leaves admission open.
+  Ready and observed Records still occupy destination slots: when the watermark
+  exceeds the available slots, Drain waits for the application to call `TryTake()`
+  and release enough observations for the remaining copies.
 - The first `Shutdown()` closes admission before returning, so later logging through
-  an existing Logger is rejected before evaluation. The worker delivers all accepted
-  Records, completes the action, and exits. Shutdown is not a durable file flush; the
-  distinction remains defined by
+  an existing Logger is rejected before evaluation. The worker finishes every
+  accepted Record, including held deliveries, completes the action, and exits.
+  Shutdown is not a durable file flush; the distinction remains defined by
   [ADR 0013](adr/0013-separate-drain-from-durable-file-flush.md).
 
+Both actions succeed when their barrier is reached, even if some deliveries failed.
+The [`OperationReport`](operations.md#completion-report) returned with the result
+gives exact route accounting for every admitted sequence below the watermark:
+processed, delivered, failed, and unfinished Records and encoded bytes. Records
+admitted after the watermark are excluded, even when their held deliveries
+completed earlier. Shutdown reports every admitted Record. A caller that needs the
+outcome of one interval compares consecutive reports.
+
 Runtime destruction is bounded best-effort cleanup, not an implicit successful
-Drain. It closes admission, stops any destination wait, cancels pending Operations,
-and discards retained ingress Records. It waits at most `destruction_timeout` for the
-worker; if the worker has not reported completion, the thread detaches while retaining
-shared internal state so that it cannot access the destroyed Runtime object. Call
-`Shutdown()` and observe its successful Operation when delivery is required.
+Drain. It closes admission, stops any destination wait, cancels held deliveries,
+completes pending Operations as `kCancelled` with their exact reports, and discards
+retained ingress Records. Cancelled deliveries and discarded Records are reported as
+unfinished. It waits at most `destruction_timeout` for the worker; if the worker
+has not reported completion, the thread detaches while retaining shared internal
+state so that it cannot access the destroyed Runtime object. Call `Shutdown()` and
+observe its successful Operation when delivery is required.
 
 ## Current boundary
 

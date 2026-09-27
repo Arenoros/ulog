@@ -5,7 +5,8 @@ development. Its current production interface exposes native levels, source
 locations, a cheap Logger handle, bounded Operation completion primitives, and
 the basic text/fmt `LOG*` macro family. The installed package also exposes
 bounded single-route Runtime tracers backed by structured-record and Raw-encoded
-in-memory test destinations.
+in-memory test destinations, including deferred Raw delivery completion with
+exact Drain and Shutdown reports.
 The initial process-wide target is a static Null Logger. Applications can
 atomically replace that non-owning target; Runtime does not install its Logger
 automatically.

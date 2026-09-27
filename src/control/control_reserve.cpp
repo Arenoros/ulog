@@ -347,7 +347,8 @@ OperationCompletion::~OperationCompletion() {
   }
 }
 
-bool OperationCompletion::TryComplete(const OperationOutcome outcome) noexcept {
+bool OperationCompletion::TryComplete(const OperationOutcome outcome,
+                                      const OperationReport& report) noexcept {
   if (node_ == nullptr) {
     return false;
   }
@@ -360,7 +361,7 @@ bool OperationCompletion::TryComplete(const OperationOutcome outcome) noexcept {
   {
     std::lock_guard lock{node.mutex};
     if (node.generation == generation && !node.completed) {
-      node.result = OperationResultAccess::Make(outcome);
+      node.result = OperationResultAccess::Make(outcome, report);
       node.completed = true;
       node.ready.store(true, std::memory_order_release);
       if (node.callback_state == CallbackState::kArmed) {

@@ -57,7 +57,8 @@ class OperationCompletion final {
   ~OperationCompletion();
 
   [[nodiscard]] explicit operator bool() const noexcept { return node_ != nullptr; }
-  [[nodiscard]] bool TryComplete(OperationOutcome outcome) noexcept;
+  [[nodiscard]] bool TryComplete(OperationOutcome outcome,
+                                 const OperationReport& report = {}) noexcept;
 
  private:
   friend class ControlReserve;

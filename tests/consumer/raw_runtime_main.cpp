@@ -1,6 +1,8 @@
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <string_view>
+#include <thread>
 #include <ulog/level.hpp>
 #include <ulog/log.hpp>
 #include <ulog/operation.hpp>
@@ -24,6 +26,54 @@ using namespace std::string_view_literals;
       .startup_timeout = 1s,
       .destruction_timeout = 1s,
   };
+}
+
+int RunDeferredDelivery() {
+  ulog::testing::InMemoryEncodedDestination destination{{
+      .capacity_records = 1,
+      .maximum_record_bytes = 512,
+  }};
+  destination.SetDeliveryMode(ulog::testing::EncodedDeliveryMode::kHold);
+  auto created = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
+  if (!created) return 20;
+
+  const ulog::Logger logger = created.runtime->GetLogger();
+  LOG_INFO_TO(logger, "held");
+  auto drain = created.runtime->Drain();
+  if (!drain) return 21;
+
+  std::optional<ulog::testing::PendingEncodedDelivery> pending;
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (!pending && std::chrono::steady_clock::now() < deadline) {
+    pending = destination.TryTakePendingDelivery();
+    if (!pending) std::this_thread::yield();
+  }
+  if (!pending || pending->AdmissionSequence() != 0U || pending->Bytes() != "tskv\ttext=held\n") {
+    return 22;
+  }
+  if (pending->Complete() != ulog::testing::EncodedDeliveryCompletionStatus::kCompleted) {
+    return 23;
+  }
+
+  const auto drained = drain.operation.WaitUntil(std::chrono::steady_clock::now() + 1s);
+  if (drained.status != ulog::OperationWaitStatus::kCompleted || !drained.completion) return 24;
+  const ulog::OperationReport& report = drained.completion->Report();
+  if (report.watermark_records != 1U || report.processed_records != 1U ||
+      report.delivered_records != 1U || report.delivered_bytes != 15U ||
+      report.failed_records != 0U || report.unfinished_records != 0U) {
+    return 25;
+  }
+  auto frame = destination.TryTake();
+  if (!frame || frame->Bytes() != "tskv\ttext=held\n") return 26;
+
+  auto shutdown = created.runtime->Shutdown();
+  if (!shutdown) return 27;
+  const auto stopped = shutdown.operation.WaitUntil(std::chrono::steady_clock::now() + 1s);
+  if (stopped.status != ulog::OperationWaitStatus::kCompleted || !stopped.completion ||
+      stopped.completion->Outcome() != ulog::OperationOutcome::kSucceeded) {
+    return 28;
+  }
+  return 0;
 }
 
 }  // namespace
@@ -70,5 +120,5 @@ int main() {
       snapshot.encoding_failed_records != 0U || snapshot.retained_records != 0U) {
     return 11;
   }
-  return 0;
+  return RunDeferredDelivery();
 }

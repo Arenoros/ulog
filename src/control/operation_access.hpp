@@ -22,8 +22,9 @@ struct OperationCallbackAccess final {
 };
 
 struct OperationResultAccess final {
-  [[nodiscard]] static constexpr OperationResult Make(const OperationOutcome outcome) noexcept {
-    return OperationResult{outcome};
+  [[nodiscard]] static constexpr OperationResult Make(const OperationOutcome outcome,
+                                                      const OperationReport& report) noexcept {
+    return OperationResult{outcome, report};
   }
 };
 

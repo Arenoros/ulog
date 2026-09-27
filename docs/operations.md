@@ -27,6 +27,32 @@ and callback threads receive `kForbiddenThread` instead of blocking.
 Every non-success wait result provides `Message()` and `HowToFix()`. These are
 static non-owning strings and do not allocate.
 
+## Completion report
+
+`OperationResult::Outcome()` reports the terminal state of the action, and
+`OperationResult::Report()` returns an `OperationReport` captured with it. The
+report is exact single-route accounting for every admitted Record whose sequence
+is below the Operation watermark:
+
+- `watermark_records` is the number of admitted Records covered;
+- `processed_records` and `processed_bytes` count Records the route took from
+  ingress and, for an encoding route, encoded;
+- `delivered_*` and `failed_*` count terminal delivery outcomes; and
+- `unfinished_records` and `unfinished_bytes` cover Records without a terminal
+  outcome when the action completed, such as cancelled deliveries or discarded
+  ingress Records.
+
+`delivered_records + failed_records + unfinished_records` always equals
+`watermark_records`. Bytes are encoded route bytes, so a Record that was never
+encoded contributes an unfinished Record but no unfinished bytes, and a route
+without an encoder reports zero bytes. Records rejected before admission have no
+sequence and appear only in weakly consistent Runtime statistics, as required by
+[ADR 0013](adr/0013-separate-drain-from-durable-file-flush.md).
+
+The result, including its report, is fixed-size and stored inline in the control
+node; publishing, polling, waiting for, or delivering it to a callback performs no
+general-purpose heap allocation.
+
 ## Completion callback
 
 `OnComplete()` accepts one callable with this shape:
@@ -77,13 +103,18 @@ producer source files; the frontend structural gate enforces that direction.
 ## Runtime actions
 
 `Runtime::Drain()` captures an accepted-record watermark and completes after the
-single worker has committed every Record through that watermark into the selected
-structured or Raw-encoded in-memory destination. It leaves admission open.
-`Runtime::Shutdown()` closes admission,
-delivers all already accepted Records, completes, and stops the worker. A
-successful Drain or Shutdown does not mean an application has taken or released
-the destination's observed Records.
+single worker has retired a terminal delivery outcome for every Record through
+that watermark in the selected structured or Raw-encoded in-memory destination. It
+leaves admission open. `Runtime::Shutdown()` closes admission, finishes all
+already accepted Records, completes, and stops the worker. Both succeed once
+their barrier is reached; failed deliveries are counted in the report rather
+than turning the barrier into `kFailed`. A successful Drain or Shutdown does not
+mean an application has taken or released the destination's observed Records.
+
+`kFailed` reports a route that stopped after an internal encoding failure; its
+report counts that Record as failed and the remaining work as unfinished.
 
 Runtime destruction is a separate bounded cancellation path. Pending actions
-complete as `kCancelled`; callers that require delivery must explicitly start
-Shutdown and observe its successful terminal result before destroying Runtime.
+complete as `kCancelled` with reports of the work that finished first; callers
+that require delivery must explicitly start Shutdown and observe its successful
+terminal result before destroying Runtime.

@@ -6,6 +6,7 @@
 #include <exception>
 #include <optional>
 #include <string_view>
+#include <thread>
 #include <ulog/level.hpp>
 #include <ulog/log.hpp>
 #include <ulog/logger.hpp>
@@ -25,7 +26,8 @@ constexpr std::uint64_t kCycles = 256;
 constexpr std::string_view kMessage = "allocation-free-encoded-runtime";
 constexpr std::string_view kExpectedFrame = "tskv\ttext=allocation-free-encoded-runtime\n";
 
-[[nodiscard]] bool WaitSucceeded(ulog::OperationStartResult& started) noexcept {
+[[nodiscard]] bool WaitSucceeded(ulog::OperationStartResult& started,
+                                 ulog::OperationReport* report = nullptr) noexcept {
   if (!started) {
     if (started.failure) {
       std::fprintf(stderr,
@@ -42,6 +44,8 @@ constexpr std::string_view kExpectedFrame = "tskv\ttext=allocation-free-encoded-
   if (!succeeded) {
     std::fprintf(stderr, "encoded runtime allocation test: wait failed: status=%u\n",
                  static_cast<unsigned>(waited.status));
+  } else if (report != nullptr) {
+    *report = waited.completion->Report();
   }
   return succeeded;
 }
@@ -74,6 +78,49 @@ constexpr std::string_view kExpectedFrame = "tskv\ttext=allocation-free-encoded-
          record->Bytes() == kExpectedFrame;
 }
 
+[[nodiscard]] std::optional<ulog::testing::PendingEncodedDelivery> WaitForPendingDelivery(
+    ulog::testing::InMemoryEncodedDestination& destination) noexcept {
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (auto delivery = destination.TryTakePendingDelivery()) {
+      return delivery;
+    }
+    std::this_thread::yield();
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] bool RunHeldCycle(ulog::Runtime& runtime, const ulog::Logger& logger,
+                                ulog::testing::InMemoryEncodedDestination& destination,
+                                const std::uint64_t expected_sequence) noexcept {
+  LOG_INFO_TO(logger, kMessage);
+  auto drain = runtime.Drain();
+  std::optional<ulog::testing::PendingEncodedDelivery> delivery =
+      WaitForPendingDelivery(destination);
+  if (!delivery || delivery->AdmissionSequence() != expected_sequence ||
+      delivery->Bytes() != kExpectedFrame ||
+      delivery->Complete() != ulog::testing::EncodedDeliveryCompletionStatus::kCompleted) {
+    std::fputs("encoded runtime allocation test: held delivery mismatch\n", stderr);
+    return false;
+  }
+
+  ulog::OperationReport report{};
+  if (!WaitSucceeded(drain, &report)) {
+    return false;
+  }
+  const std::uint64_t expected_records = expected_sequence + 1U;
+  if (report.watermark_records != expected_records ||
+      report.delivered_records != expected_records ||
+      report.delivered_bytes != expected_records * kExpectedFrame.size() ||
+      report.failed_records != 0U || report.unfinished_records != 0U) {
+    std::fputs("encoded runtime allocation test: held Drain report mismatch\n", stderr);
+    return false;
+  }
+  std::optional<ulog::testing::ObservedEncodedRecord> record = destination.TryTake();
+  return record && record->AdmissionSequence() == expected_sequence &&
+         record->Bytes() == kExpectedFrame;
+}
+
 [[nodiscard]] bool Run() {
   ulog::testing::InMemoryEncodedDestination destination{{
       .capacity_records = 1,
@@ -95,27 +142,42 @@ constexpr std::string_view kExpectedFrame = "tskv\ttext=allocation-free-encoded-
     return false;
   }
 
+  destination.SetDeliveryMode(ulog::testing::EncodedDeliveryMode::kHold);
+  if (!RunHeldCycle(runtime, logger, destination, 1U)) {
+    std::fputs("encoded runtime allocation test: held warm-up failed\n", stderr);
+    return false;
+  }
+  destination.SetDeliveryMode(ulog::testing::EncodedDeliveryMode::kCompleteInline);
+
   const std::uint64_t allocations_before =
       allocation_tracking::allocation_count.load(std::memory_order_relaxed);
   bool valid = true;
-  for (std::uint64_t cycle = 0; cycle < kCycles; ++cycle) {
-    if (!RunCycle(runtime, logger, destination, cycle + 1U)) {
+  std::uint64_t sequence = 2U;
+  for (std::uint64_t cycle = 0; cycle < kCycles; ++cycle, ++sequence) {
+    if (!RunCycle(runtime, logger, destination, sequence)) {
       valid = false;
       break;
     }
   }
+  destination.SetDeliveryMode(ulog::testing::EncodedDeliveryMode::kHold);
+  for (std::uint64_t cycle = 0; valid && cycle < kCycles; ++cycle, ++sequence) {
+    if (!RunHeldCycle(runtime, logger, destination, sequence)) {
+      valid = false;
+    }
+  }
+  destination.SetDeliveryMode(ulog::testing::EncodedDeliveryMode::kCompleteInline);
 
   LOG_INFO_TO(logger, kMessage);
   auto shutdown = runtime.Shutdown();
   valid = WaitSucceeded(shutdown) && valid;
   std::optional<ulog::testing::ObservedEncodedRecord> final_record = destination.TryTake();
-  valid = final_record && final_record->AdmissionSequence() == kCycles + 1U &&
+  valid = final_record && final_record->AdmissionSequence() == sequence &&
           final_record->Bytes() == kExpectedFrame && valid;
 
   const std::uint64_t allocations_after =
       allocation_tracking::allocation_count.load(std::memory_order_relaxed);
   const auto snapshot = runtime.GetSnapshot();
-  const std::uint64_t expected_records = kCycles + 2U;
+  const std::uint64_t expected_records = 2U * kCycles + 3U;
   const std::uint64_t expected_delivered_bytes =
       expected_records * static_cast<std::uint64_t>(kExpectedFrame.size());
   valid = allocations_after == allocations_before &&

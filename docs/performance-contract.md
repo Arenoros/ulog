@@ -117,8 +117,9 @@ and Sink extension code never executes on producer threads, and Encoder never
 executes on the libuv loop thread.
 
 The current [in-memory Runtime tracers](runtime.md) exercise the bounded producer,
-single FIFO worker, control reserve, lifecycle, and built-in Raw encoding portions
-of this contract. Generic Encoders, Sinks, ContextProviders, libuv I/O, multiple
+single FIFO worker, control reserve, lifecycle, built-in Raw encoding, deferred
+single-destination delivery completion, and exact barrier-report portions of this
+contract. Generic Encoders, Sinks, ContextProviders, libuv I/O, multiple
 routes, and batching remain out of scope; route and I/O requirements in this
 document constrain their later implementations.
 
@@ -160,8 +161,10 @@ document constrain their later implementations.
 ## Ordering
 
 - Each route and sink observes its selected Records in FIFO admission order.
-- Each current tracer has one immutable route, and its structured or Raw-encoded
-  in-memory destination exposes ready entries in FIFO admission order.
+- Each current tracer has one immutable route. Its worker submits deliveries in
+  FIFO admission order and retires their outcomes in that order, even when a test
+  completes held Raw deliveries out of order; ordered reports therefore never count
+  a later admission ahead of an earlier unfinished one.
 - Flush and Reopen provide explicit ordered barriers.
 - Completion order between independent routes is not guaranteed, allowing the
   implementation to execute routes concurrently.

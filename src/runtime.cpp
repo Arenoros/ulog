@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -34,8 +35,12 @@ using detail::producer::KernelConfig;
 using detail::producer::KernelSnapshot;
 using detail::producer::ProducerKernel;
 using detail::testing::DestinationWriteClaim;
+using detail::testing::EncodedDeliveryOutcome;
+using detail::testing::EncodedDeliveryRetirement;
 using detail::testing::EncodedDestinationStoreResult;
+using detail::testing::EncodedDestinationWake;
 using detail::testing::EncodedDestinationWriteClaim;
+using detail::testing::EncodedInFlightSummary;
 using detail::testing::InMemoryDestinationAccess;
 using detail::testing::InMemoryEncodedDestinationAccess;
 
@@ -165,8 +170,24 @@ struct ControlAction final {
 
 struct RouteDeliveryResult final {
   ConsumeStatus consumed{ConsumeStatus::kEmpty};
-  std::size_t delivered_bytes{0};
-  bool committed{false};
+  std::uint64_t admission_sequence{0};
+  std::size_t encoded_bytes{0};
+  bool submitted{false};
+  bool retired{false};
+};
+
+/// Exact route accounting owned by the worker and read under the Runtime state lock.
+struct RouteLedger final {
+  std::uint64_t processed_records{0};
+  std::uint64_t processed_bytes{0};
+  std::uint64_t retired_records{0};
+  std::uint64_t delivered_records{0};
+  std::uint64_t delivered_bytes{0};
+  std::uint64_t failed_records{0};
+  std::uint64_t failed_bytes{0};
+  std::uint64_t encoding_failed_records{0};
+  std::optional<std::uint64_t> encoding_failed_sequence{};
+  bool settled{false};
 };
 
 class RuntimeRoute final {
@@ -185,19 +206,34 @@ class RuntimeRoute final {
 
   ~RuntimeRoute() { Detach(); }
 
-  [[nodiscard]] bool TryAttach() noexcept {
+  [[nodiscard]] bool TryAttach(EncodedDestinationWake wake) noexcept {
     if (auto* structured_destination = std::get_if<testing::InMemoryDestination>(&destination_)) {
       attached_ = InMemoryDestinationAccess::TryAttachRuntime(*structured_destination);
     } else if (auto* encoded_destination =
                    std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
-      attached_ = InMemoryEncodedDestinationAccess::TryAttachRuntime(*encoded_destination);
+      attached_ = InMemoryEncodedDestinationAccess::TryAttachRuntime(*encoded_destination, wake);
     } else {
       attached_ = false;
     }
     return attached_;
   }
 
-  [[nodiscard]] RouteDeliveryResult WaitAndDeliver(
+  void Detach() noexcept {
+    if (!attached_) {
+      return;
+    }
+    if (auto* structured_destination = std::get_if<testing::InMemoryDestination>(&destination_)) {
+      InMemoryDestinationAccess::DetachRuntime(*structured_destination);
+    } else if (auto* encoded_destination =
+                   std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
+      InMemoryEncodedDestinationAccess::DetachRuntime(*encoded_destination);
+    }
+    attached_ = false;
+  }
+
+  /// Consumes at most one Record. A structured Record retires immediately; an encoded Record
+  /// becomes one serialized delivery that retires after its destination completion.
+  [[nodiscard]] RouteDeliveryResult Deliver(
       ProducerKernel& producer, std::chrono::steady_clock::duration recheck_interval) noexcept {
     if (auto* destination = std::get_if<testing::InMemoryDestination>(&destination_)) {
       DestinationWriteClaim claim =
@@ -206,21 +242,36 @@ class RuntimeRoute final {
         return {};
       }
       const ConsumeStatus consumed = producer.TryConsume(&claim, &StoreStructuredRecord);
-      return {.consumed = consumed,
-              .delivered_bytes = 0U,
-              .committed = consumed == ConsumeStatus::kRecord};
+      const bool stored = consumed == ConsumeStatus::kRecord;
+      return {.consumed = consumed, .submitted = stored, .retired = stored};
     }
     if (auto* destination = std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
       EncodedDestinationWriteClaim claim =
-          InMemoryEncodedDestinationAccess::WaitForWrite(*destination, recheck_interval);
+          InMemoryEncodedDestinationAccess::TryClaimWrite(*destination);
       if (!claim) {
         return {};
       }
       EncodedStoreContext context{.claim = &claim};
       const ConsumeStatus consumed = producer.TryConsume(&context, &StoreEncodedRecord);
       return {.consumed = consumed,
-              .delivered_bytes = context.result.encoded_bytes,
-              .committed = context.result.committed};
+              .admission_sequence = context.admission_sequence,
+              .encoded_bytes = context.result.encoded_bytes,
+              .submitted = context.result.submitted};
+    }
+    return {};
+  }
+
+  [[nodiscard]] std::optional<EncodedDeliveryRetirement> TryRetire(
+      std::uint64_t admission_sequence) noexcept {
+    if (auto* destination = std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
+      return InMemoryEncodedDestinationAccess::TryRetire(*destination, admission_sequence);
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] EncodedInFlightSummary SummarizeInFlight(std::uint64_t watermark) const noexcept {
+    if (const auto* destination = std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
+      return InMemoryEncodedDestinationAccess::SummarizeInFlight(*destination, watermark);
     }
     return {};
   }
@@ -231,6 +282,12 @@ class RuntimeRoute final {
     } else if (auto* encoded_destination =
                    std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
       InMemoryEncodedDestinationAccess::Stop(*encoded_destination);
+    }
+  }
+
+  void DiscardInFlight() noexcept {
+    if (auto* destination = std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
+      InMemoryEncodedDestinationAccess::DiscardInFlight(*destination);
     }
   }
 
@@ -247,6 +304,7 @@ class RuntimeRoute final {
  private:
   struct EncodedStoreContext final {
     EncodedDestinationWriteClaim* claim{nullptr};
+    std::uint64_t admission_sequence{0};
     EncodedDestinationStoreResult result{};
   };
 
@@ -258,20 +316,8 @@ class RuntimeRoute final {
   static void StoreEncodedRecord(void* context, std::uint64_t sequence,
                                  const detail::producer::RecordView& record) noexcept {
     auto& store = *static_cast<EncodedStoreContext*>(context);
+    store.admission_sequence = sequence;
     store.result = store.claim->StoreRaw(sequence, record);
-  }
-
-  void Detach() noexcept {
-    if (!attached_) {
-      return;
-    }
-    if (auto* structured_destination = std::get_if<testing::InMemoryDestination>(&destination_)) {
-      InMemoryDestinationAccess::DetachRuntime(*structured_destination);
-    } else if (auto* encoded_destination =
-                   std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
-      InMemoryEncodedDestinationAccess::DetachRuntime(*encoded_destination);
-    }
-    attached_ = false;
   }
 
   std::variant<testing::InMemoryDestination, testing::InMemoryEncodedDestination> destination_;
@@ -294,7 +340,17 @@ class RuntimeDomain final {
         control_reserve_(config_.control_operations),
         actions_(std::make_unique<ControlAction[]>(config_.control_operations)) {}
 
-  [[nodiscard]] bool TryAttachDestination() noexcept { return route_.TryAttach(); }
+  RuntimeDomain(const RuntimeDomain&) = delete;
+  RuntimeDomain& operator=(const RuntimeDomain&) = delete;
+  RuntimeDomain(RuntimeDomain&&) = delete;
+  RuntimeDomain& operator=(RuntimeDomain&&) = delete;
+
+  // Detach before the wake members are destroyed so late destination completions cannot wake us.
+  ~RuntimeDomain() { route_.Detach(); }
+
+  [[nodiscard]] bool TryAttachDestination() noexcept {
+    return route_.TryAttach({.context = this, .notify = &RuntimeDomain::NotifyFromDestination});
+  }
 
   [[nodiscard]] Logger GetLogger() noexcept {
     std::lock_guard lock{state_mutex_};
@@ -319,14 +375,24 @@ class RuntimeDomain final {
   [[nodiscard]] RuntimeSnapshot GetSnapshot() const noexcept {
     const KernelSnapshot producer = producer_.GetSnapshot();
     const auto controls = control_reserve_.GetSnapshot();
+    RouteLedger ledger;
+    {
+      std::lock_guard lock{state_mutex_};
+      ledger = ledger_;
+    }
     const std::uint64_t rejected =
         producer.rejected_no_producer + producer.rejected_lane_full + producer.rejected_budget;
     return RuntimeSnapshot{
         .accepted_records = producer.accepted_records,
-        .completed_records = completed_records_.load(std::memory_order_relaxed),
-        .delivered_records = delivered_records_.load(std::memory_order_relaxed),
-        .delivered_bytes = delivered_bytes_.load(std::memory_order_relaxed),
-        .encoding_failed_records = encoding_failed_records_.load(std::memory_order_relaxed),
+        .processed_records = ledger.processed_records,
+        .processed_bytes = ledger.processed_bytes,
+        .completed_records =
+            ledger.delivered_records + ledger.failed_records + ledger.encoding_failed_records,
+        .delivered_records = ledger.delivered_records,
+        .delivered_bytes = ledger.delivered_bytes,
+        .delivery_failed_records = ledger.failed_records,
+        .delivery_failed_bytes = ledger.failed_bytes,
+        .encoding_failed_records = ledger.encoding_failed_records,
         .rejected_no_producer = producer.rejected_no_producer,
         .rejected_lane_full = producer.rejected_lane_full,
         .rejected_budget = producer.rejected_budget,
@@ -349,25 +415,26 @@ class RuntimeDomain final {
       return {.failure = started.failure};
     }
 
-    bool complete_immediately = false;
-    OperationOutcome immediate_outcome = OperationOutcome::kSucceeded;
+    std::optional<OperationOutcome> immediate_outcome;
+    OperationReport immediate_report{};
     {
       std::lock_guard lock{state_mutex_};
       if (!accepting_actions_) {
-        complete_immediately = true;
         if (destruction_stop_requested_.load(std::memory_order_acquire)) {
           immediate_outcome = OperationOutcome::kCancelled;
-        } else if (delivery_failed_) {
+        } else if (route_failed_) {
           immediate_outcome = OperationOutcome::kFailed;
         } else {
           immediate_outcome = OperationOutcome::kSucceeded;
         }
+        immediate_report = BuildReportLocked(producer_.GetSnapshot().accepted_records);
       } else {
         if (kind == ControlActionKind::kShutdown && !shutdown_requested_) {
           shutdown_requested_ = true;
           CloseAdmissionLocked();
         }
 
+        const std::uint64_t watermark = producer_.GetSnapshot().accepted_records;
         ControlAction* free_action = nullptr;
         for (std::size_t index = 0; index < config_.control_operations; ++index) {
           if (!actions_[index].active) {
@@ -375,22 +442,26 @@ class RuntimeDomain final {
             break;
           }
         }
-        if (free_action == nullptr) {
-          complete_immediately = true;
+        if (kind == ControlActionKind::kDrain && watermark == ledger_.retired_records) {
+          // Every Record through the watermark already retired, so the ledger is exact now.
+          immediate_outcome = OperationOutcome::kSucceeded;
+          immediate_report = BuildReportLocked(watermark);
+        } else if (free_action == nullptr) {
           immediate_outcome = OperationOutcome::kFailed;
+          immediate_report = BuildReportLocked(watermark);
         } else {
           free_action->kind = kind;
-          free_action->watermark = producer_.GetSnapshot().accepted_records;
+          free_action->watermark = watermark;
           free_action->completion = std::move(started.completion);
           free_action->active = true;
         }
       }
     }
 
-    if (complete_immediately) {
-      static_cast<void>(started.completion.TryComplete(immediate_outcome));
+    if (immediate_outcome) {
+      static_cast<void>(started.completion.TryComplete(*immediate_outcome, immediate_report));
     }
-    Notify();
+    NotifyControl();
     return {.operation = std::move(started.operation)};
   }
 
@@ -409,12 +480,13 @@ class RuntimeDomain final {
     while (true) {
       if (DestructionStopRequested()) {
         PrepareDestructionStop();
-        CancelActions();
+        CompleteActions(OperationOutcome::kCancelled);
+        SettleInFlight();
         DrainDiscardedRecords();
         break;
       }
 
-      CompleteReadyDrains();
+      RetireCompletedDeliveries();
       if (TryFinishShutdown()) {
         shutdown_succeeded = true;
         break;
@@ -422,20 +494,17 @@ class RuntimeDomain final {
 
       const KernelSnapshot snapshot = producer_.GetSnapshot();
       if (snapshot.retained_records != 0U) {
-        const RouteDeliveryResult delivery =
-            route_.WaitAndDeliver(producer_, kWorkerRecheckInterval);
+        const RouteDeliveryResult delivery = route_.Deliver(producer_, kWorkerRecheckInterval);
         if (delivery.consumed == ConsumeStatus::kRecord) {
-          completed_records_.fetch_add(1, std::memory_order_relaxed);
-          if (delivery.committed) {
-            delivered_records_.fetch_add(1, std::memory_order_relaxed);
-            delivered_bytes_.fetch_add(delivery.delivered_bytes, std::memory_order_relaxed);
-          } else {
-            encoding_failed_records_.fetch_add(1, std::memory_order_relaxed);
-            PrepareDeliveryFailure();
+          if (!delivery.submitted) {
+            RecordEncodingFailure(delivery.admission_sequence);
+            PrepareRouteFailure();
             CompleteActions(OperationOutcome::kFailed);
+            SettleInFlight();
             DrainDiscardedRecords();
             break;
           }
+          RecordProcessed(delivery);
           continue;
         }
       }
@@ -478,7 +547,7 @@ class RuntimeDomain final {
     destruction_stop_requested_.store(true, std::memory_order_release);
     producer_.CloseAdmission();
     route_.Stop();
-    Notify();
+    NotifyControl();
   }
 
  private:
@@ -486,10 +555,24 @@ class RuntimeDomain final {
     static_cast<RuntimeDomain*>(context)->Notify();
   }
 
+  static void NotifyFromDestination(void* context) noexcept {
+    static_cast<RuntimeDomain*>(context)->NotifyControl();
+  }
+
   static void DiscardRecord(void*, std::uint64_t, const detail::producer::RecordView&) noexcept {}
 
   void Notify() noexcept {
     wake_epoch_.fetch_add(1, std::memory_order_release);
+    wake_condition_.notify_one();
+  }
+
+  /// Publishes a wake under the worker's wait lock so the change cannot fall between the worker's
+  /// predicate check and its wait. Producer publication keeps the lock-free Notify().
+  void NotifyControl() noexcept {
+    {
+      std::lock_guard lock{wake_mutex_};
+      wake_epoch_.fetch_add(1, std::memory_order_release);
+    }
     wake_condition_.notify_one();
   }
 
@@ -505,50 +588,147 @@ class RuntimeDomain final {
   }
 
   void PrepareDestructionStop() noexcept {
-    std::lock_guard lock{state_mutex_};
-    accepting_actions_ = false;
-    CloseAdmissionLocked();
-  }
-
-  void PrepareDeliveryFailure() noexcept {
     {
       std::lock_guard lock{state_mutex_};
-      delivery_failed_ = true;
+      accepting_actions_ = false;
+      CloseAdmissionLocked();
+    }
+    // Stop again on the worker so each completion either precedes every cancellation report or is
+    // rejected as cancelled; the destructor may not have reached its own Stop yet.
+    route_.Stop();
+  }
+
+  void PrepareRouteFailure() noexcept {
+    {
+      std::lock_guard lock{state_mutex_};
+      route_failed_ = true;
       accepting_actions_ = false;
       CloseAdmissionLocked();
     }
     route_.Stop();
   }
 
-  [[nodiscard]] std::optional<OperationCompletion> PopReadyDrain(std::uint64_t delivered) noexcept {
-    std::lock_guard lock{state_mutex_};
-    for (std::size_t index = 0; index < config_.control_operations; ++index) {
-      auto& action = actions_[index];
-      if (action.active && action.kind == ControlActionKind::kDrain &&
-          action.watermark <= delivered) {
-        action.active = false;
-        return std::move(action.completion);
-      }
+  /// Returns exact accounting for admitted sequences below `watermark`. Registered actions keep
+  /// `watermark >= ledger_.retired_records`, so the in-order ledger never includes later Records.
+  [[nodiscard]] OperationReport BuildReportLocked(std::uint64_t watermark) const noexcept {
+    OperationReport report{.watermark_records = watermark};
+    if (ledger_.settled) {
+      report.processed_records = ledger_.processed_records;
+      report.processed_bytes = ledger_.processed_bytes;
+      report.delivered_records = ledger_.delivered_records;
+      report.delivered_bytes = ledger_.delivered_bytes;
+      report.failed_records = ledger_.failed_records + ledger_.encoding_failed_records;
+      report.failed_bytes = ledger_.failed_bytes;
+    } else {
+      const EncodedInFlightSummary in_flight = ledger_.retired_records < watermark
+                                                   ? route_.SummarizeInFlight(watermark)
+                                                   : EncodedInFlightSummary{};
+      const std::uint64_t encoding_failed =
+          ledger_.encoding_failed_sequence && *ledger_.encoding_failed_sequence < watermark ? 1U
+                                                                                            : 0U;
+      report.processed_records = ledger_.retired_records + in_flight.records + encoding_failed;
+      report.processed_bytes = ledger_.delivered_bytes + ledger_.failed_bytes + in_flight.bytes;
+      report.delivered_records = ledger_.delivered_records + in_flight.delivered_records;
+      report.delivered_bytes = ledger_.delivered_bytes + in_flight.delivered_bytes;
+      report.failed_records = ledger_.failed_records + in_flight.failed_records + encoding_failed;
+      report.failed_bytes = ledger_.failed_bytes + in_flight.failed_bytes;
     }
-    return std::nullopt;
+    report.unfinished_records = watermark - report.delivered_records - report.failed_records;
+    report.unfinished_bytes = report.processed_bytes - report.delivered_bytes - report.failed_bytes;
+    return report;
   }
 
-  [[nodiscard]] std::optional<OperationCompletion> PopAnyAction() noexcept {
-    std::lock_guard lock{state_mutex_};
-    for (std::size_t index = 0; index < config_.control_operations; ++index) {
-      auto& action = actions_[index];
-      if (action.active) {
-        action.active = false;
-        return std::move(action.completion);
+  void RecordProcessed(const RouteDeliveryResult& delivery) noexcept {
+    {
+      std::lock_guard lock{state_mutex_};
+      ++ledger_.processed_records;
+      ledger_.processed_bytes += delivery.encoded_bytes;
+      if (delivery.retired) {
+        ++ledger_.retired_records;
+        ++ledger_.delivered_records;
+        ledger_.delivered_bytes += delivery.encoded_bytes;
       }
     }
-    return std::nullopt;
+    if (delivery.retired) {
+      CompleteReadyDrains();
+    }
+  }
+
+  void RecordEncodingFailure(std::uint64_t admission_sequence) noexcept {
+    std::lock_guard lock{state_mutex_};
+    ++ledger_.processed_records;
+    ++ledger_.encoding_failed_records;
+    ledger_.encoding_failed_sequence = admission_sequence;
+  }
+
+  /// Retires completed deliveries strictly in admission order, even when the destination
+  /// completes them out of order, and completes each Drain exactly at its watermark.
+  void RetireCompletedDeliveries() noexcept {
+    // Only this worker writes the ledger, so it may read its own values without the lock.
+    while (ledger_.retired_records < ledger_.processed_records) {
+      const auto retirement = route_.TryRetire(ledger_.retired_records);
+      if (!retirement) {
+        return;
+      }
+      {
+        std::lock_guard lock{state_mutex_};
+        ++ledger_.retired_records;
+        if (retirement->outcome == EncodedDeliveryOutcome::kDelivered) {
+          ++ledger_.delivered_records;
+          ledger_.delivered_bytes += retirement->encoded_bytes;
+        } else {
+          ++ledger_.failed_records;
+          ledger_.failed_bytes += retirement->encoded_bytes;
+        }
+      }
+      CompleteReadyDrains();
+    }
+  }
+
+  /// Folds unretired outcomes into the ledger once the route has stopped for good.
+  void SettleInFlight() noexcept {
+    {
+      std::lock_guard lock{state_mutex_};
+      const EncodedInFlightSummary in_flight =
+          route_.SummarizeInFlight(std::numeric_limits<std::uint64_t>::max());
+      ledger_.delivered_records += in_flight.delivered_records;
+      ledger_.delivered_bytes += in_flight.delivered_bytes;
+      ledger_.failed_records += in_flight.failed_records;
+      ledger_.failed_bytes += in_flight.failed_bytes;
+      ledger_.settled = true;
+    }
+    route_.DiscardInFlight();
+  }
+
+  [[nodiscard]] std::uint64_t ActionWatermarkLocked(const ControlAction& action) const noexcept {
+    // Shutdown covers every admitted Record, including writers that finish after admission closes.
+    return action.kind == ControlActionKind::kDrain ? action.watermark
+                                                    : producer_.GetSnapshot().accepted_records;
   }
 
   void CompleteReadyDrains() noexcept {
-    const std::uint64_t delivered = delivered_records_.load(std::memory_order_relaxed);
-    while (auto completion = PopReadyDrain(delivered)) {
-      static_cast<void>(completion->TryComplete(OperationOutcome::kSucceeded));
+    while (true) {
+      OperationCompletion completion;
+      OperationReport report;
+      {
+        std::lock_guard lock{state_mutex_};
+        ControlAction* ready = nullptr;
+        for (std::size_t index = 0; index < config_.control_operations; ++index) {
+          auto& action = actions_[index];
+          if (action.active && action.kind == ControlActionKind::kDrain &&
+              action.watermark <= ledger_.retired_records) {
+            ready = &action;
+            break;
+          }
+        }
+        if (ready == nullptr) {
+          return;
+        }
+        ready->active = false;
+        completion = std::move(ready->completion);
+        report = BuildReportLocked(ready->watermark);
+      }
+      static_cast<void>(completion.TryComplete(OperationOutcome::kSucceeded, report));
     }
   }
 
@@ -563,20 +743,33 @@ class RuntimeDomain final {
       return false;
     }
     const auto snapshot = producer_.GetSnapshot();
-    if (delivered_records_.load(std::memory_order_relaxed) != snapshot.accepted_records) {
-      return false;
-    }
-
-    return true;
+    std::lock_guard lock{state_mutex_};
+    return ledger_.retired_records == snapshot.accepted_records;
   }
 
   void CompleteActions(OperationOutcome outcome) noexcept {
-    while (auto completion = PopAnyAction()) {
-      static_cast<void>(completion->TryComplete(outcome));
+    while (true) {
+      OperationCompletion completion;
+      OperationReport report;
+      {
+        std::lock_guard lock{state_mutex_};
+        ControlAction* active = nullptr;
+        for (std::size_t index = 0; index < config_.control_operations; ++index) {
+          if (actions_[index].active) {
+            active = &actions_[index];
+            break;
+          }
+        }
+        if (active == nullptr) {
+          return;
+        }
+        active->active = false;
+        completion = std::move(active->completion);
+        report = BuildReportLocked(ActionWatermarkLocked(*active));
+      }
+      static_cast<void>(completion.TryComplete(outcome, report));
     }
   }
-
-  void CancelActions() noexcept { CompleteActions(OperationOutcome::kCancelled); }
 
   void DrainDiscardedRecords() noexcept {
     while (!producer_.IsQuiescent()) {
@@ -602,17 +795,14 @@ class RuntimeDomain final {
       registrations_{};
   mutable std::mutex state_mutex_;
   std::condition_variable lifecycle_condition_;
+  RouteLedger ledger_{};
   bool worker_started_{false};
   bool worker_stopped_{false};
   bool accepting_actions_{true};
   bool shutdown_requested_{false};
-  bool delivery_failed_{false};
+  bool route_failed_{false};
   std::atomic<bool> destruction_stop_requested_{false};
   std::atomic<bool> worker_running_{false};
-  std::atomic<std::uint64_t> completed_records_{0};
-  std::atomic<std::uint64_t> delivered_records_{0};
-  std::atomic<std::uint64_t> delivered_bytes_{0};
-  std::atomic<std::uint64_t> encoding_failed_records_{0};
   std::atomic<std::uint64_t> wake_epoch_{0};
   std::mutex wake_mutex_;
   std::condition_variable wake_condition_;

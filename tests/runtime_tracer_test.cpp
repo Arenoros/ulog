@@ -319,6 +319,44 @@ TEST(RuntimeTracer, PausedDestinationClaimsNoSlotAcrossWorkerRechecks) {
   ExpectSucceeded(shutdown);
 }
 
+TEST(RuntimeTracer, DrainReportCountsStructuredRecordsWithoutEncodedBytes) {
+  testing::InMemoryDestination destination{{
+      .capacity_records = 2,
+      .maximum_record_bytes = 512,
+  }};
+  auto config = SmallRuntimeConfig();
+  config.payload_capacity_bytes = 1'024;
+  config.ingress_cells = 2;
+  auto created = Runtime::Create(config, destination);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  Runtime& runtime = *created.runtime;
+  const Logger logger = runtime.GetLogger();
+
+  LOG_INFO_TO(logger, "first");
+  LOG_INFO_TO(logger, "second");
+  auto drain = runtime.Drain();
+  ASSERT_TRUE(drain);
+  const auto drained = drain.operation.WaitUntil(std::chrono::steady_clock::now() + 1s);
+  ASSERT_EQ(drained.status, OperationWaitStatus::kCompleted);
+  ASSERT_TRUE(drained.completion);
+  EXPECT_EQ(RequireValue(drained.completion).Outcome(), OperationOutcome::kSucceeded);
+  const OperationReport& report = RequireValue(drained.completion).Report();
+  EXPECT_EQ(report.watermark_records, 2U);
+  EXPECT_EQ(report.processed_records, 2U);
+  EXPECT_EQ(report.delivered_records, 2U);
+  EXPECT_EQ(report.failed_records, 0U);
+  EXPECT_EQ(report.unfinished_records, 0U);
+  EXPECT_EQ(report.processed_bytes, 0U);
+  EXPECT_EQ(report.delivered_bytes, 0U);
+
+  const auto snapshot = runtime.GetSnapshot();
+  EXPECT_EQ(snapshot.processed_records, 2U);
+  EXPECT_EQ(snapshot.completed_records, 2U);
+  EXPECT_EQ(snapshot.delivery_failed_records, 0U);
+  auto shutdown = runtime.Shutdown();
+  ExpectSucceeded(shutdown);
+}
+
 TEST(RuntimeTracer, OversizedUtf8MessageIsCapturedAsAnImmutableTruncatedPrefix) {
   testing::InMemoryDestination destination{{
       .capacity_records = 1,

@@ -67,7 +67,11 @@ non-blocking.
 Tests can construct the destination with `start_paused=true` to hold the worker
 before its first destination write, fill bounded ingress deterministically, and
 verify drop-newest rejection before caller evaluation. `Resume()` opens the
-destination gate. Runtime unit, installed-consumer, and Conan package tests use
+destination gate. The encoded destination's
+[deferred delivery modes](runtime.md#deferred-raw-delivery) additionally complete
+Raw deliveries inline, fail them inline, or hold them for the test to complete or
+fail through `PendingEncodedDelivery`, which makes Drain watermarks, exact reports,
+in-flight pressure, and cancellation observable without timing assumptions. Runtime unit, installed-consumer, and Conan package tests use
 explicit Drain or Shutdown Operations and bounded deadlines; none relies on
 destructor timing for successful delivery.
 

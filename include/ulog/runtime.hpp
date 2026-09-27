@@ -55,9 +55,13 @@ struct RuntimeCreateFailure final {
 
 struct RuntimeSnapshot final {
   std::uint64_t accepted_records{0};
+  std::uint64_t processed_records{0};
+  std::uint64_t processed_bytes{0};
   std::uint64_t completed_records{0};
   std::uint64_t delivered_records{0};
   std::uint64_t delivered_bytes{0};
+  std::uint64_t delivery_failed_records{0};
+  std::uint64_t delivery_failed_bytes{0};
   std::uint64_t encoding_failed_records{0};
   std::uint64_t rejected_no_producer{0};
   std::uint64_t rejected_lane_full{0};
