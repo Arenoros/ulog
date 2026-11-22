@@ -630,6 +630,9 @@ TEST(RuntimeEncodedTracer, HeldDeliveryAppliesBoundedPressureUntilCompletionRele
   LOG_INFO_TO(logger, "first");
   auto first = WaitForPendingDelivery(destination, std::chrono::steady_clock::now() + 1s);
   ASSERT_TRUE(first.has_value());
+  // The delivery is published from inside the consume step; the ingress cell is released, and the
+  // Record counted as processed, only after that step returns.
+  ASSERT_TRUE(WaitForProcessed(*created.runtime, 1U));
   LOG_INFO_TO(logger, "second");
   std::size_t rejected_evaluations = 0;
   LOG_INFO_TO(logger, "third={}", ++rejected_evaluations);
