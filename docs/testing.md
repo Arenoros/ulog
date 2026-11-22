@@ -109,6 +109,28 @@ conan create . -pr:h=conan/profiles/cpp20 -pr:b=default --build=missing \
   -o "&:dependency_smoke=True"
 ```
 
+## Local Linux toolchains
+
+`tools/docker/` builds a Debian image with GCC 12 / libstdc++ and Clang 16 /
+libc++. It complements CI, which uses the Ubuntu 24.04 compilers with libstdc++,
+and gives Windows hosts a Linux build. Sources go in through stdin, so a remote
+Docker daemon works as well; the `ulog-conan` volume keeps built dependencies:
+
+```shell
+docker build -t ulog-linux - < tools/docker/Dockerfile
+git ls-files -co --exclude-standard | tar c -T - | docker run -i --rm     -v ulog-conan:/root/.conan2/p ulog-linux     sh -c 'tar x && tools/docker/conan-create.sh clang16-libcxx'
+```
+
+`conan-create.sh <profile> [conan create args]` runs the static package with
+unit, stress, dependency, and package-consumer tests; `BUILD_TYPE` selects the
+configuration and extra `-o` options enable sanitizers.
+
+ThreadSanitizer with libc++ reports races in the benchmark workload harness and
+the benchmark prototypes. Their synchronization goes through `std::barrier`, and
+the stock libc++ is not instrumented, so TSan cannot see it. The library stress
+tests stay clean. Use the libstdc++ CI row for TSan, or an instrumented
+libc++.
+
 ## Bootstrap verification record
 
 The bootstrap handoff was verified locally on Windows with CMake 3.31, Conan

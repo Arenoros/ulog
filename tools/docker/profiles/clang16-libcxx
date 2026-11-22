@@ -1,0 +1,15 @@
+[settings]
+os=Linux
+arch=x86_64
+compiler=clang
+compiler.version=16
+compiler.libcxx=libc++
+compiler.cppstd=20
+
+[conf]
+tools.build:compiler_executables={"c": "clang-16", "cpp": "clang++-16"}
+tools.cmake.cmaketoolchain:generator=Ninja
+
+[buildenv]
+CC=clang-16
+CXX=clang++-16
