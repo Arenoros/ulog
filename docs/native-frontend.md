@@ -45,6 +45,54 @@ the source and message into bounded owned storage. Rejected calls therefore
 preserve the lazy contract. Each producing thread prepares its bounded slot by
 calling `Runtime::GetLogger()` on that thread.
 
+## Levels and thresholds
+
+`ToString(level)` and `ToUpperCaseString(level)` return the canonical names
+`trace`, `debug`, `info`, `warning`, `error`, `critical`, and `none`, or their
+uppercase forms; a value that is not a `Level` enumerator has an empty name.
+`ParseLevel(name)` accepts those seven names ignoring ASCII case and rejects
+anything else, such as `warn` or a name with surrounding spaces; a rejected
+result's `HowToFix()` lists every accepted name (`LVL-002`):
+
+```cpp
+const ulog::LevelParseResult parsed = ulog::ParseLevel(config_value);
+if (!parsed) {
+  ReportConfigurationError(parsed.HowToFix());
+}
+```
+
+`Logger::SetLevel(threshold)` atomically replaces the threshold of the Logger
+state the handle refers to, and `GetLevel()` and `ShouldLog()` query it
+(`API-007`). A producer loads the threshold without a lock on every call, so its
+next call observes the change; a call already past filtering finishes under the
+threshold it loaded. `kNone` suppresses every level, including `kCritical`:
+the Critical priority reserve is a delivery policy, not immunity from
+filtering. `SetLevel` reports a `LevelChangeStatus`:
+
+- `kChanged` for a Runtime Logger whose admission is open;
+- `kNullLogger` for the Null Logger, which always stays at `kNone` (`API-008`);
+- `kInvalidLevel` for a value that is not a `Level` enumerator; and
+- `kClosed` after Shutdown or destruction closed admission. A closed Runtime
+  Logger reports `kNone`, even when a change races with Shutdown.
+
+`DefaultLoggerLevelScope` temporarily replaces the Default Logger threshold and
+restores the previous value when it is destroyed, including during exception
+unwinding (`DFL-002`):
+
+```cpp
+{
+  const ulog::DefaultLoggerLevelScope quiet{ulog::Level::kError};
+  RunNoisyStep();
+}  // the previous threshold is back
+```
+
+The scope loads the Default Logger once and changes only that target's
+threshold. It never exchanges the target, so it cannot affect the address
+stability of published Default Logger states, and a later
+`ExchangeDefaultLogger` does not redirect the restoration. Scopes nest in LIFO
+order. On the Null Logger the scope's `Status()` is `kNullLogger` and nothing is
+changed or restored.
+
 ## Default Logger exchange
 
 `ExchangeDefaultLogger()` atomically installs a non-owning Logger and returns

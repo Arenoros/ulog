@@ -34,6 +34,18 @@ class Logger;
 /// performs no reclamation or quiescence wait.
 ULOG_API Logger ExchangeDefaultLogger(Logger stable_logger) noexcept;
 
+/// Outcome of Logger::SetLevel.
+enum class LevelChangeStatus : std::uint8_t {
+  /// The new threshold is visible to later calls.
+  kChanged,
+  /// The Null Logger always stays at kNone.
+  kNullLogger,
+  /// The value is not a Level enumerator.
+  kInvalidLevel,
+  /// The Runtime has closed admission; its Logger stays at kNone.
+  kClosed,
+};
+
 namespace detail {
 
 struct LoggerState;
@@ -104,6 +116,9 @@ class Logger final {
 
   [[nodiscard]] ULOG_API Level GetLevel() const noexcept;
   [[nodiscard]] ULOG_API bool ShouldLog(Level message_level) const noexcept;
+  /// Atomically replaces the threshold of the referenced Logger state; kNone suppresses every
+  /// level. Producers observe it on their next call without a lock.
+  ULOG_API LevelChangeStatus SetLevel(Level threshold) const noexcept;
 
   template <Level kLevel, typename MessageFactory>
   void Log(const SourceLocation& source, MessageFactory&& make_message) const {
@@ -191,6 +206,40 @@ class Logger final {
   friend struct detail::MacroAccess;
 
   const detail::LoggerState* state_;
+};
+
+/// Temporarily replaces the Default Logger threshold and restores the previous value on exit,
+/// including during exception unwinding.
+///
+/// The scope loads the Default Logger once and changes only that target's threshold; it never
+/// exchanges the target, so published Default Logger states keep their addresses. A later
+/// ExchangeDefaultLogger does not redirect the restoration.
+class DefaultLoggerLevelScope final {
+ public:
+  explicit DefaultLoggerLevelScope(Level threshold) noexcept
+      : target_(GetDefaultLogger()),
+        previous_(target_.GetLevel()),
+        status_(target_.SetLevel(threshold)) {}
+
+  DefaultLoggerLevelScope(const DefaultLoggerLevelScope&) = delete;
+  DefaultLoggerLevelScope& operator=(const DefaultLoggerLevelScope&) = delete;
+  DefaultLoggerLevelScope(DefaultLoggerLevelScope&&) = delete;
+  DefaultLoggerLevelScope& operator=(DefaultLoggerLevelScope&&) = delete;
+
+  ~DefaultLoggerLevelScope() {
+    if (status_ == LevelChangeStatus::kChanged) {
+      static_cast<void>(target_.SetLevel(previous_));
+    }
+  }
+
+  /// Result of the initial change; nothing is restored unless it is kChanged.
+  [[nodiscard]] LevelChangeStatus Status() const noexcept { return status_; }
+  [[nodiscard]] Logger Target() const noexcept { return target_; }
+
+ private:
+  Logger target_;
+  Level previous_;
+  LevelChangeStatus status_;
 };
 
 }  // namespace ulog

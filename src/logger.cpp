@@ -10,7 +10,12 @@ namespace {
 
 void DiscardMessage(void*, Level, const SourceLocation&, void*, detail::MessageBuilder) {}
 
-constinit const detail::ProducerOperations kNullProducerOperations{&DiscardMessage};
+LevelChangeStatus RejectLevelChange(void*, Level) noexcept {
+  return LevelChangeStatus::kNullLogger;
+}
+
+constinit const detail::ProducerOperations kNullProducerOperations{&DiscardMessage,
+                                                                   &RejectLevelChange};
 constinit detail::LoggerState kNullLoggerState{
     std::atomic<std::uint8_t>{static_cast<std::uint8_t>(Level::kNone)},
     &kNullProducerOperations,
@@ -45,6 +50,13 @@ void Logger::LogMessage(Level level, const SourceLocation& source, void* builder
   }
   state.producer_operations->log_message(state.producer_context, level, source, builder_context,
                                          build_message);
+}
+
+LevelChangeStatus Logger::SetLevel(Level threshold) const noexcept {
+  if (static_cast<std::uint8_t>(threshold) > static_cast<std::uint8_t>(Level::kNone)) {
+    return LevelChangeStatus::kInvalidLevel;
+  }
+  return state_->producer_operations->set_level(state_->producer_context, threshold);
 }
 
 Logger GetDefaultLogger() noexcept {

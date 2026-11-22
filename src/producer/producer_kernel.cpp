@@ -234,6 +234,10 @@ EventTimestamp ReadSystemClock(void*) noexcept {
       .count();
 }
 
+LevelChangeStatus ChangeLoggerLevel(void* context, Level threshold) noexcept {
+  return static_cast<ProducerKernel*>(context)->ChangeLevel(threshold);
+}
+
 struct MessageCall final {
   void* builder_context;
   MessageBuilder build_message;
@@ -382,7 +386,7 @@ ProducerKernel::ProducerKernel(KernelConfig config, EventClock clock)
     : identity_(next_kernel_identity.fetch_add(1, std::memory_order_relaxed)) {
   ValidateConfiguration(config, clock);
   impl_ = std::make_unique<Impl>(*this, config, clock);
-  static const ProducerOperations operations{&ProducerKernel::LogMessage};
+  static const ProducerOperations operations{&ProducerKernel::LogMessage, &ChangeLoggerLevel};
   impl_->logger_state.producer_operations = &operations;
 }
 
@@ -442,8 +446,21 @@ void ProducerKernel::SetLevel(Level threshold) noexcept {
   impl_->logger_state.threshold.store(value <= none ? value : none, std::memory_order_relaxed);
 }
 
+LevelChangeStatus ProducerKernel::ChangeLevel(Level threshold) noexcept {
+  // Pairs with the fence in CloseAdmission: either this check sees the closed flag and resets the
+  // threshold, or CloseAdmission's kNone store follows this store. A closed kernel ends at kNone.
+  SetLevel(threshold);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  if (!impl_->lifetime.IsAdmissionOpen()) {
+    SetLevel(Level::kNone);
+    return LevelChangeStatus::kClosed;
+  }
+  return LevelChangeStatus::kChanged;
+}
+
 void ProducerKernel::CloseAdmission() noexcept {
   impl_->lifetime.CloseAdmission();
+  std::atomic_thread_fence(std::memory_order_seq_cst);
   SetLevel(Level::kNone);
   impl_->config.consumer_notification.Notify();
 }

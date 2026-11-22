@@ -92,7 +92,13 @@ class StableTarget final {
     target.calls_.fetch_add(1, std::memory_order_relaxed);
   }
 
-  inline static constexpr ulog::detail::ProducerOperations kOperations{&LogMessage};
+  // The stress targets keep their threshold fixed; only the Default Logger pointer changes.
+  static ulog::LevelChangeStatus RejectLevelChange(void*, ulog::Level) noexcept {
+    return ulog::LevelChangeStatus::kNullLogger;
+  }
+
+  inline static constexpr ulog::detail::ProducerOperations kOperations{&LogMessage,
+                                                                       &RejectLevelChange};
 
   std::atomic<std::size_t> calls_{0};
   ulog::detail::LoggerState state_;

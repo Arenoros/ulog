@@ -8,7 +8,8 @@ The repository establishes seven independent test categories:
   deadlines, callback dispatch, control-reserve exhaustion, structured and Raw
   in-memory Runtime lifecycle, saturation, exact encoding, Raw file-route
   append, Unicode paths, validation and open errors, injected partial writes and
-  open/write/close failures, typed fields with their collision, reserved-key,
+  open/write/close failures, level names, the runtime threshold matrix, Null
+  Logger level rejection, the Default Logger level scope, typed fields with their collision, reserved-key,
   ownership, laziness, and truncation policy, the field-rich Raw corpus cases,
   injected event clocks, UTC and process-local
   timestamp formatting across calendar boundaries and concurrent calls, and test
@@ -19,7 +20,8 @@ The repository establishes seven independent test categories:
 - `dependencies`: compile and run the production fmt integration together with
   the private libuv dependency;
 - `stress`: deterministic concurrent checks for allocation instrumentation,
-  linearizable Default Logger exchange, stale-target dispatch, producer-lane
+  linearizable Default Logger exchange, concurrent threshold changes, queries,
+  and logging, stale-target dispatch, producer-lane
   saturation, FIFO publication and Raw delivery, byte conservation, retirement,
   bounded destruction, concurrent split file appends, Runtime destruction during
   active appends, and race-free weak snapshots, plus completion/callback

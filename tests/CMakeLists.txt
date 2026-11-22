@@ -98,6 +98,7 @@ if(ULOG_BUILD_UNIT_TESTS)
     default_logger_test.cpp
     fields_test.cpp
     frontend_test.cpp
+    level_test.cpp
     log_macro_test.cpp
     memory_resource_test.cpp
     operation_test.cpp
@@ -130,6 +131,15 @@ if(ULOG_BUILD_UNIT_TESTS)
   ulog_configure_target(ulog-runtime-fields)
   add_test(NAME ulog.runtime-fields COMMAND ulog-runtime-fields)
   set_tests_properties(ulog.runtime-fields PROPERTIES LABELS "unit;integration;runtime" TIMEOUT 10)
+
+  add_executable(ulog-runtime-threshold runtime_threshold_test.cpp)
+  target_compile_features(ulog-runtime-threshold PRIVATE cxx_std_20)
+  target_link_libraries(ulog-runtime-threshold PRIVATE ulog::ulog GTest::gtest_main Threads::Threads)
+  ulog_configure_target(ulog-runtime-threshold)
+  add_test(NAME ulog.runtime-threshold COMMAND ulog-runtime-threshold)
+  set_tests_properties(
+    ulog.runtime-threshold PROPERTIES LABELS "unit;integration;runtime;frontend" TIMEOUT 20
+  )
 
   add_executable(ulog-timestamp-tests timestamp_test.cpp)
   target_compile_features(ulog-timestamp-tests PRIVATE cxx_std_20)
@@ -335,6 +345,15 @@ if(ULOG_BUILD_STRESS_TESTS)
   add_test(NAME ulog.runtime-stress COMMAND ulog-runtime-stress)
   set_tests_properties(
     ulog.runtime-stress PROPERTIES LABELS "stress;runtime;concurrency" TIMEOUT 10
+  )
+
+  add_executable(ulog-runtime-threshold-stress stress/runtime_threshold_stress.cpp)
+  target_compile_features(ulog-runtime-threshold-stress PRIVATE cxx_std_20)
+  target_link_libraries(ulog-runtime-threshold-stress PRIVATE ulog::ulog Threads::Threads)
+  ulog_configure_target(ulog-runtime-threshold-stress)
+  add_test(NAME ulog.runtime-threshold-stress COMMAND ulog-runtime-threshold-stress)
+  set_tests_properties(
+    ulog.runtime-threshold-stress PROPERTIES LABELS "stress;runtime;concurrency" TIMEOUT 20
   )
 
   add_executable(ulog-runtime-file-stress stress/runtime_file_stress.cpp)

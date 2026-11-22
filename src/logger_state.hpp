@@ -10,8 +10,11 @@ namespace ulog::detail {
 
 using LogMessage = void (*)(void*, Level, const SourceLocation&, void*, MessageBuilder);
 
+using SetLoggerLevel = LevelChangeStatus (*)(void*, Level) noexcept;
+
 struct ProducerOperations final {
   LogMessage log_message;
+  SetLoggerLevel set_level;
 };
 
 struct LoggerState final {

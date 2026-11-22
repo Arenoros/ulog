@@ -72,7 +72,9 @@ route adds the private libuv loop.
 
 The current Runtime accepts these bounds:
 
-- `threshold` is `kTrace` through `kNone`;
+- `threshold` is `kTrace` through `kNone`; it is the initial Logger threshold,
+  which `Logger::SetLevel` may change atomically while the Runtime accepts
+  Records (see [Levels and thresholds](native-frontend.md#levels-and-thresholds));
 - `maximum_record_bytes` is a 64-byte multiple from 128 through 16,384;
 - `payload_capacity_bytes` is a 64-byte multiple large enough for one maximum-sized
   Record;

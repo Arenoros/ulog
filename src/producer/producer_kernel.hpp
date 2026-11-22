@@ -266,6 +266,8 @@ class ProducerKernel final {
   [[nodiscard]] Logger GetLogger() noexcept;
   [[nodiscard]] ProducerRegistration TryRegisterProducer() noexcept;
   void SetLevel(Level threshold) noexcept;
+  /// Logger-facing threshold change; rejected once admission is closed.
+  [[nodiscard]] LevelChangeStatus ChangeLevel(Level threshold) noexcept;
   void CloseAdmission() noexcept;
   [[nodiscard]] bool IsAdmissionOpen() const noexcept;
   [[nodiscard]] bool IsQuiescent() noexcept;

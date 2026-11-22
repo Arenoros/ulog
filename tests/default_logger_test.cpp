@@ -41,7 +41,13 @@ class StableTarget final {
  private:
   static void DiscardMessage(void*, Level, const SourceLocation&, void*, detail::MessageBuilder) {}
 
-  inline static constexpr detail::ProducerOperations kOperations{&DiscardMessage};
+  // These targets only exercise the Default Logger pointer; they keep their threshold fixed.
+  static LevelChangeStatus RejectLevelChange(void*, Level) noexcept {
+    return LevelChangeStatus::kNullLogger;
+  }
+
+  inline static constexpr detail::ProducerOperations kOperations{&DiscardMessage,
+                                                                 &RejectLevelChange};
 
   detail::LoggerState state_;
 };
