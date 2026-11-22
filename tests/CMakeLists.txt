@@ -134,7 +134,9 @@ if(ULOG_BUILD_UNIT_TESTS)
 
   add_executable(ulog-runtime-threshold runtime_threshold_test.cpp)
   target_compile_features(ulog-runtime-threshold PRIVATE cxx_std_20)
-  target_link_libraries(ulog-runtime-threshold PRIVATE ulog::ulog GTest::gtest_main Threads::Threads)
+  target_link_libraries(
+    ulog-runtime-threshold PRIVATE ulog::ulog GTest::gtest_main Threads::Threads
+  )
   ulog_configure_target(ulog-runtime-threshold)
   add_test(NAME ulog.runtime-threshold COMMAND ulog-runtime-threshold)
   set_tests_properties(
