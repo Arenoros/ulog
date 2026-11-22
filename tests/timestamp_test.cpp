@@ -72,7 +72,10 @@ void SelectTimeZone(const char* zone) {
   ASSERT_EQ(_putenv_s("TZ", zone), 0);
   _tzset();
 #else
+  // Each test selects its zone before it starts any thread.
+  // NOLINTNEXTLINE(concurrency-mt-unsafe)
   ASSERT_EQ(setenv("TZ", zone, 1), 0);
+  // NOLINTNEXTLINE(concurrency-mt-unsafe)
   tzset();
 #endif
 }
