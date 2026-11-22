@@ -85,6 +85,9 @@ The current Runtime accepts these bounds:
   least as large as the Runtime value; and
 - a file route has a non-empty file path and 1 through 64 `write_buffers`.
 
+`event_clock` needs no validation: a null `now` selects the system clock. See
+[Event timestamps](#event-timestamps).
+
 `RuntimeSnapshot` exposes weakly consistent admission, completion, delivery,
 rejection, retained-payload, and lifecycle counters. `processed_records` and
 `processed_bytes` count Records the worker has taken from ingress and, for the Raw
@@ -151,6 +154,10 @@ destroying it releases the slot for a later delivery. A ready Record not yet tak
 also occupies its slot. When all slots are ready or held, the worker waits for a slot;
 producer threads still do not wait and eventually reject new Records as their bounded
 ingress fills.
+
+`EventTimestamp()` returns the Record's stored event timestamp in microseconds
+since the Unix epoch. The worker copies the value the producer captured; neither
+the worker nor the destination reads the clock.
 
 The fixed destination backing and drop-newest behavior are the concrete tracer form
 of [ADR 0010](adr/0010-bound-pipeline-memory-and-configure-shedding.md).
@@ -228,6 +235,38 @@ sequence at that moment.
 any destination slot; `Resume()` releases that gate permanently. This makes ingress
 saturation and pre-evaluation rejection reproducible without timing assumptions. It
 is not a production flow-control API.
+
+## Event timestamps
+
+Every admitted Record carries one wall-clock event timestamp with microsecond
+resolution, as required by
+[ADR 0004](adr/0004-reimplement-logging-as-a-pipeline.md). The producer reads the
+clock exactly once per Record, after its ingress cell and worst-case byte charge
+are reserved and before the message factory or macro operands run. The value is
+stored in the immutable Record, so the worker, encoders, destinations, and
+Operation reports all see that producer-captured value and never read the clock
+again. Compile-erased, runtime-filtered, Null Logger, unregistered-producer,
+admission-rejected, and post-Shutdown calls never read it.
+
+`RuntimeConfig::event_clock` selects the clock when the Runtime is created; it
+cannot change afterwards. The default, a null `now`, reads
+`std::chrono::system_clock`. Tests inject deterministic time without sleeping:
+
+```cpp
+std::int64_t FixedNow(void*) noexcept { return 951'827'696'789'012; }
+
+ulog::RuntimeConfig config;
+config.event_clock = ulog::EventClock{nullptr, &FixedNow};
+```
+
+`now` runs on producer threads, so it must be thread-safe, non-blocking,
+allocation-free, and must not log. `context` is passed through unchanged and must
+outlive the Runtime. The seam is one indirect call through a pointer fixed at
+creation: it adds no lock, allocation, or shared counter to the producer path.
+
+`<ulog/timestamp.hpp>` formats a stored value as `YYYY-MM-DDTHH:MM:SS.ffffff`:
+`FormatUtcTimestamp` for UTC and `FormatLocalTimestamp` for the process-local
+zone. See [Native frontend](native-frontend.md#event-timestamps).
 
 ## Raw file route
 

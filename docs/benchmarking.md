@@ -181,6 +181,12 @@ repetition, in this order:
 4. `admission-rejected` with a full producer lane;
 5. `ordinary-accepted` using the fmt path.
 
+Only `ordinary-accepted` reads the event clock: one `std::chrono::system_clock`
+read per Record, after reservation. Measured in isolation, that read costs about
+15 ns on Windows 10 (MSVC, `GetSystemTimePreciseAsFileTime`) and about 19 ns in a
+Debian 12 VM (GCC 12, vDSO `clock_gettime`); these figures are advisory and
+hardware-dependent. Rejected rows never read the clock.
+
 The separate deterministic frontend test also covers the native accepted path
 and the no-producer, byte-budget, and lane-full rejection reasons. Keeping those
 variants out of the timed matrix prevents a small frontend check from expanding

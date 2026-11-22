@@ -12,6 +12,7 @@
 #include <ulog/runtime.hpp>
 #include <ulog/source_location.hpp>
 #include <ulog/testing/in_memory_destination.hpp>
+#include <ulog/timestamp.hpp>
 
 #include "support/allocation_interposer.hpp"
 
@@ -71,8 +72,11 @@ constexpr ulog::SourceLocation kSource =
   }
 
   std::optional<ulog::testing::ObservedRecord> record = destination.TryTake();
+  // The warm-up cycle loads the platform time-zone state used by local formatting.
   return record && record->AdmissionSequence() == expected_sequence &&
-         record->Message() == kMessage;
+         record->Message() == kMessage &&
+         ulog::FormatUtcTimestamp(record->EventTimestamp()).size == ulog::kTimestampTextBytes &&
+         ulog::FormatLocalTimestamp(record->EventTimestamp()).size == ulog::kTimestampTextBytes;
 }
 
 [[nodiscard]] bool Run() {

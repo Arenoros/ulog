@@ -1,10 +1,12 @@
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <ulog/level.hpp>
 #include <ulog/log.hpp>
 #include <ulog/operation.hpp>
 #include <ulog/runtime.hpp>
 #include <ulog/testing/in_memory_destination.hpp>
+#include <ulog/timestamp.hpp>
 
 namespace {
 
@@ -24,6 +26,11 @@ using namespace std::chrono_literals;
   };
 }
 
+// 2000-02-29T12:34:56.789012Z.
+constexpr std::int64_t kFixedTimestamp = 951'827'696'789'012;
+
+std::int64_t FixedNow(void*) noexcept { return kFixedTimestamp; }
+
 }  // namespace
 
 int main() {
@@ -31,7 +38,9 @@ int main() {
       .capacity_records = 2,
       .maximum_record_bytes = 256,
   }};
-  auto created = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
+  ulog::RuntimeConfig config = SmallRuntimeConfig();
+  config.event_clock = ulog::EventClock{nullptr, &FixedNow};
+  auto created = ulog::Runtime::Create(config, destination);
   if (!created) return 1;
 
   ulog::Runtime& runtime = *created.runtime;
@@ -57,5 +66,12 @@ int main() {
   if (record->GetLevel() != ulog::Level::kInfo) return 10;
   if (record->Message() != "answer=42") return 11;
   if (destination.TryTake().has_value()) return 12;
+  if (record->EventTimestamp() != kFixedTimestamp) return 13;
+  if (ulog::FormatUtcTimestamp(record->EventTimestamp()).View() != "2000-02-29T12:34:56.789012") {
+    return 14;
+  }
+  if (ulog::FormatLocalTimestamp(record->EventTimestamp()).size != ulog::kTimestampTextBytes) {
+    return 15;
+  }
   return 0;
 }

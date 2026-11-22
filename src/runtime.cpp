@@ -468,19 +468,25 @@ class RuntimeRoute final {
   bool attached_{false};
 };
 
+[[nodiscard]] EventClock SelectEventClock(EventClock configured) noexcept {
+  return configured.now != nullptr ? configured : detail::producer::SystemEventClock();
+}
+
 class RuntimeDomain final {
  public:
   RuntimeDomain(RuntimeConfig runtime_config, RuntimeRoute runtime_route)
       : config_(runtime_config),
         route_(std::move(runtime_route)),
-        producer_(KernelConfig{
-            .threshold = config_.threshold,
-            .payload_capacity_bytes = config_.payload_capacity_bytes,
-            .maximum_record_bytes = config_.maximum_record_bytes,
-            .producer_slots = config_.producer_slots,
-            .ingress_cells = config_.ingress_cells,
-            .consumer_notification = {this, &RuntimeDomain::NotifyConsumer},
-        }),
+        producer_(
+            KernelConfig{
+                .threshold = config_.threshold,
+                .payload_capacity_bytes = config_.payload_capacity_bytes,
+                .maximum_record_bytes = config_.maximum_record_bytes,
+                .producer_slots = config_.producer_slots,
+                .ingress_cells = config_.ingress_cells,
+                .consumer_notification = {this, &RuntimeDomain::NotifyConsumer},
+            },
+            SelectEventClock(config_.event_clock)),
         control_reserve_(config_.control_operations),
         actions_(std::make_unique<ControlAction[]>(config_.control_operations)) {}
 

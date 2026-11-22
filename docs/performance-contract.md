@@ -55,6 +55,11 @@ all payload pools, and the independent control and progress reserves.
   RecordWriter limits.
 - Producer threads do not call Encoder, Sink, libuv, filesystem, or network
   operations.
+- An admitted Record reads its event clock exactly once, after admission
+  reservation and before publication; erased, filtered, and rejected calls never
+  read it. The clock is fixed at Runtime creation and is one indirect call with
+  no lock, allocation, or shared counter. Encoders and destinations use the
+  stored value and never re-read the clock.
 - Publishing an accepted Record does not scan routes and performs one bounded
   handoff to the pipeline.
 - A default-target macro performs one atomic non-owning Logger pointer load and

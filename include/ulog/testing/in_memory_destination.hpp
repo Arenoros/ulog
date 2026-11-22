@@ -42,6 +42,7 @@ class ObservedRecord final {
 
   [[nodiscard]] ULOG_API std::uint64_t AdmissionSequence() const noexcept;
   [[nodiscard]] ULOG_API Level GetLevel() const noexcept;
+  /// Producer-captured event time in microseconds since the Unix epoch.
   [[nodiscard]] ULOG_API std::int64_t EventTimestamp() const noexcept;
   [[nodiscard]] ULOG_API std::string_view SourcePath() const noexcept;
   [[nodiscard]] ULOG_API std::string_view SourceFunction() const noexcept;

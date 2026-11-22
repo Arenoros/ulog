@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cstddef>
@@ -141,6 +142,33 @@ void ExpectSucceeded(OperationStartResult& started) {
   ASSERT_EQ(completed.status, OperationWaitStatus::kCompleted);
   ASSERT_TRUE(completed.completion);
   EXPECT_EQ(RequireValue(completed.completion).Outcome(), OperationOutcome::kSucceeded);
+}
+
+/// Deterministic thread-safe clock that counts every read.
+class CountingClock final {
+ public:
+  static constexpr std::int64_t kFirst = 1'704'067'199'999'999;  // 2023-12-31T23:59:59.999999Z
+  static constexpr std::int64_t kStep = 1'000'001;
+
+  [[nodiscard]] EventClock Seam() noexcept { return EventClock{this, &CountingClock::Now}; }
+  [[nodiscard]] std::uint64_t Reads() const noexcept {
+    return reads_.load(std::memory_order_relaxed);
+  }
+
+ private:
+  static std::int64_t Now(void* context) noexcept {
+    auto& clock = *static_cast<CountingClock*>(context);
+    const auto read = clock.reads_.fetch_add(1, std::memory_order_relaxed);
+    return kFirst + static_cast<std::int64_t>(read) * kStep;
+  }
+
+  std::atomic<std::uint64_t> reads_{0};
+};
+
+[[nodiscard]] std::int64_t SystemMicroseconds() noexcept {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
 }
 
 [[nodiscard]] std::optional<testing::ObservedRecord> WaitForRecord(
@@ -505,6 +533,103 @@ TEST(RuntimeTracer, DestinationRejectsConcurrentAndSequentialRuntimeAttachment) 
   ASSERT_FALSE(reused);
   ASSERT_TRUE(reused.failure);
   EXPECT_EQ(RequireValue(reused.failure).code, RuntimeCreateErrorCode::kInvalidDestination);
+}
+
+TEST(RuntimeTracer, InjectedClockStampsOnlyAdmittedRecordsWithTheProducerReadValue) {
+  testing::InMemoryDestination destination{{
+      .capacity_records = 4,
+      .maximum_record_bytes = 512,
+  }};
+  CountingClock clock;
+  auto config = SmallRuntimeConfig();
+  config.threshold = Level::kInfo;
+  config.payload_capacity_bytes = 1'536;
+  config.ingress_cells = 3;
+  config.event_clock = clock.Seam();
+  auto created = Runtime::Create(config, destination);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  Runtime& runtime = *created.runtime;
+  const Logger logger = runtime.GetLogger();
+
+  LOG_DEBUG_TO(logger, "filtered");
+  LOG_INFO_TO(GetNullLogger(), "null");
+  std::thread unregistered{[logger] { LOG_INFO_TO(logger, "unregistered"); }};
+  unregistered.join();
+  EXPECT_EQ(clock.Reads(), 0U);
+  EXPECT_EQ(runtime.GetSnapshot().rejected_no_producer, 1U);
+
+  LOG_INFO_TO(logger, "zero");
+  LOG_WARNING_TO(logger, "one");
+  LOG_ERROR_TO(logger, "two");
+  EXPECT_EQ(clock.Reads(), 3U);
+  auto drain = runtime.Drain();
+  ExpectSucceeded(drain);
+
+  for (std::uint64_t sequence = 0; sequence < 3U; ++sequence) {
+    auto record = destination.TryTake();
+    ASSERT_TRUE(record);
+    EXPECT_EQ(RequireValue(record).AdmissionSequence(), sequence);
+    EXPECT_EQ(RequireValue(record).EventTimestamp(),
+              CountingClock::kFirst + static_cast<std::int64_t>(sequence) * CountingClock::kStep);
+  }
+  // The worker copied the stored values; delivery and Drain read the clock no further.
+  EXPECT_EQ(clock.Reads(), 3U);
+  auto shutdown = runtime.Shutdown();
+  ExpectSucceeded(shutdown);
+  EXPECT_EQ(clock.Reads(), 3U);
+}
+
+TEST(RuntimeTracer, AdmissionRejectedAndClosedCallsReadNoClock) {
+  testing::InMemoryDestination destination{{
+      .capacity_records = 1,
+      .maximum_record_bytes = 512,
+      .start_paused = true,
+  }};
+  CountingClock clock;
+  auto config = SmallRuntimeConfig();
+  config.event_clock = clock.Seam();
+  auto created = Runtime::Create(config, destination);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  Runtime& runtime = *created.runtime;
+  const Logger logger = runtime.GetLogger();
+
+  LOG_INFO_TO(logger, "accepted");
+  LOG_INFO_TO(logger, "lane-full");
+  EXPECT_EQ(runtime.GetSnapshot().dropped_newest_records, 1U);
+  EXPECT_EQ(clock.Reads(), 1U);
+
+  auto shutdown = runtime.Shutdown();
+  ASSERT_TRUE(shutdown);
+  LOG_INFO_TO(logger, "closed");
+  destination.Resume();
+  ExpectSucceeded(shutdown);
+  EXPECT_EQ(clock.Reads(), 1U);
+  auto record = destination.TryTake();
+  ASSERT_TRUE(record);
+  EXPECT_EQ(RequireValue(record).Message(), "accepted");
+  EXPECT_EQ(RequireValue(record).EventTimestamp(), CountingClock::kFirst);
+}
+
+TEST(RuntimeTracer, DefaultClockStampsTheSystemTimeOfTheCall) {
+  testing::InMemoryDestination destination{{
+      .capacity_records = 1,
+      .maximum_record_bytes = 512,
+  }};
+  auto created = Runtime::Create(SmallRuntimeConfig(), destination);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  Runtime& runtime = *created.runtime;
+  const Logger logger = runtime.GetLogger();
+
+  const std::int64_t before = SystemMicroseconds();
+  LOG_INFO_TO(logger, "now");
+  const std::int64_t after = SystemMicroseconds();
+  auto shutdown = runtime.Shutdown();
+  ExpectSucceeded(shutdown);
+
+  auto record = destination.TryTake();
+  ASSERT_TRUE(record);
+  EXPECT_GE(RequireValue(record).EventTimestamp(), before);
+  EXPECT_LE(RequireValue(record).EventTimestamp(), after);
 }
 
 }  // namespace

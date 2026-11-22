@@ -11,6 +11,7 @@
 #include <ulog/level.hpp>
 #include <ulog/logger.hpp>
 #include <ulog/operation.hpp>
+#include <ulog/timestamp.hpp>
 
 namespace ulog {
 
@@ -33,6 +34,8 @@ struct RuntimeConfig final {
   std::size_t worker_threads{1};
   std::chrono::milliseconds startup_timeout{5'000};
   std::chrono::milliseconds destruction_timeout{1'000};
+  /// Event timestamp source; the default reads the system clock.
+  EventClock event_clock{};
 };
 
 /// One immutable route that appends Raw frames to a file through Ulog's private I/O loop.

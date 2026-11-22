@@ -9,6 +9,7 @@
 #include <ulog/level.hpp>
 #include <ulog/logger.hpp>
 #include <ulog/source_location.hpp>
+#include <ulog/timestamp.hpp>
 
 namespace ulog::detail::producer {
 
@@ -19,10 +20,7 @@ inline constexpr std::size_t kMaximumIngressCells = 64;
 
 using EventTimestamp = std::int64_t;
 
-struct EventClock final {
-  void* context{nullptr};
-  EventTimestamp (*now)(void*) noexcept {nullptr};
-};
+using EventClock = ::ulog::EventClock;
 
 [[nodiscard]] EventClock SystemEventClock() noexcept;
 

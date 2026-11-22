@@ -63,6 +63,7 @@ set(ULOG_LIBRARY_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/testing/in_memory_encoded_destination.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/testing/in_memory_destination.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/timestamp.cpp"
     ${ULOG_PRODUCER_SOURCES}
     ${ULOG_CONTROL_PRIVATE_SOURCES}
     ${ULOG_IO_PRIVATE_SOURCES}
@@ -145,6 +146,7 @@ install(
         include/ulog/operation.hpp
         include/ulog/runtime.hpp
         include/ulog/source_location.hpp
+        include/ulog/timestamp.hpp
         "${ULOG_GENERATED_INCLUDE_DIR}/ulog/version.hpp"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ulog"
 )

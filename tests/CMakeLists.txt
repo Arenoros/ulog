@@ -122,6 +122,13 @@ if(ULOG_BUILD_UNIT_TESTS)
   add_test(NAME ulog.runtime-tracer COMMAND ulog-runtime-tracer)
   set_tests_properties(ulog.runtime-tracer PROPERTIES LABELS "unit;integration;runtime" TIMEOUT 10)
 
+  add_executable(ulog-timestamp-tests timestamp_test.cpp)
+  target_compile_features(ulog-timestamp-tests PRIVATE cxx_std_20)
+  target_link_libraries(ulog-timestamp-tests PRIVATE ulog::ulog GTest::gtest_main Threads::Threads)
+  ulog_configure_target(ulog-timestamp-tests)
+  add_test(NAME ulog.timestamp COMMAND ulog-timestamp-tests)
+  set_tests_properties(ulog.timestamp PROPERTIES LABELS "unit;timestamp" TIMEOUT 20)
+
   add_executable(ulog-runtime-file-route runtime_file_route_test.cpp)
   target_compile_features(ulog-runtime-file-route PRIVATE cxx_std_20)
   target_include_directories(ulog-runtime-file-route PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

@@ -1,8 +1,8 @@
 # Native frontend
 
 The installed package exposes the native Ulog frontend through
-`<ulog/level.hpp>`, `<ulog/source_location.hpp>`, `<ulog/logger.hpp>`, and
-`<ulog/log.hpp>`.
+`<ulog/level.hpp>`, `<ulog/source_location.hpp>`, `<ulog/logger.hpp>`,
+`<ulog/log.hpp>`, and `<ulog/timestamp.hpp>`.
 
 `Level` is ordered from `kTrace` through `kCritical`; `kNone` is the suppressing
 threshold and is never an enabled message level. `IsLevelEnabled` provides the
@@ -127,3 +127,31 @@ Named macros below the configured minimum are erased before evaluating an
 explicit target or loading the process-wide Default Logger. Generic `LOG` and
 `LOG_TO` are intentionally not erased by this control because their level is a
 runtime expression. Critical remains active at the maximum value `5`.
+
+## Event timestamps
+
+An accepted Runtime call stores one wall-clock event timestamp, in microseconds
+since the Unix epoch, after admission reservation and before the message factory
+runs. Rejected and filtered calls never read the clock. The Runtime clock seam is
+described in [Runtime](runtime.md#event-timestamps).
+
+`<ulog/timestamp.hpp>` provides portable formatting for that value:
+
+```cpp
+const ulog::TimestampText utc = ulog::FormatUtcTimestamp(951'827'696'789'012);
+// utc.View() == "2000-02-29T12:34:56.789012"
+const ulog::TimestampText local = ulog::FormatLocalTimestamp(951'827'696'789'012);
+```
+
+Both functions produce `YYYY-MM-DDTHH:MM:SS` plus six fractional microsecond
+digits and no zone designator, into a fixed 26-byte `TimestampText` without
+allocation. Both are thread-safe on every supported platform. UTC formatting is
+pure calendar arithmetic and never calls the C library time functions. Local
+formatting converts through the platform's reentrant conversion, `localtime_s`
+on Windows and `localtime_r` elsewhere, behind this Ulog-owned interface, and
+follows the process time zone, including a `TZ` change made with `tzset`.
+
+The result is empty for instants outside years 0000 through 9999, and for local
+time also when the platform cannot convert the instant; Windows converts only
+instants from 1970 through 3000. Time-zone selection beyond the process-local
+zone is not provided.

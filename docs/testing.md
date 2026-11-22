@@ -8,7 +8,9 @@ The repository establishes seven independent test categories:
   deadlines, callback dispatch, control-reserve exhaustion, structured and Raw
   in-memory Runtime lifecycle, saturation, exact encoding, Raw file-route
   append, Unicode paths, validation and open errors, injected partial writes and
-  open/write/close failures, and test memory resources;
+  open/write/close failures, injected event clocks, UTC and process-local
+  timestamp formatting across calendar boundaries and concurrent calls, and test
+  memory resources;
 - `integration`/`package`: install Ulog, configure a copied external project,
   link only `ulog::ulog`, and exercise the frontend, in-memory Runtime tracers,
   and a Raw file route writing a temporary file through installed public headers;
