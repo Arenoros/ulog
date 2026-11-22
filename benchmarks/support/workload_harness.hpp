@@ -230,7 +230,8 @@ template <WorkloadKernel Kernel, typename ThreadLauncher = impl::StandardThreadL
               std::chrono::duration_cast<std::chrono::nanoseconds>(finished_at - started_at);
           const std::size_t sample_index = producer_index * workload.measured_rounds + round;
           samples[sample_index] = impl::LatencySample{
-              .nanoseconds = static_cast<std::uint64_t>(std::max(elapsed.count(), std::int64_t{0})),
+              .nanoseconds = static_cast<std::uint64_t>(
+                  std::max(elapsed, std::chrono::nanoseconds::zero()).count()),
               .status = attempt.status(),
           };
           round_attempted.arrive_and_wait();
