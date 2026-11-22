@@ -2,10 +2,12 @@
 
 #include <fmt/format.h>
 
+#include <concepts>
 #include <cstdint>
 #include <memory>
 #include <string_view>
 #include <type_traits>
+#include <ulog/fields.hpp>
 #include <ulog/logger.hpp>
 #include <utility>
 
@@ -36,6 +38,25 @@ template <typename... Args>
   } catch (...) {
     return false;
   }
+}
+
+template <typename FieldList>
+concept MacroFieldList = std::same_as<std::remove_cvref_t<FieldList>, Fields> ||
+                         std::same_as<std::remove_cvref_t<FieldList>, FieldSet>;
+
+// Fields come first; the format string stays a constant expression at the call site.
+template <MacroFieldList FieldList, typename Text>
+[[nodiscard]] bool WriteMessage(MessageSink& sink, const FieldList& fields, Text&& text) {
+  sink.Fields().Add(fields);
+  return WriteMessage(sink, std::forward<Text>(text));
+}
+
+template <MacroFieldList FieldList, typename... Args>
+  requires(sizeof...(Args) > 0)
+[[nodiscard]] bool WriteMessage(MessageSink& sink, const FieldList& fields,
+                                fmt::format_string<Args...> format, Args&&... args) {
+  sink.Fields().Add(fields);
+  return WriteMessage(sink, format, std::forward<Args>(args)...);
 }
 
 struct MacroAccess final {

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <ulog/level.hpp>
@@ -15,6 +16,11 @@ namespace ulog::detail::producer::record {
 inline constexpr std::size_t kSerializedRecordMetadataBytes = 56;
 inline constexpr std::size_t kSerializedFieldMetadataBytes = 24;
 inline constexpr std::string_view kTruncatedFieldKey = "ulog.truncated";
+/// Bytes of the `ulog.truncated=true` marker field.
+inline constexpr std::size_t kTruncatedFieldBytes =
+    kSerializedFieldMetadataBytes + kTruncatedFieldKey.size();
+inline constexpr std::uint8_t kFieldBoolTrueFlag = 1U;
+inline constexpr std::uint8_t kFieldFrozenFlag = 2U;
 
 struct SerializedRecordHeader final {
   EventTimestamp event_timestamp{0};
@@ -41,11 +47,13 @@ struct SerializedField final {
   std::uint32_t value_high{0};
   std::uint8_t kind{0};
   std::uint8_t flags{0};
-  std::uint16_t reserved{0};
+  // Offset of the node this one replaced, so that dropping it restores the previous value.
+  std::uint16_t replaced_offset{0};
 };
 
 static_assert(sizeof(SerializedRecordHeader) == kSerializedRecordMetadataBytes);
 static_assert(sizeof(SerializedField) == kSerializedFieldMetadataBytes);
+static_assert(kMaximumRecordBytes <= 0xFFFFU, "replaced_offset must address every field node");
 
 struct StoredRecord final {
   const std::byte* storage{nullptr};
@@ -89,6 +97,8 @@ class RecordWriter final {
   [[nodiscard]] bool AddField(std::string_view key, double value) noexcept;
   [[nodiscard]] bool AddField(std::string_view key, bool value) noexcept;
   [[nodiscard]] bool AddField(std::string_view key, NullValue) noexcept;
+  [[nodiscard]] FieldStatus PutField(std::string_view key, const FieldValue& value,
+                                     FieldMode mode) noexcept;
 
   [[nodiscard]] StoredRecord Publish() && noexcept;
   void Abandon() noexcept;
@@ -107,11 +117,15 @@ class RecordWriter final {
   [[nodiscard]] WriteResult AppendBytes(std::span<const std::byte> value) noexcept;
   template <typename Value>
   [[nodiscard]] WriteResult AppendNumber(Value value) noexcept;
-  [[nodiscard]] bool AddScalarField(std::string_view key, FieldKind kind,
-                                    std::uint64_t bits) noexcept;
-  [[nodiscard]] bool AddFieldBytes(std::string_view key, FieldKind kind,
-                                   std::span<const std::byte> value, std::uint64_t scalar_bits,
-                                   bool bool_value) noexcept;
+  [[nodiscard]] std::optional<std::uint32_t> WriteFieldNode(std::string_view key,
+                                                            const FieldValue& value,
+                                                            std::uint8_t flags) noexcept;
+  void DropNewestField() noexcept;
+  void LinkLast(std::uint32_t offset) noexcept;
+  void ReplaceNode(std::uint32_t previous, std::uint32_t old_offset,
+                   std::uint32_t new_offset) noexcept;
+  [[nodiscard]] std::uint32_t FindField(std::string_view key,
+                                        std::uint32_t& previous) const noexcept;
   [[nodiscard]] bool AddTruncatedField() noexcept;
 
   RecordSlot* slot_{nullptr};
@@ -122,9 +136,12 @@ class RecordWriter final {
   std::uint64_t requested_message_bytes_{0};
   std::size_t source_payload_bytes_{0};
   std::size_t field_payload_bytes_{0};
+  // Replaced field nodes stay in storage and remain accounted.
+  std::size_t dead_field_bytes_{0};
   std::uint32_t field_count_{0};
   std::uint32_t first_field_offset_{0};
   std::uint32_t last_field_offset_{0};
+  bool fields_truncated_{false};
 };
 
 class alignas(kAccountingQuantumBytes) RecordSlot final {

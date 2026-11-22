@@ -9,6 +9,8 @@
 #include <ulog/runtime.hpp>
 #include <ulog/testing/in_memory_encoded_destination.hpp>
 
+#include "raw_corpus_cases.hpp"
+
 namespace {
 
 using namespace std::chrono_literals;
@@ -26,6 +28,29 @@ using namespace std::string_view_literals;
       .startup_timeout = 1s,
       .destruction_timeout = 1s,
   };
+}
+
+int RunCorpusCases() {
+  ulog::testing::InMemoryEncodedDestination destination{{
+      .capacity_records = 3,
+      .maximum_record_bytes = 512,
+  }};
+  auto created = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
+  if (!created) return 40;
+
+  raw_corpus::LogAll(created.runtime->GetLogger());
+  auto shutdown = created.runtime->Shutdown();
+  if (!shutdown) return 41;
+  const auto stopped = shutdown.operation.WaitUntil(std::chrono::steady_clock::now() + 1s);
+  if (stopped.status != ulog::OperationWaitStatus::kCompleted || !stopped.completion ||
+      stopped.completion->Outcome() != ulog::OperationOutcome::kSucceeded) {
+    return 42;
+  }
+  for (const std::string_view expected : raw_corpus::kFrames) {
+    auto frame = destination.TryTake();
+    if (!frame || frame->Bytes() != expected) return 43;
+  }
+  return destination.TryTake().has_value() ? 44 : 0;
 }
 
 int RunDeferredDelivery() {
@@ -120,5 +145,6 @@ int main() {
       snapshot.encoding_failed_records != 0U || snapshot.retained_records != 0U) {
     return 11;
   }
-  return RunDeferredDelivery();
+  if (const int status = RunDeferredDelivery(); status != 0) return status;
+  return RunCorpusCases();
 }

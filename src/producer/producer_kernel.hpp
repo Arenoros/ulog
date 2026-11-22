@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <ulog/fields.hpp>
 #include <ulog/level.hpp>
 #include <ulog/logger.hpp>
 #include <ulog/source_location.hpp>
@@ -50,9 +51,8 @@ struct WriteResult final {
   bool truncated{false};
 };
 
-enum class FieldKind : std::uint8_t { kString, kInt64, kUInt64, kDouble, kBool, kNull };
-
-struct NullValue final {};
+using FieldKind = ::ulog::FieldKind;
+using NullValue = ::ulog::Null;
 inline constexpr NullValue kNull{};
 
 class RecordAppender final {
@@ -99,6 +99,9 @@ class RecordAppender final {
   [[nodiscard]] bool AddField(std::string_view key, double value) noexcept;
   [[nodiscard]] bool AddField(std::string_view key, bool value) noexcept;
   [[nodiscard]] bool AddField(std::string_view key, NullValue) noexcept;
+  /// Adds one field under the Record collision and reserved-key policy.
+  [[nodiscard]] FieldStatus PutField(std::string_view key, const FieldValue& value,
+                                     FieldMode mode) noexcept;
 
   [[nodiscard]] FormatOutputIterator FormatOutput() noexcept { return FormatOutputIterator{*this}; }
 
@@ -141,6 +144,9 @@ class FieldView final {
   [[nodiscard]] std::optional<double> AsDouble() const noexcept;
   [[nodiscard]] std::optional<bool> AsBool() const noexcept;
   [[nodiscard]] bool IsNull() const noexcept;
+  [[nodiscard]] std::optional<std::string_view> AsJson() const noexcept;
+  [[nodiscard]] bool IsFrozen() const noexcept;
+  [[nodiscard]] FieldValue Value() const noexcept;
 
  private:
   friend class FieldCursor;

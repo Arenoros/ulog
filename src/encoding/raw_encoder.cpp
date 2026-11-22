@@ -78,6 +78,10 @@ template <typename Value>
       const auto value = field.AsString();
       return value && AddEscapedSize(total, *value, false);
     }
+    case FieldKind::kJson: {
+      const auto value = field.AsJson();
+      return value && AddEscapedSize(total, *value, false);
+    }
     case FieldKind::kInt64: {
       const auto value = field.AsInt64();
       const auto size = value ? FormattedNumberSize(*value) : std::nullopt;
@@ -148,6 +152,14 @@ void WriteNumber(std::span<char> output, std::size_t& cursor, Value value) noexc
   switch (field.kind()) {
     case FieldKind::kString: {
       const auto value = field.AsString();
+      if (!value) {
+        return false;
+      }
+      WriteEscaped(output, cursor, *value, false);
+      return true;
+    }
+    case FieldKind::kJson: {
+      const auto value = field.AsJson();
       if (!value) {
         return false;
       }

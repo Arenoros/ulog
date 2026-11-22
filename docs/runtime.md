@@ -155,6 +155,11 @@ also occupies its slot. When all slots are ready or held, the worker waits for a
 producer threads still do not wait and eventually reject new Records as their bounded
 ingress fills.
 
+`FieldCount()` and `Field(index)` expose the Record's typed fields in order as
+`ObservedField{key, value, mode}`, including a final `ulog.truncated` marker; see
+[Typed fields](native-frontend.md#typed-fields). The destination copies fields
+into its slot within the same `maximum_record_bytes` bound.
+
 `EventTimestamp()` returns the Record's stored event timestamp in microseconds
 since the Unix epoch. The worker copies the value the producer captured; neither
 the worker nor the destination reads the clock.
@@ -177,8 +182,10 @@ silently truncated a second time.
 until that observation is moved from or destroyed. Raw frames begin with `tskv`,
 append ordered fields as tab-separated `key=value` pairs, append `text` last, and
 end with exactly one LF. NUL, tab, CR, LF, and backslash use TSKV escaping; `=` is
-also escaped in keys. Raw intentionally omits timestamp, level, module, and source
-metadata. Encoding executes synchronously inside the worker's consume callback;
+also escaped in keys, and ASCII key letters are lowercased. Fields render in
+Record order: integers in decimal, floating point in shortest round-trip form,
+booleans as `1` or `0`, null as `null`, and raw JSON as escaped text. Raw
+intentionally omits timestamp, level, module, and source metadata. Encoding executes synchronously inside the worker's consume callback;
 no `RecordView` or borrowed field survives that callback.
 
 ### Deferred Raw delivery

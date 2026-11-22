@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -9,6 +10,8 @@
 #include <ulog/log.hpp>
 #include <ulog/operation.hpp>
 #include <ulog/runtime.hpp>
+
+#include "raw_corpus_cases.hpp"
 
 namespace {
 
@@ -24,10 +27,11 @@ using namespace std::chrono_literals;
   auto created = ulog::Runtime::Create(
       ulog::RuntimeConfig{
           .threshold = ulog::Level::kTrace,
-          .payload_capacity_bytes = 1'536,
+          // Room for all five Records, so no call is shed while the route is busy.
+          .payload_capacity_bytes = 4'096,
           .maximum_record_bytes = 512,
           .producer_slots = 1,
-          .ingress_cells = 3,
+          .ingress_cells = 8,
           .control_operations = 2,
           .worker_threads = 1,
           .startup_timeout = 2s,
@@ -39,6 +43,7 @@ using namespace std::chrono_literals;
   const ulog::Logger logger = created.runtime->GetLogger();
   LOG_INFO_TO(logger, "first");
   LOG_WARNING_TO(logger, "second {}", 2);
+  raw_corpus::LogAll(logger);
 
   auto shutdown = created.runtime->Shutdown();
   if (!shutdown) return 2;
@@ -48,7 +53,11 @@ using namespace std::chrono_literals;
     return 3;
   }
   const ulog::OperationReport& report = stopped.completion->Report();
-  if (report.delivered_records != 2U || report.delivered_bytes != 35U ||
+  std::size_t corpus_bytes = 0;
+  for (const std::string_view frame : raw_corpus::kFrames) {
+    corpus_bytes += frame.size();
+  }
+  if (report.delivered_records != 5U || report.delivered_bytes != 35U + corpus_bytes ||
       report.unfinished_records != 0U) {
     return 4;
   }
@@ -67,7 +76,11 @@ int main() {
     std::ifstream input{path, std::ios::binary};
     const std::string bytes{std::istreambuf_iterator<char>{input},
                             std::istreambuf_iterator<char>{}};
-    if (bytes != "tskv\ttext=first\ntskv\ttext=second 2\n") status = 5;
+    std::string expected = "tskv\ttext=first\ntskv\ttext=second 2\n";
+    for (const std::string_view frame : raw_corpus::kFrames) {
+      expected.append(frame);
+    }
+    if (bytes != expected) status = 5;
   }
   std::filesystem::remove(path, ignored);
   return status;

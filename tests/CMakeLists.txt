@@ -96,6 +96,7 @@ if(ULOG_BUILD_UNIT_TESTS)
     ulog-unit-tests
     default_logger_probe.cpp
     default_logger_test.cpp
+    fields_test.cpp
     frontend_test.cpp
     log_macro_test.cpp
     memory_resource_test.cpp
@@ -121,6 +122,14 @@ if(ULOG_BUILD_UNIT_TESTS)
   ulog_configure_target(ulog-runtime-tracer)
   add_test(NAME ulog.runtime-tracer COMMAND ulog-runtime-tracer)
   set_tests_properties(ulog.runtime-tracer PROPERTIES LABELS "unit;integration;runtime" TIMEOUT 10)
+
+  add_executable(ulog-runtime-fields runtime_fields_test.cpp)
+  target_compile_features(ulog-runtime-fields PRIVATE cxx_std_20)
+  target_include_directories(ulog-runtime-fields PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(ulog-runtime-fields PRIVATE ulog::ulog GTest::gtest_main Threads::Threads)
+  ulog_configure_target(ulog-runtime-fields)
+  add_test(NAME ulog.runtime-fields COMMAND ulog-runtime-fields)
+  set_tests_properties(ulog.runtime-fields PROPERTIES LABELS "unit;integration;runtime" TIMEOUT 10)
 
   add_executable(ulog-timestamp-tests timestamp_test.cpp)
   target_compile_features(ulog-timestamp-tests PRIVATE cxx_std_20)

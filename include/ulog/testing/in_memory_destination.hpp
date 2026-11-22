@@ -6,6 +6,7 @@
 #include <optional>
 #include <string_view>
 #include <ulog/export.hpp>
+#include <ulog/fields.hpp>
 #include <ulog/level.hpp>
 
 namespace ulog::detail::testing {
@@ -29,6 +30,13 @@ struct InMemoryDestinationConfig final {
 
 class InMemoryDestination;
 
+/// One typed field of an observed Record; its views live as long as the ObservedRecord.
+struct ObservedField final {
+  std::string_view key{};
+  FieldValue value{};
+  FieldMode mode{FieldMode::kReplaceable};
+};
+
 /// Immutable observation that keeps its destination slot occupied until destruction.
 ///
 /// String views returned by this object remain valid until the object is moved from or destroyed.
@@ -50,6 +58,10 @@ class ObservedRecord final {
   [[nodiscard]] ULOG_API std::uint32_t SourceColumn() const noexcept;
   [[nodiscard]] ULOG_API std::string_view Message() const noexcept;
   [[nodiscard]] ULOG_API bool Truncated() const noexcept;
+  /// Number of typed fields, including a `ulog.truncated` marker.
+  [[nodiscard]] ULOG_API std::size_t FieldCount() const noexcept;
+  /// Field at `index` in Record order, or nothing when `index` is out of range.
+  [[nodiscard]] ULOG_API std::optional<ObservedField> Field(std::size_t index) const noexcept;
   [[nodiscard]] ULOG_API std::size_t SerializedBytes() const noexcept;
   [[nodiscard]] ULOG_API std::size_t AccountingChargeBytes() const noexcept;
 

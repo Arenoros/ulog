@@ -2,7 +2,7 @@
 
 The installed package exposes the native Ulog frontend through
 `<ulog/level.hpp>`, `<ulog/source_location.hpp>`, `<ulog/logger.hpp>`,
-`<ulog/log.hpp>`, and `<ulog/timestamp.hpp>`.
+`<ulog/log.hpp>`, `<ulog/fields.hpp>`, and `<ulog/timestamp.hpp>`.
 
 `Level` is ordered from `kTrace` through `kCritical`; `kNone` is the suppressing
 threshold and is never an enabled message level. `IsLevelEnabled` provides the
@@ -95,7 +95,9 @@ native `ulog::Logger` expression, evaluates it once, and does not consult the
 Default Logger. Use `GetNullLogger()` for an explicit suppressing target.
 Generic level expressions are also evaluated once.
 
-A call with one message operand treats it as native text usable as
+A leading `ulog::Fields` or `ulog::FieldSet` operand attaches typed fields to
+the Record; see [Typed fields](#typed-fields). A call with one message operand
+treats it as native text usable as
 `std::string_view`; braces in that operand are literal. A call with a format
 string and one or more values uses fmt's compile-time-checked format strings
 and writes directly into the bounded Record. Message operands stay inside the
@@ -127,6 +129,86 @@ Named macros below the configured minimum are erased before evaluating an
 explicit target or loading the process-wide Default Logger. Generic `LOG` and
 `LOG_TO` are intentionally not erased by this control because their level is a
 runtime expression. Critical remains active at the maximum value `5`.
+
+## Typed fields
+
+`<ulog/fields.hpp>` attaches ordered typed fields to a Structured Record. A
+field holds a string, signed or unsigned integer, floating-point, boolean,
+`ulog::kNull`, or raw-JSON value (`VAL-006`, `VAL-008`). Signed integers are
+stored as `int64`, unsigned integers as `uint64`, and floating point as
+`double`; `char` and the `charN_t` types are text units and are rejected.
+
+Pass `ulog::Fields` or a `ulog::FieldSet` as the first operand of a `LOG*`
+macro, before the message:
+
+```cpp
+LOG_INFO(ulog::Fields{{"status", 200}, {"path", path}, {"ok", true}}, "done in {}ms", elapsed);
+
+ulog::FieldSet extra;
+extra.Add("request_id", request_id);
+extra.Add("region", "eu", ulog::FieldMode::kFrozen);
+LOG_WARNING_TO(logger, ulog::Fields{extra, {"attempt", attempt}}, "retrying");
+LOG_ERROR_TO(logger, extra, "failed");
+```
+
+`Fields` borrows its elements, so build it inside the macro call. Field operands
+are evaluated inside the admission callback, exactly like message operands:
+compile-erased, runtime-filtered, Null Logger, unregistered-producer, and
+admission-rejected calls evaluate none of them.
+
+The Logger API takes a fields callback before the message factory:
+
+```cpp
+logger.Log<ulog::Level::kInfo>(
+    ulog::SourceLocation::Current(),
+    [&](ulog::FieldWriter& fields) {
+      fields.Add("status", status);
+      fields.Add(extra);
+    },
+    [&]() -> std::string_view { return message; });
+```
+
+Both callables run synchronously at most once, after filtering and admission.
+`FieldWriter::Add` reports a `ulog::FieldStatus`; the macros ignore it.
+
+`FieldSet` is the owned counterpart of `LogExtra`, built before the call. It
+copies keys and values, so a set may be destroyed or changed after insertion.
+`ulog::JsonString` owns one line of JSON text: CR and LF are removed and empty
+text means `null`. Raw and the text formats write it like an escaped string;
+JSON encoders insert it as a raw nested value.
+
+### Collision and reserved-key policy
+
+One policy applies in `FieldSet` and in every Record (`VAL-007`, `DEF-004`):
+
+- a later value for an existing replaceable key replaces it at its original
+  position (`kReplaced`);
+- a frozen field keeps its value and rejects every later value (`kFrozen`).
+  `FieldMode::kFrozen` freezes on insertion; `FieldSet::Freeze(key)` freezes an
+  existing field and returns false for a missing key;
+- merging a FieldSet, or inserting one into a Record, adds its fields in order
+  and keeps each field's freeze state;
+- keys collide only when byte-for-byte equal, so repeated call-site keys keep
+  one field;
+- `timestamp`, `level`, `module`, `task_id`, `thread_id`, `text`, and every key
+  starting with `ulog.` are technical keys. They are compared ignoring ASCII
+  case, because text formats lowercase keys, and are rejected with `kReserved`.
+  `ulog::IsReservedFieldKey` exposes the check. Empty keys are rejected with
+  `kInvalidKey`.
+
+Encoders render each stored field once, in Record order; they never re-apply or
+bypass the policy. Raw and TSKV lowercase ASCII keys when they render them.
+
+### Record bounds
+
+Fields are copied into the reserved Record without heap allocation, and their
+bytes count toward `maximum_record_bytes` with the message and source
+location. A field that does not fit is dropped with `kTruncated`. The Record then
+carries `ulog.truncated=true` as its last field and never grows past its
+reservation. To make room for that marker, Ulog first shortens the message at a
+valid UTF-8 boundary and then drops the most recently written fields; a dropped
+replacement restores the value it replaced. A replaced value keeps occupying its
+bytes until the Record is released.
 
 ## Event timestamps
 

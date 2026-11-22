@@ -250,9 +250,14 @@ void AppendText(void* context, std::string_view text) {
   static_cast<void>(appender.Append(text));
 }
 
+FieldStatus PutField(void* context, std::string_view key, const FieldValue& value,
+                     FieldMode mode) noexcept {
+  return static_cast<RecordAppender*>(context)->PutField(key, value, mode);
+}
+
 BuildStatus BuildMessage(void* context, RecordAppender& appender) {
   auto& call = *static_cast<MessageCall*>(context);
-  MessageSink sink{&appender, &AppendText};
+  MessageSink sink{&appender, &AppendText, &PutField};
   return call.build_message(call.builder_context, sink) ? BuildStatus::kComplete
                                                         : BuildStatus::kInvalid;
 }

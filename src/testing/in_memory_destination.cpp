@@ -14,6 +14,7 @@
 #include <system_error>
 #include <utility>
 
+#include "producer/record_storage.hpp"
 #include "testing/in_memory_destination_access.hpp"
 
 namespace ulog::detail::testing {
@@ -36,6 +37,8 @@ struct SlotMetadata final {
   TextRange source_path{};
   TextRange source_function{};
   TextRange message{};
+  std::uint32_t fields_offset{0};
+  std::uint32_t field_count{0};
   std::uint32_t source_line{0};
   std::uint32_t source_column{0};
   Level level{Level::kNone};
@@ -210,6 +213,67 @@ struct StoredTextLocation final {
   return location;
 }
 
+// Copied fields are laid out as [entry][key][text] in Record order. An entry is no larger than
+// a Record field node, so every field of a Record that fits the Runtime bound fits here too.
+struct StoredFieldEntry final {
+  std::uint64_t bits{0};
+  std::uint16_t key_size{0};
+  std::uint16_t text_size{0};
+  std::uint8_t kind{0};
+  std::uint8_t mode{0};
+};
+
+static_assert(sizeof(StoredFieldEntry) <= producer::record::kSerializedFieldMetadataBytes);
+static_assert(producer::kMaximumRecordBytes <= 0xFFFFU);
+
+struct CopiedFields final {
+  std::uint32_t offset{0};
+  std::uint32_t count{0};
+  bool complete{true};
+};
+
+[[nodiscard]] CopiedFields CopyFields(std::byte* destination, std::size_t capacity,
+                                      std::size_t& cursor,
+                                      const producer::RecordView& record) noexcept {
+  CopiedFields copied{.offset = static_cast<std::uint32_t>(cursor)};
+  auto fields = record.Fields();
+  for (std::size_t index = 0; index < record.field_count(); ++index) {
+    const auto field = fields.Next();
+    if (!field) {
+      copied.complete = false;
+      break;
+    }
+    const FieldValue value = field->Value();
+    const std::string_view key = field->key();
+    const std::string_view text = value.Text();
+    const std::size_t available = cursor <= capacity ? capacity - cursor : 0U;
+    if (sizeof(StoredFieldEntry) + key.size() + text.size() > available) {
+      copied.complete = false;
+      break;
+    }
+    const StoredFieldEntry entry{
+        .bits = value.UInt64(),
+        .key_size = static_cast<std::uint16_t>(key.size()),
+        .text_size = static_cast<std::uint16_t>(text.size()),
+        .kind = static_cast<std::uint8_t>(value.Kind()),
+        .mode = static_cast<std::uint8_t>(field->IsFrozen() ? FieldMode::kFrozen
+                                                            : FieldMode::kReplaceable),
+    };
+    std::memcpy(destination + cursor, &entry, sizeof(entry));
+    cursor += sizeof(entry);
+    if (!key.empty()) {
+      std::memcpy(destination + cursor, key.data(), key.size());
+    }
+    cursor += key.size();
+    if (!text.empty()) {
+      std::memcpy(destination + cursor, text.data(), text.size());
+    }
+    cursor += text.size();
+    ++copied.count;
+  }
+  return copied;
+}
+
 }  // namespace
 
 DestinationWriteClaim::DestinationWriteClaim(std::shared_ptr<InMemoryDestinationState> state,
@@ -249,6 +313,7 @@ void DestinationWriteClaim::Store(std::uint64_t admission_sequence,
       CopyText(destination, state_->maximum_record_bytes, cursor, record.source_function());
   const StoredTextLocation message =
       CopyUtf8Text(destination, state_->maximum_record_bytes, cursor, record.message());
+  const CopiedFields fields = CopyFields(destination, state_->maximum_record_bytes, cursor, record);
 
   bool committed = false;
   {
@@ -261,11 +326,13 @@ void DestinationWriteClaim::Store(std::uint64_t admission_sequence,
       slot.source_path = source_path.range;
       slot.source_function = source_function.range;
       slot.message = message.range;
+      slot.fields_offset = fields.offset;
+      slot.field_count = fields.count;
       slot.source_line = record.source_line();
       slot.source_column = record.source_column();
       slot.level = record.level();
       slot.truncated = record.truncated() || !source_path.complete || !source_function.complete ||
-                       !message.complete;
+                       !message.complete || !fields.complete;
       slot.state = SlotState::kReady;
       committed = true;
     }
@@ -426,6 +493,36 @@ std::string_view ObservedRecord::Message() const noexcept {
 bool ObservedRecord::Truncated() const noexcept {
   const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
   return slot != nullptr && slot->truncated;
+}
+
+std::size_t ObservedRecord::FieldCount() const noexcept {
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
+  return slot != nullptr ? slot->field_count : 0U;
+}
+
+std::optional<ObservedField> ObservedRecord::Field(std::size_t index) const noexcept {
+  const auto* slot = detail::testing::FindHeldSlot(state_, identity_);
+  if (slot == nullptr || index >= slot->field_count) {
+    return std::nullopt;
+  }
+  const std::byte* const backing = state_->SlotBacking(identity_.index);
+  std::size_t cursor = slot->fields_offset;
+  for (std::size_t current = 0;; ++current) {
+    detail::testing::StoredFieldEntry entry;
+    std::memcpy(&entry, backing + cursor, sizeof(entry));
+    cursor += sizeof(entry);
+    const char* const key = reinterpret_cast<const char*>(backing + cursor);
+    const char* const text = key + entry.key_size;
+    if (current == index) {
+      return ObservedField{
+          .key = std::string_view{key, entry.key_size},
+          .value = FieldValue::FromParts(static_cast<FieldKind>(entry.kind),
+                                         std::string_view{text, entry.text_size}, entry.bits),
+          .mode = static_cast<FieldMode>(entry.mode),
+      };
+    }
+    cursor += static_cast<std::size_t>(entry.key_size) + entry.text_size;
+  }
 }
 
 std::size_t ObservedRecord::SerializedBytes() const noexcept {

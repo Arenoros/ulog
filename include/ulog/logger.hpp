@@ -7,6 +7,7 @@
 #include <string_view>
 #include <type_traits>
 #include <ulog/export.hpp>
+#include <ulog/fields.hpp>
 #include <ulog/level.hpp>
 #include <ulog/source_location.hpp>
 
@@ -65,16 +66,33 @@ class MessageSink final {
     MessageSink* sink_;
   };
 
-  MessageSink(void* context, TextConsumer consume_text) noexcept
-      : context_(context), consume_text_(consume_text) {}
+  MessageSink(void* context, TextConsumer consume_text,
+              FieldConsumer consume_field = &DiscardField) noexcept
+      : context_(context), consume_text_(consume_text), consume_field_(consume_field) {}
 
   void Append(std::string_view text) { consume_text_(context_, text); }
   [[nodiscard]] OutputIterator FormatOutput() noexcept { return OutputIterator{*this}; }
+  [[nodiscard]] FieldWriter Fields() noexcept;
 
  private:
+  static FieldStatus DiscardField(void*, std::string_view, const FieldValue&, FieldMode) noexcept {
+    return FieldStatus::kTruncated;
+  }
+
   void* context_;
   TextConsumer consume_text_;
+  FieldConsumer consume_field_;
 };
+
+struct FieldSinkAccess final {
+  [[nodiscard]] static FieldWriter Make(void* context, FieldConsumer consume) noexcept {
+    return FieldWriter{context, consume};
+  }
+};
+
+inline FieldWriter MessageSink::Fields() noexcept {
+  return FieldSinkAccess::Make(context_, consume_field_);
+}
 
 using MessageBuilder = bool (*)(void*, MessageSink&);
 
@@ -104,6 +122,28 @@ class Logger final {
     }
   }
 
+  /// Like the two-argument form, and first invokes `write_fields(FieldWriter&)` to attach typed
+  /// fields. Both callables run synchronously at most once, after filtering and admission.
+  template <Level kLevel, typename FieldsFactory, typename MessageFactory>
+  void Log(const SourceLocation& source, FieldsFactory&& write_fields,
+           MessageFactory&& make_message) const {
+    static_assert(static_cast<std::uint8_t>(kLevel) <= static_cast<std::uint8_t>(Level::kNone),
+                  "Logger::Log requires a valid ulog::Level enumerator.");
+    using FieldsFactoryType = std::remove_reference_t<FieldsFactory>;
+    using MessageFactoryType = std::remove_reference_t<MessageFactory>;
+    static_assert(std::is_invocable_v<FieldsFactoryType&, FieldWriter&>,
+                  "Logger::Log fields callback must accept ulog::FieldWriter&.");
+    static_assert(std::is_invocable_v<MessageFactoryType&>,
+                  "Logger::Log requires a message factory callable with no arguments.");
+    static_assert(IsTextFactory<MessageFactoryType>(),
+                  "Logger::Log message factory result must be usable as std::string_view.");
+
+    if constexpr (IsCompileTimeEnabled<kLevel>()) {
+      FieldsAndText<FieldsFactoryType, MessageFactoryType> call{write_fields, make_message};
+      LogMessage(kLevel, source, &call, &BuildFieldsAndText<decltype(call)>);
+    }
+  }
+
   friend constexpr bool operator==(Logger, Logger) noexcept = default;
 
  private:
@@ -124,6 +164,22 @@ class Logger final {
   static bool BuildText(void* factory_context, detail::MessageSink& sink) {
     auto& factory = *static_cast<Factory*>(factory_context);
     decltype(auto) message = std::invoke(factory);
+    sink.Append(std::string_view{message});
+    return true;
+  }
+
+  template <typename FieldsFactory, typename MessageFactory>
+  struct FieldsAndText final {
+    FieldsFactory& write_fields;
+    MessageFactory& make_message;
+  };
+
+  template <typename Call>
+  static bool BuildFieldsAndText(void* call_context, detail::MessageSink& sink) {
+    auto& call = *static_cast<Call*>(call_context);
+    FieldWriter fields = sink.Fields();
+    std::invoke(call.write_fields, fields);
+    decltype(auto) message = std::invoke(call.make_message);
     sink.Append(std::string_view{message});
     return true;
   }

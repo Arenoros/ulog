@@ -6,7 +6,9 @@
 #include <exception>
 #include <optional>
 #include <string_view>
+#include <ulog/fields.hpp>
 #include <ulog/level.hpp>
+#include <ulog/log.hpp>
 #include <ulog/logger.hpp>
 #include <ulog/operation.hpp>
 #include <ulog/runtime.hpp>
@@ -51,8 +53,8 @@ constexpr ulog::SourceLocation kSource =
 [[nodiscard]] ulog::RuntimeConfig AllocationConfig() noexcept {
   return ulog::RuntimeConfig{
       .threshold = ulog::Level::kTrace,
-      .payload_capacity_bytes = 512,
-      .maximum_record_bytes = 512,
+      .payload_capacity_bytes = 1024,
+      .maximum_record_bytes = 1024,
       .producer_slots = 1,
       .ingress_cells = 1,
       .control_operations = 2,
@@ -65,16 +67,30 @@ constexpr ulog::SourceLocation kSource =
 [[nodiscard]] bool RunCycle(ulog::Runtime& runtime, const ulog::Logger& logger,
                             ulog::testing::InMemoryDestination& destination,
                             const std::uint64_t expected_sequence) noexcept {
-  logger.Log<ulog::Level::kInfo>(kSource, []() noexcept { return kMessage; });
+  // MSVC source functions are long; the Record bound leaves room for them and every field.
+  LOG_INFO_TO(logger,
+              ulog::Fields{{"string", kMessage},
+                           {"signed", -1},
+                           {"unsigned", expected_sequence},
+                           {"double", 0.5},
+                           {"flag", true},
+                           {"none", ulog::kNull},
+                           {"replaced", 1},
+                           {"replaced", 2}},
+              "{}", kMessage);
   auto drain = runtime.Drain();
   if (!WaitSucceeded(drain)) {
     return false;
   }
 
   std::optional<ulog::testing::ObservedRecord> record = destination.TryTake();
+  if (!record) {
+    return false;
+  }
+  const std::optional<ulog::testing::ObservedField> replaced = record->Field(6);
   // The warm-up cycle loads the platform time-zone state used by local formatting.
-  return record && record->AdmissionSequence() == expected_sequence &&
-         record->Message() == kMessage &&
+  return record->AdmissionSequence() == expected_sequence && record->Message() == kMessage &&
+         record->FieldCount() == 7U && replaced && replaced->value.Int64() == 2 &&
          ulog::FormatUtcTimestamp(record->EventTimestamp()).size == ulog::kTimestampTextBytes &&
          ulog::FormatLocalTimestamp(record->EventTimestamp()).size == ulog::kTimestampTextBytes;
 }
@@ -82,7 +98,7 @@ constexpr ulog::SourceLocation kSource =
 [[nodiscard]] bool Run() {
   ulog::testing::InMemoryDestination destination{{
       .capacity_records = 1,
-      .maximum_record_bytes = 512,
+      .maximum_record_bytes = 1024,
   }};
   auto created = ulog::Runtime::Create(AllocationConfig(), destination);
   if (!created) {

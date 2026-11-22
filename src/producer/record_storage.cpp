@@ -157,9 +157,11 @@ void RecordWriter::MoveFrom(RecordWriter& other) noexcept {
   requested_message_bytes_ = other.requested_message_bytes_;
   source_payload_bytes_ = other.source_payload_bytes_;
   field_payload_bytes_ = other.field_payload_bytes_;
+  dead_field_bytes_ = other.dead_field_bytes_;
   field_count_ = other.field_count_;
   first_field_offset_ = other.first_field_offset_;
   last_field_offset_ = other.last_field_offset_;
+  fields_truncated_ = other.fields_truncated_;
 }
 
 WriteResult RecordWriter::Append(std::string_view value) noexcept {
@@ -212,49 +214,106 @@ WriteResult RecordWriter::AppendNumber(Value value) noexcept {
       std::string_view{buffer.data(), static_cast<std::size_t>(result.ptr - buffer.data())});
 }
 
+namespace {
+
+[[nodiscard]] bool Stored(FieldStatus status) noexcept {
+  return status == FieldStatus::kAdded || status == FieldStatus::kReplaced;
+}
+
+[[nodiscard]] std::size_t StoredValueBytes(const SerializedField& field) noexcept {
+  const auto kind = static_cast<FieldKind>(field.kind);
+  return kind == FieldKind::kString || kind == FieldKind::kJson ? field.value_high : 0U;
+}
+
+}  // namespace
+
 bool RecordWriter::AddField(std::string_view key, std::string_view value) noexcept {
-  return AddFieldBytes(key, FieldKind::kString, Bytes(value), 0, false);
+  return Stored(PutField(key, FieldValue{value}, FieldMode::kReplaceable));
 }
 
 bool RecordWriter::AddField(std::string_view key, std::int64_t value) noexcept {
-  return AddScalarField(key, FieldKind::kInt64, std::bit_cast<std::uint64_t>(value));
+  return Stored(PutField(key, FieldValue{value}, FieldMode::kReplaceable));
 }
 
 bool RecordWriter::AddField(std::string_view key, std::uint64_t value) noexcept {
-  return AddScalarField(key, FieldKind::kUInt64, value);
+  return Stored(PutField(key, FieldValue{value}, FieldMode::kReplaceable));
 }
 
 bool RecordWriter::AddField(std::string_view key, double value) noexcept {
-  return AddScalarField(key, FieldKind::kDouble, std::bit_cast<std::uint64_t>(value));
+  return Stored(PutField(key, FieldValue{value}, FieldMode::kReplaceable));
 }
 
 bool RecordWriter::AddField(std::string_view key, bool value) noexcept {
-  return AddFieldBytes(key, FieldKind::kBool, {}, 0, value);
+  return Stored(PutField(key, FieldValue{value}, FieldMode::kReplaceable));
 }
 
 bool RecordWriter::AddField(std::string_view key, NullValue) noexcept {
-  return AddFieldBytes(key, FieldKind::kNull, {}, 0, false);
+  return Stored(PutField(key, FieldValue{kNull}, FieldMode::kReplaceable));
 }
 
-bool RecordWriter::AddScalarField(std::string_view key, FieldKind kind,
-                                  std::uint64_t bits) noexcept {
-  return AddFieldBytes(key, kind, {}, bits, false);
-}
-
-bool RecordWriter::AddFieldBytes(std::string_view key, FieldKind kind,
-                                 std::span<const std::byte> value, std::uint64_t scalar_bits,
-                                 bool bool_value) noexcept {
-  if (slot_ == nullptr || field_count_ == std::numeric_limits<std::uint32_t>::max() ||
-      key.size() > std::numeric_limits<std::uint32_t>::max() ||
-      value.size() > std::numeric_limits<std::uint32_t>::max() ||
-      key.size() > std::numeric_limits<std::size_t>::max() - kSerializedFieldMetadataBytes ||
-      value.size() >
-          std::numeric_limits<std::size_t>::max() - kSerializedFieldMetadataBytes - key.size()) {
-    return false;
+FieldStatus RecordWriter::PutField(std::string_view key, const FieldValue& value,
+                                   FieldMode mode) noexcept {
+  if (slot_ == nullptr) {
+    return FieldStatus::kTruncated;
   }
-  const std::size_t field_size = kSerializedFieldMetadataBytes + key.size() + value.size();
-  if (field_size > field_tail_ - front_end_) {
-    return false;
+  if (key.empty()) {
+    return FieldStatus::kInvalidKey;
+  }
+  if (IsReservedFieldKey(key)) {
+    return FieldStatus::kReserved;
+  }
+  std::uint32_t previous = 0;
+  // ponytail: linear key scan per field; add an index if call sites carry hundreds of fields.
+  const std::uint32_t existing = FindField(key, previous);
+  if (existing != 0U && (ReadObject<SerializedField>(slot_->storage_.data(), existing).flags &
+                         kFieldFrozenFlag) != 0U) {
+    return FieldStatus::kFrozen;
+  }
+  std::uint8_t flags = mode == FieldMode::kFrozen ? kFieldFrozenFlag : std::uint8_t{0};
+  if (value.Kind() == FieldKind::kBool && value.Bool()) {
+    flags |= kFieldBoolTrueFlag;
+  }
+  const auto offset = WriteFieldNode(key, value, flags);
+  if (!offset) {
+    fields_truncated_ = true;
+    return FieldStatus::kTruncated;
+  }
+  if (existing == 0U) {
+    LinkLast(*offset);
+    return FieldStatus::kAdded;
+  }
+  ReplaceNode(previous, existing, *offset);
+  return FieldStatus::kReplaced;
+}
+
+std::uint32_t RecordWriter::FindField(std::string_view key,
+                                      std::uint32_t& previous) const noexcept {
+  previous = 0;
+  std::uint32_t offset = first_field_offset_;
+  for (std::uint32_t index = 0; index < field_count_ && offset != 0U; ++index) {
+    const auto field = ReadObject<SerializedField>(slot_->storage_.data(), offset);
+    if (Text(slot_->storage_.data(), field.key_offset, field.key_size) == key) {
+      return offset;
+    }
+    previous = offset;
+    offset = field.next_offset;
+  }
+  return 0;
+}
+
+std::optional<std::uint32_t> RecordWriter::WriteFieldNode(std::string_view key,
+                                                          const FieldValue& value,
+                                                          std::uint8_t flags) noexcept {
+  const bool has_text = value.Kind() == FieldKind::kString || value.Kind() == FieldKind::kJson;
+  const std::string_view text = has_text ? value.Text() : std::string_view{};
+  if (field_count_ == std::numeric_limits<std::uint32_t>::max() ||
+      key.size() > kMaximumRecordBytes || text.size() > kMaximumRecordBytes) {
+    return std::nullopt;
+  }
+  const std::size_t field_size = kSerializedFieldMetadataBytes + key.size() + text.size();
+  const std::size_t available = field_tail_ - front_end_;
+  if (field_size > available) {
+    return std::nullopt;
   }
 
   field_tail_ -= field_size;
@@ -264,48 +323,122 @@ bool RecordWriter::AddFieldBytes(std::string_view key, FieldKind kind,
   if (!key.empty()) {
     std::memcpy(slot_->storage_.data() + key_offset, key.data(), key.size());
   }
-  if (!value.empty()) {
-    std::memcpy(slot_->storage_.data() + value_offset, value.data(), value.size());
+  if (!text.empty()) {
+    std::memcpy(slot_->storage_.data() + value_offset, text.data(), text.size());
   }
 
+  const bool scalar = value.Kind() == FieldKind::kInt64 || value.Kind() == FieldKind::kUInt64 ||
+                      value.Kind() == FieldKind::kDouble;
+  const std::uint64_t bits = scalar ? value.UInt64() : 0U;
   const SerializedField field{
       .next_offset = 0,
       .key_offset = key_offset,
       .key_size = static_cast<std::uint32_t>(key.size()),
-      .value_low = value.empty() ? static_cast<std::uint32_t>(scalar_bits) : value_offset,
-      .value_high = value.empty() ? static_cast<std::uint32_t>(scalar_bits >> 32U)
-                                  : static_cast<std::uint32_t>(value.size()),
-      .kind = static_cast<std::uint8_t>(kind),
-      .flags = bool_value ? std::uint8_t{1} : std::uint8_t{0},
+      .value_low = has_text ? value_offset : static_cast<std::uint32_t>(bits),
+      .value_high = has_text ? static_cast<std::uint32_t>(text.size())
+                             : static_cast<std::uint32_t>(bits >> 32U),
+      .kind = static_cast<std::uint8_t>(value.Kind()),
+      .flags = flags,
   };
   WriteObject(slot_->storage_.data(), field_offset, field);
+  ++field_count_;
+  field_payload_bytes_ += key.size() + text.size();
+  return field_offset;
+}
+
+void RecordWriter::LinkLast(std::uint32_t offset) noexcept {
   if (last_field_offset_ == 0U) {
-    first_field_offset_ = field_offset;
+    first_field_offset_ = offset;
   } else {
     auto previous = ReadObject<SerializedField>(slot_->storage_.data(), last_field_offset_);
-    previous.next_offset = field_offset;
+    previous.next_offset = offset;
     WriteObject(slot_->storage_.data(), last_field_offset_, previous);
   }
-  last_field_offset_ = field_offset;
-  ++field_count_;
-  field_payload_bytes_ += key.size() + value.size();
-  return true;
+  last_field_offset_ = offset;
+}
+
+void RecordWriter::ReplaceNode(std::uint32_t previous, std::uint32_t old_offset,
+                               std::uint32_t new_offset) noexcept {
+  std::byte* const storage = slot_->storage_.data();
+  const auto old_field = ReadObject<SerializedField>(storage, old_offset);
+  auto new_field = ReadObject<SerializedField>(storage, new_offset);
+  new_field.next_offset = old_field.next_offset;
+  new_field.replaced_offset = static_cast<std::uint16_t>(old_offset);
+  WriteObject(storage, new_offset, new_field);
+  if (previous == 0U) {
+    first_field_offset_ = new_offset;
+  } else {
+    auto previous_field = ReadObject<SerializedField>(storage, previous);
+    previous_field.next_offset = new_offset;
+    WriteObject(storage, previous, previous_field);
+  }
+  if (last_field_offset_ == old_offset) {
+    last_field_offset_ = new_offset;
+  }
+  const std::size_t old_payload = old_field.key_size + StoredValueBytes(old_field);
+  --field_count_;
+  field_payload_bytes_ -= old_payload;
+  dead_field_bytes_ += kSerializedFieldMetadataBytes + old_payload;
+}
+
+void RecordWriter::DropNewestField() noexcept {
+  // Nodes are written downwards, so the node at the field tail is the newest and always linked.
+  // Dropping a replacement relinks the node it replaced, which is older and therefore still intact.
+  std::byte* const storage = slot_->storage_.data();
+  const auto newest_offset = static_cast<std::uint32_t>(field_tail_);
+  const auto newest = ReadObject<SerializedField>(storage, newest_offset);
+  std::uint32_t previous = 0;
+  std::uint32_t offset = first_field_offset_;
+  while (offset != 0U && offset != newest_offset) {
+    previous = offset;
+    offset = ReadObject<SerializedField>(storage, offset).next_offset;
+  }
+  std::uint32_t successor = newest.next_offset;
+  const std::size_t newest_payload = newest.key_size + StoredValueBytes(newest);
+  if (newest.replaced_offset != 0U) {
+    auto restored = ReadObject<SerializedField>(storage, newest.replaced_offset);
+    restored.next_offset = newest.next_offset;
+    WriteObject(storage, newest.replaced_offset, restored);
+    successor = newest.replaced_offset;
+    const std::size_t restored_payload = restored.key_size + StoredValueBytes(restored);
+    field_payload_bytes_ += restored_payload;
+    dead_field_bytes_ -= kSerializedFieldMetadataBytes + restored_payload;
+    ++field_count_;
+  }
+  if (previous == 0U) {
+    first_field_offset_ = successor;
+  } else {
+    auto previous_field = ReadObject<SerializedField>(storage, previous);
+    previous_field.next_offset = successor;
+    WriteObject(storage, previous, previous_field);
+  }
+  if (last_field_offset_ == newest_offset) {
+    last_field_offset_ = successor != newest.next_offset ? successor : previous;
+  }
+  field_tail_ += kSerializedFieldMetadataBytes + newest_payload;
+  field_payload_bytes_ -= newest_payload;
+  --field_count_;
 }
 
 bool RecordWriter::AddTruncatedField() noexcept {
-  const std::size_t required = kSerializedFieldMetadataBytes + kTruncatedFieldKey.size();
-  const std::size_t available = field_tail_ - front_end_;
-  if (available < required) {
-    const std::size_t reclaimed = required - available;
-    if (reclaimed > message_size_) {
-      return false;
-    }
+  // Make room for the marker from the message tail first, then from the newest fields.
+  if (field_tail_ - front_end_ < kTruncatedFieldBytes) {
+    const std::size_t reclaimed =
+        std::min(kTruncatedFieldBytes - (field_tail_ - front_end_), message_size_);
     message_size_ -= reclaimed;
     message_size_ = ValidUtf8PrefixLength(
         std::span<const std::byte>{slot_->storage_.data() + message_offset_, message_size_});
     front_end_ = message_offset_ + message_size_;
   }
-  return AddField(kTruncatedFieldKey, true);
+  while (field_tail_ - front_end_ < kTruncatedFieldBytes && field_count_ != 0U) {
+    DropNewestField();
+  }
+  const auto offset = WriteFieldNode(kTruncatedFieldKey, FieldValue{true}, kFieldBoolTrueFlag);
+  if (!offset) {
+    return false;
+  }
+  LinkLast(*offset);
+  return true;
 }
 
 StoredRecord RecordWriter::Publish() && noexcept {
@@ -315,7 +448,8 @@ StoredRecord RecordWriter::Publish() && noexcept {
   message_size_ = ValidUtf8PrefixLength(
       std::span<const std::byte>{slot_->storage_.data() + message_offset_, message_size_});
   front_end_ = message_offset_ + message_size_;
-  bool truncated = requested_message_bytes_ != static_cast<std::uint64_t>(message_size_);
+  bool truncated =
+      fields_truncated_ || requested_message_bytes_ != static_cast<std::uint64_t>(message_size_);
   if (truncated && !AddTruncatedField()) {
     Abandon();
     return {};
@@ -333,10 +467,10 @@ StoredRecord RecordWriter::Publish() && noexcept {
   const std::size_t metadata_bytes =
       kSerializedRecordMetadataBytes +
       static_cast<std::size_t>(field_count_) * kSerializedFieldMetadataBytes;
-  const std::size_t serialized_bytes = owned_payload_bytes + metadata_bytes;
+  const std::size_t serialized_bytes = owned_payload_bytes + metadata_bytes + dead_field_bytes_;
   const std::size_t accounting_charge_bytes = AccountingCharge(serialized_bytes);
-  const std::size_t serialized_limit =
-      field_tail_ + kSerializedFieldMetadataBytes * field_count_ + field_payload_bytes_;
+  const std::size_t serialized_limit = field_tail_ + kSerializedFieldMetadataBytes * field_count_ +
+                                       field_payload_bytes_ + dead_field_bytes_;
   if (serialized_bytes > serialized_limit || accounting_charge_bytes == 0U ||
       accounting_charge_bytes > serialized_limit) {
     Abandon();
@@ -473,6 +607,11 @@ bool RecordAppender::AddField(std::string_view key, NullValue value) noexcept {
   return writer_ != nullptr && Writer(writer_)->AddField(key, value);
 }
 
+FieldStatus RecordAppender::PutField(std::string_view key, const FieldValue& value,
+                                     FieldMode mode) noexcept {
+  return writer_ != nullptr ? Writer(writer_)->PutField(key, value, mode) : FieldStatus::kTruncated;
+}
+
 std::string_view FieldView::key() const noexcept {
   const auto field = record::Field(storage_, offset_);
   return record::Text(storage_, field.key_offset, field.key_size);
@@ -524,10 +663,37 @@ std::optional<bool> FieldView::AsBool() const noexcept {
   if (static_cast<FieldKind>(field.kind) != FieldKind::kBool) {
     return std::nullopt;
   }
-  return field.flags != 0U;
+  return (field.flags & record::kFieldBoolTrueFlag) != 0U;
 }
 
 bool FieldView::IsNull() const noexcept { return kind() == FieldKind::kNull; }
+
+std::optional<std::string_view> FieldView::AsJson() const noexcept {
+  const auto field = record::Field(storage_, offset_);
+  if (static_cast<FieldKind>(field.kind) != FieldKind::kJson) {
+    return std::nullopt;
+  }
+  return record::Text(storage_, field.value_low, field.value_high);
+}
+
+bool FieldView::IsFrozen() const noexcept {
+  return (record::Field(storage_, offset_).flags & record::kFieldFrozenFlag) != 0U;
+}
+
+FieldValue FieldView::Value() const noexcept {
+  const auto field = record::Field(storage_, offset_);
+  const auto kind = static_cast<FieldKind>(field.kind);
+  if (kind == FieldKind::kString || kind == FieldKind::kJson) {
+    return FieldValue::FromParts(kind, record::Text(storage_, field.value_low, field.value_high),
+                                 0U);
+  }
+  if (kind == FieldKind::kBool) {
+    return FieldValue{(field.flags & record::kFieldBoolTrueFlag) != 0U};
+  }
+  return FieldValue::FromParts(kind, {},
+                               static_cast<std::uint64_t>(field.value_low) |
+                                   (static_cast<std::uint64_t>(field.value_high) << 32U));
+}
 
 std::optional<FieldView> FieldCursor::Next() noexcept {
   if (storage_ == nullptr || remaining_ == 0U || offset_ == 0U) {

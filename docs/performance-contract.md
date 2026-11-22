@@ -52,7 +52,10 @@ all payload pools, and the independent control and progress reserves.
   evaluate the message expression.
 - After warm-up, Ulog makes no general-purpose heap allocation for disabled
   records or ordinary accepted records that fit the documented native
-  RecordWriter limits.
+  RecordWriter limits, including their typed fields. A field that does not fit
+  is dropped, the Record is marked `ulog.truncated=true`, and retained bytes
+  never exceed the reservation; replaced field values stay accounted until the
+  Record is released.
 - Producer threads do not call Encoder, Sink, libuv, filesystem, or network
   operations.
 - An admitted Record reads its event clock exactly once, after admission

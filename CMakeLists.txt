@@ -140,6 +140,7 @@ install(
 )
 install(
   FILES include/ulog/export.hpp
+        include/ulog/fields.hpp
         include/ulog/level.hpp
         include/ulog/log.hpp
         include/ulog/logger.hpp
