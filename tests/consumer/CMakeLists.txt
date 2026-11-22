@@ -9,6 +9,7 @@ add_executable(ulog-installed-consumer default_logger_probe.cpp main.cpp)
 target_compile_features(ulog-installed-consumer PRIVATE cxx_std_20)
 target_compile_definitions(ulog-installed-consumer PRIVATE ULOG_COMPILE_TIME_MIN_LEVEL=5)
 target_link_libraries(ulog-installed-consumer PRIVATE ulog::ulog)
+ulog_target_source_path_prefixes(ulog-installed-consumer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_executable(ulog-installed-runtime-consumer runtime_main.cpp)
 target_compile_features(ulog-installed-runtime-consumer PRIVATE cxx_std_20)

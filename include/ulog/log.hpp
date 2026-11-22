@@ -97,34 +97,38 @@ struct MacroAccess final {
 
 #define ULOG_DETAIL_MESSAGE_BUILDER(...) ULOG_DETAIL_MESSAGE_BUILDER_IMPL(__COUNTER__, __VA_ARGS__)
 
-#define ULOG_DETAIL_NAMED_LOG_TO(target, level, ...)                                     \
-  do {                                                                                   \
-    ::ulog::detail::MacroAccess::Log((target), level, ::ulog::SourceLocation::Current(), \
-                                     ULOG_DETAIL_MESSAGE_BUILDER(__VA_ARGS__));          \
+#define ULOG_DETAIL_SOURCE_NAME(counter) ULOG_DETAIL_CONCAT(ulog_detail_generated_source_, counter)
+
+// The call-site SourceLocation is a constant, so path trimming adds no per-call work.
+#define ULOG_DETAIL_LOG_TO_IMPL(counter, target, level, ...)                            \
+  static constexpr ::ulog::SourceLocation ULOG_DETAIL_SOURCE_NAME(counter) =            \
+      ULOG_SOURCE_LOCATION();                                                           \
+  ::ulog::detail::MacroAccess::Log((target), (level), ULOG_DETAIL_SOURCE_NAME(counter), \
+                                   ULOG_DETAIL_MESSAGE_BUILDER(__VA_ARGS__))
+
+#define ULOG_DETAIL_LOG_TO(target, level, ...) \
+  ULOG_DETAIL_LOG_TO_IMPL(__COUNTER__, target, level, __VA_ARGS__)
+
+#define ULOG_DETAIL_NAMED_LOG_TO(target, level, ...) \
+  do {                                               \
+    ULOG_DETAIL_LOG_TO(target, level, __VA_ARGS__);  \
   } while (false)
 
 #define ULOG_DETAIL_NAMED_LOG(level, ...) \
   ULOG_DETAIL_NAMED_LOG_TO(::ulog::GetDefaultLogger(), level, __VA_ARGS__)
 
-#define ULOG_DETAIL_ERASED_NAMED_LOG_TO(target, level, ...)                                \
-  do {                                                                                     \
-    if constexpr (false) {                                                                 \
-      ::ulog::detail::MacroAccess::Log((target), level, ::ulog::SourceLocation::Current(), \
-                                       ULOG_DETAIL_MESSAGE_BUILDER(__VA_ARGS__));          \
-    }                                                                                      \
+#define ULOG_DETAIL_ERASED_NAMED_LOG_TO(target, level, ...) \
+  do {                                                      \
+    if constexpr (false) {                                  \
+      ULOG_DETAIL_LOG_TO(target, level, __VA_ARGS__);       \
+    }                                                       \
   } while (false)
 
 #define ULOG_DETAIL_ERASED_NAMED_LOG(level, ...) \
   ULOG_DETAIL_ERASED_NAMED_LOG_TO(::ulog::GetDefaultLogger(), level, __VA_ARGS__)
 
-#define ULOG_DETAIL_GENERIC_LOG_TO(target, level, ...)                                     \
-  do {                                                                                     \
-    ::ulog::detail::MacroAccess::Log((target), (level), ::ulog::SourceLocation::Current(), \
-                                     ULOG_DETAIL_MESSAGE_BUILDER(__VA_ARGS__));            \
-  } while (false)
-
-#define LOG(level, ...) ULOG_DETAIL_GENERIC_LOG_TO(::ulog::GetDefaultLogger(), level, __VA_ARGS__)
-#define LOG_TO(logger, level, ...) ULOG_DETAIL_GENERIC_LOG_TO(logger, level, __VA_ARGS__)
+#define LOG(level, ...) ULOG_DETAIL_NAMED_LOG_TO(::ulog::GetDefaultLogger(), level, __VA_ARGS__)
+#define LOG_TO(logger, level, ...) ULOG_DETAIL_NAMED_LOG_TO(logger, level, __VA_ARGS__)
 
 #if ULOG_COMPILE_TIME_MIN_LEVEL <= 0
 #define LOG_TRACE(...) ULOG_DETAIL_NAMED_LOG(::ulog::Level::kTrace, __VA_ARGS__)

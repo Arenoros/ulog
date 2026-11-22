@@ -9,6 +9,7 @@ add_executable(ulog-conan-package-test src/main.cpp)
 target_compile_features(ulog-conan-package-test PRIVATE cxx_std_20)
 target_compile_definitions(ulog-conan-package-test PRIVATE ULOG_COMPILE_TIME_MIN_LEVEL=5)
 target_link_libraries(ulog-conan-package-test PRIVATE ulog::ulog)
+ulog_target_source_path_prefixes(ulog-conan-package-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 add_test(NAME ulog.conan-package COMMAND ulog-conan-package-test)
 set_tests_properties(ulog.conan-package PROPERTIES TIMEOUT 20)
 

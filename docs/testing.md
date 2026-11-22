@@ -11,7 +11,7 @@ The repository establishes seven independent test categories:
   open/write/close failures, level names, the runtime threshold matrix, Null
   Logger level rejection, the Default Logger level scope, typed fields with their collision, reserved-key,
   ownership, laziness, and truncation policy, the field-rich Raw corpus cases,
-  injected event clocks, UTC and process-local
+  multi-translation-unit source path prefix trimming, injected event clocks, UTC and process-local
   timestamp formatting across calendar boundaries and concurrent calls, and test
   memory resources;
 - `integration`/`package`: install Ulog, configure a copied external project,

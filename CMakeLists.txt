@@ -21,6 +21,7 @@ include(GNUInstallDirs)
 
 include(cmake/UlogOptions.cmake)
 include(cmake/UlogTooling.cmake)
+include(cmake/UlogSourcePaths.cmake)
 
 ulog_define_options()
 
@@ -162,7 +163,7 @@ install(
   DESTINATION "${ULOG_INSTALL_CMAKEDIR}"
 )
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/ulogConfig.cmake"
-              "${CMAKE_CURRENT_BINARY_DIR}/ulogConfigVersion.cmake"
+              "${CMAKE_CURRENT_BINARY_DIR}/ulogConfigVersion.cmake" cmake/UlogSourcePaths.cmake
         DESTINATION "${ULOG_INSTALL_CMAKEDIR}"
 )
 install(FILES LICENSE DESTINATION "${CMAKE_INSTALL_DATADIR}/ulog")

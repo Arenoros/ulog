@@ -166,6 +166,9 @@ class UlogConan(ConanFile):
     def package_info(self):
         self.cpp_info.set_property("cmake_file_name", "ulog")
         self.cpp_info.set_property("cmake_target_name", "ulog::ulog")
+        self.cpp_info.set_property(
+            "cmake_build_modules", [os.path.join("lib", "cmake", "ulog", "UlogSourcePaths.cmake")]
+        )
         self.cpp_info.libs = ["ulog"]
         self.cpp_info.requires = ["fmt::fmt", "libuv::libuv"]
         if self.settings.os == "Linux":

@@ -178,6 +178,34 @@ explicit target or loading the process-wide Default Logger. Generic `LOG` and
 `LOG_TO` are intentionally not erased by this control because their level is a
 runtime expression. Critical remains active at the maximum value `5`.
 
+## Source path prefixes
+
+Call sites record the compiler file path unless a configured prefix matches it
+(`API-006`). Configure the prefixes per target through CMake, in a source tree
+or from an installed CMake or Conan package:
+
+```cmake
+find_package(ulog CONFIG REQUIRED)
+target_link_libraries(app PRIVATE ulog::ulog)
+ulog_target_source_path_prefixes(app PRIVATE "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}")
+```
+
+The function defines `ULOG_SOURCE_PATH_PREFIXES` as a comma-separated list of
+string literals; a build that does not use CMake can define it the same way.
+The first prefix that matches whole leading path components is removed together
+with the separators that follow it, so `/src/app` turns `/src/app/net/io.cpp`
+into `net/io.cpp` but leaves `/src/application/main.cpp` unchanged. A path equal
+to the prefix is not trimmed. On Windows, `/` and `\` match each other, and
+CMake writes prefixes with `/`.
+
+Every `LOG*` macro stores its trimmed `SourceLocation` as a function-local
+`static constexpr` call-site identity, so trimming happens at compile time and
+the logging path does no per-call work. The Record's source path is that
+identity's path. `ULOG_SOURCE_LOCATION()` yields the same constant for code that
+calls `Logger::Log` directly; `SourceLocation::Current()` always keeps the
+compiler path. Use the same prefixes in every translation unit that shares
+inline code containing Ulog macros. The prefix list cannot change at run time.
+
 ## Typed fields
 
 `<ulog/fields.hpp>` attaches ordered typed fields to a Structured Record. A

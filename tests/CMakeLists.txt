@@ -143,6 +143,25 @@ if(ULOG_BUILD_UNIT_TESTS)
     ulog.runtime-threshold PROPERTIES LABELS "unit;integration;runtime;frontend" TIMEOUT 20
   )
 
+  # Multi-translation-unit call sites under configured source path prefixes. The partial prefix is
+  # listed first: it must not trim first_extra/, which no other prefix matches either.
+  add_executable(
+    ulog-source-path-tests source_path/source_path_test.cpp source_path/first/site.cpp
+                           source_path/second/site.cpp source_path/first_extra/site.cpp
+  )
+  target_compile_features(ulog-source-path-tests PRIVATE cxx_std_20)
+  target_link_libraries(
+    ulog-source-path-tests PRIVATE ulog::ulog GTest::gtest_main Threads::Threads
+  )
+  ulog_target_source_path_prefixes(
+    ulog-source-path-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/source_path/first_ex"
+    "${CMAKE_CURRENT_SOURCE_DIR}/source_path/first"
+    "${CMAKE_CURRENT_SOURCE_DIR}/source_path/second/"
+  )
+  ulog_configure_target(ulog-source-path-tests)
+  add_test(NAME ulog.source-path COMMAND ulog-source-path-tests)
+  set_tests_properties(ulog.source-path PROPERTIES LABELS "unit;frontend" TIMEOUT 20)
+
   add_executable(ulog-timestamp-tests timestamp_test.cpp)
   target_compile_features(ulog-timestamp-tests PRIVATE cxx_std_20)
   target_link_libraries(ulog-timestamp-tests PRIVATE ulog::ulog GTest::gtest_main Threads::Threads)

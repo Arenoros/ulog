@@ -8,4 +8,5 @@ if(@ULOG_PACKAGE_REQUIRES_LIBUV@)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/ulogTargets.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/UlogSourcePaths.cmake")
 check_required_components(ulog)

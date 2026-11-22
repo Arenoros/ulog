@@ -65,5 +65,6 @@ int main() {
   if (empty_wait.Message().empty() || empty_wait.HowToFix().empty()) return 15;
   if (empty_callback.status != ulog::OperationCallbackStatus::kInvalidOperation) return 16;
   if (exhausted.Message().empty() || exhausted.HowToFix().empty()) return 17;
+  if (ULOG_SOURCE_LOCATION().GetFileName() != "main.cpp") return 18;
   return 0;
 }
