@@ -45,6 +45,11 @@ endif()
 if(NOT "@CMAKE_CXX_COMPILER@" STREQUAL "")
   list(APPEND _ulog_toolchain_args "-DCMAKE_CXX_COMPILER=@CMAKE_CXX_COMPILER@")
 endif()
+# Toolchain-provided flags such as -stdlib=libc++ select the standard library ABI; the consumer must
+# link against the same one as the installed package.
+if(NOT "@CMAKE_CXX_FLAGS@" STREQUAL "")
+  list(APPEND _ulog_toolchain_args "-DCMAKE_CXX_FLAGS=@CMAKE_CXX_FLAGS@")
+endif()
 if(DEFINED ULOG_TEST_MSVC_RUNTIME_LIBRARY AND NOT ULOG_TEST_MSVC_RUNTIME_LIBRARY STREQUAL "")
   list(APPEND _ulog_toolchain_args "-DCMAKE_MSVC_RUNTIME_LIBRARY=${ULOG_TEST_MSVC_RUNTIME_LIBRARY}")
 endif()
