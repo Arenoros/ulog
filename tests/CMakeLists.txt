@@ -368,6 +368,21 @@ if(ULOG_BUILD_STRESS_TESTS)
     ulog.runtime-stress PROPERTIES LABELS "stress;runtime;concurrency" TIMEOUT 10
   )
 
+  # Model-based oracle: a bounded seed set here; see docs/testing.md for the soak mode.
+  add_executable(ulog-admission-oracle stress/admission_oracle.cpp)
+  target_compile_features(ulog-admission-oracle PRIVATE cxx_std_20)
+  target_include_directories(
+    ulog-admission-oracle PRIVATE "${PROJECT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  target_link_libraries(ulog-admission-oracle PRIVATE ulog::ulog Threads::Threads)
+  ulog_configure_target(ulog-admission-oracle)
+  add_test(NAME ulog.admission-oracle COMMAND ulog-admission-oracle --seeds=16 --events=48
+                                              --require-coverage
+  )
+  set_tests_properties(
+    ulog.admission-oracle PROPERTIES LABELS "stress;runtime;model;concurrency" TIMEOUT 20
+  )
+
   add_executable(ulog-runtime-threshold-stress stress/runtime_threshold_stress.cpp)
   target_compile_features(ulog-runtime-threshold-stress PRIVATE cxx_std_20)
   target_link_libraries(ulog-runtime-threshold-stress PRIVATE ulog::ulog Threads::Threads)

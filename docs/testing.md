@@ -25,7 +25,7 @@ The repository establishes seven independent test categories:
   saturation, FIFO publication and Raw delivery, byte conservation, retirement,
   bounded destruction, concurrent split file appends, Runtime destruction during
   active appends, and race-free weak snapshots, plus completion/callback
-  registration races;
+  registration races, and the [admission model oracle](#admission-model-oracle);
 - `tooling`: regression checks for dependency-graph enforcement and benchmark
   result collection, plus the frontend atomic-load and producer hot-path
   source-shape contract;
@@ -114,6 +114,51 @@ conan create . -pr:h=conan/profiles/cpp20 -pr:b=default --build=missing \
   -o "&:build_benchmarks=True" \
   -o "&:dependency_smoke=True"
 ```
+
+## Admission model oracle
+
+`tests/model/admission_model.hpp` is a sequential reference model of the
+single-route pipeline:
+- producer slots, per-producer ingress lanes, and per-producer credit refilled
+  from the shared payload pool, with the 64-byte charge quantum;
+- drop-newest rejection by reason;
+- worker progress through the encoded destination's slots;
+- in-order retirement of held, completed, failed, and abandoned deliveries;
+- the control reserve, with exact Drain and Shutdown reports.
+
+`ulog-admission-oracle` (`tests/stress/admission_oracle.cpp`) generates a
+seeded event trace and applies it to the model and to a real Runtime with an
+`InMemoryEncodedDestination`. Events log from registered and unregistered
+producer threads, change the delivery mode, complete, fail, or abandon held
+deliveries, take and release frames, start Drains and Shutdowns, and release
+Operation handles. A burst makes every producer thread log at once. It runs
+concurrently only while the route has no free slot and the shared pool covers
+every refill, so each thread has one outcome in every interleaving. Otherwise
+the same attempts run one thread at a time.
+
+After each event the oracle waits until the Runtime matches the model:
+- every snapshot counter and rejection reason, retained records, and logical
+  and physical retained bytes;
+- message-factory evaluations;
+- frame bytes and FIFO order, which is per producer inside a concurrent burst;
+- the exact outcome and report of every Operation.
+
+The default CTest run, `ulog.admission-oracle`, covers 16 seeds of 48 events.
+It also fails when that set leaves any modeled behavior unexercised, such as a
+rejection reason, a pending Shutdown, or an out-of-order completion. It runs
+under ThreadSanitizer in the stress jobs.
+
+A divergence prints the seed, the configuration, a minimized event trace, and a
+`--replay` command that runs exactly that trace again. A longer soak runs more
+seeds and longer traces:
+
+```shell
+ulog-admission-oracle --seeds=5000 --first-seed=1 --events=120
+ulog-admission-oracle --events=48 --replay=228:0,3,7,12
+```
+
+Later shedding policies, reserves, and routes extend the model at its marked
+extension points: `Admit()`, `RouteModel`, and the Operation report builder.
 
 ## Local Linux toolchains
 
