@@ -736,6 +736,46 @@ TEST(RuntimeEncodedTracer, DestructionCancelsHeldDeliveriesAndRejectsLateComplet
   EXPECT_FALSE(destination.TryTake().has_value());
 }
 
+TEST(RuntimeEncodedTracer, ShutdownDeadlineCancelsAHeldDeliveryWithOneResult) {
+  ulog::testing::InMemoryEncodedDestination destination{{
+      .capacity_records = 2,
+      .maximum_record_bytes = 512,
+  }};
+  destination.SetDeliveryMode(ulog::testing::EncodedDeliveryMode::kHold);
+  auto created = ulog::Runtime::Create(DeferredRuntimeConfig(2), destination);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  const ulog::Logger logger = created.runtime->GetLogger();
+
+  LOG_INFO_TO(logger, "held");
+  auto pending = WaitForPendingDelivery(destination, std::chrono::steady_clock::now() + 1s);
+  ASSERT_TRUE(pending.has_value());
+  ASSERT_TRUE(WaitForProcessed(*created.runtime, 1U));
+  auto shutdown = created.runtime->Shutdown(std::chrono::steady_clock::now() + 50ms);
+  // A concurrent Shutdown without a deadline keeps the earlier deadline.
+  auto unbounded = created.runtime->Shutdown();
+  const ulog::OperationResult stopped = WaitForResult(shutdown);
+  EXPECT_EQ(stopped.Outcome(), ulog::OperationOutcome::kCancelled);
+  EXPECT_EQ(stopped.Report(), (ulog::OperationReport{.watermark_records = 1,
+                                                     .processed_records = 1,
+                                                     .processed_bytes = 15,
+                                                     .unfinished_records = 1,
+                                                     .unfinished_bytes = 15}));
+  EXPECT_EQ(WaitForResult(unbounded), stopped);
+  EXPECT_FALSE(created.runtime->GetSnapshot().worker_running);
+
+  // The cancelled delivery rejects its late completion, and later actions see the same stop.
+  EXPECT_EQ(RequireValue(pending).Complete(),
+            ulog::testing::EncodedDeliveryCompletionStatus::kCancelled);
+  EXPECT_FALSE(destination.TryTake().has_value());
+  const ulog::Logger after_stop = created.runtime->GetLogger();
+  LOG_INFO_TO(after_stop, "late");
+  EXPECT_EQ(created.runtime->GetSnapshot().accepted_records, 1U);
+  auto late = created.runtime->Shutdown(std::chrono::steady_clock::now());
+  EXPECT_EQ(WaitForResult(late), stopped);
+  auto drain = created.runtime->Drain();
+  EXPECT_EQ(WaitForResult(drain).Outcome(), ulog::OperationOutcome::kCancelled);
+}
+
 TEST(RuntimeEncodedTracer, CompletionCallbackReceivesTheOperationReport) {
   struct CallbackState final {
     ulog::OperationReport report{};

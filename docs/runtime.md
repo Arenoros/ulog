@@ -395,8 +395,33 @@ control slot is already retained.
   and loop; a close failure completes Shutdown as `kFailed` after delivery.
   Shutdown then completes and the worker exits. Shutdown is not a durable file
   flush.
+- `Shutdown(deadline)` takes a `std::chrono::steady_clock::time_point` and drains
+  the same way until that deadline. If the barrier is not reached by then, the
+  worker cancels the remaining work as destruction does: held deliveries and
+  queued file appends are cancelled, retained ingress Records are discarded, and
+  Shutdown completes as `kCancelled` with exact unfinished Records and bytes. A
+  stalled destination, such as a held delivery or a stuck file write, therefore
+  cannot keep Shutdown pending past its deadline. The worker checks the deadline
+  at least every 10 ms. A Shutdown whose barrier is already reached succeeds even
+  when its deadline has passed. `Shutdown()` without an argument has no deadline
+  and keeps its previous behavior.
+- An append already submitted to the operating system cannot be cancelled. After
+  a cancelled Shutdown the I/O thread finishes that append, so the file may gain a
+  frame that the report counted as unfinished, then closes the file.
+- Every Shutdown of a Runtime completes with the same outcome and report: a later
+  or concurrent call never starts a second stop, and its deadline can only bring
+  the stop forward. Drain and Durable Flush started after a cancelled Shutdown
+  complete as `kCancelled`.
+- After Shutdown the Runtime's Logger reads threshold `kNone`, so later calls,
+  including Default Logger calls that target it, are rejected before evaluation
+  for the cost of one load. Calls that already passed the threshold when admission
+  closed are rejected and counted as `rejected_no_producer`. The Logger state keeps
+  its address while the Runtime is alive, as the
+  [Default Logger lifetime contract](native-frontend.md#default-logger-exchange)
+  requires.
 
-Both actions succeed when their barrier is reached, even if some deliveries failed.
+Drain and Shutdown succeed when their barrier is reached, even if some deliveries
+failed.
 The [`OperationReport`](operations.md#completion-report) returned with the result
 gives exact route accounting for every admitted sequence below the watermark:
 processed, delivered, failed, and unfinished Records and encoded bytes. Records
@@ -414,7 +439,8 @@ and exits, so the file keeps only whole frames. Destruction waits at most
 `destruction_timeout` for the worker and the I/O thread; a thread that has not
 finished detaches while retaining shared internal state so that it cannot access
 the destroyed Runtime object. Call `Shutdown()` and
-observe its successful Operation when delivery is required.
+observe its successful Operation when delivery is required, or
+`Shutdown(deadline)` when the stop must also be bounded.
 
 ## Current boundary
 

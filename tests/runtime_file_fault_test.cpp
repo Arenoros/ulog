@@ -444,4 +444,110 @@ TEST(RuntimeFileFaults, ShutdownWaitsForStartedDurableFlushesAndLaterOnesFail) {
   EXPECT_EQ(sync_operations.load(), syncs);
 }
 
+// Shared by the stuck-write tests: a detached loop thread may read it after its test returns.
+std::atomic<bool> stuck_write_gate{false};
+
+[[nodiscard]] bool WaitForProcessed(const ulog::Runtime& runtime, std::uint64_t records) {
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (runtime.GetSnapshot().processed_records == records) {
+      return true;
+    }
+    std::this_thread::yield();
+  }
+  return false;
+}
+
+[[nodiscard]] bool WaitForLoopOperations(const std::atomic<std::uint64_t>& operations,
+                                         std::uint64_t expected) {
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (operations.load() < expected && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  return operations.load() == expected;
+}
+
+TEST(RuntimeFileFaults, ShutdownDeadlineCancelsAStuckWriteWithExactAccounting) {
+  const TemporaryDirectory directory;
+  const std::filesystem::path path = directory.Path() / "stuck-shutdown.log";
+  stuck_write_gate.store(false);
+  std::atomic<std::uint64_t> loop_operations{0};
+  const FileFaultPlan faults{.gated_write_call = 0,
+                             .write_gate = &stuck_write_gate,
+                             .loop_thread_operations = &loop_operations};
+  auto created = RuntimeFactoryAccess::CreateRawFileRuntime(
+      FaultRuntimeConfig(), ulog::RawFileRouteConfig{.path = path}, faults);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  const ulog::Logger logger = created.runtime->GetLogger();
+
+  LOG_INFO_TO(logger, "first");
+  LOG_INFO_TO(logger, "second");
+  ASSERT_TRUE(WaitForProcessed(*created.runtime, 2U));
+  // The open and the stuck first append have been issued; the second append stays queued.
+  ASSERT_TRUE(WaitForLoopOperations(loop_operations, 2U));
+  const auto started = std::chrono::steady_clock::now();
+  auto shutdown = created.runtime->Shutdown(started + 100ms);
+  const ulog::OperationResult stopped = WaitForResult(shutdown);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  EXPECT_EQ(stopped.Outcome(), ulog::OperationOutcome::kCancelled);
+  const std::uint64_t both = kFirstFrame.size() + kSecondFrame.size();
+  // The stuck append and the queued one have no outcome, so both are unfinished.
+  EXPECT_EQ(stopped.Report(), (ulog::OperationReport{.watermark_records = 2,
+                                                     .processed_records = 2,
+                                                     .processed_bytes = both,
+                                                     .unfinished_records = 2,
+                                                     .unfinished_bytes = both}));
+  EXPECT_GE(elapsed, 100ms);
+  EXPECT_LT(elapsed, 1s);
+  const auto snapshot = created.runtime->GetSnapshot();
+  EXPECT_FALSE(snapshot.worker_running);
+  EXPECT_FALSE(snapshot.admission_open);
+  EXPECT_FALSE(snapshot.route_failed);
+
+  auto repeated = created.runtime->Shutdown();
+  EXPECT_EQ(WaitForResult(repeated), stopped);
+  auto drain = created.runtime->Drain();
+  EXPECT_EQ(WaitForResult(drain).Outcome(), ulog::OperationOutcome::kCancelled);
+
+  // A submitted append cannot be cancelled: it finishes late, and the queued frame never runs.
+  stuck_write_gate.store(true);
+  created.runtime.reset();
+  EXPECT_EQ(ReadFileBytes(path), kFirstFrame);
+}
+
+TEST(RuntimeFileFaults, DestructionStaysBoundedWhileAWriteIsStuck) {
+  const TemporaryDirectory directory;
+  const std::filesystem::path path = directory.Path() / "stuck-destruction.log";
+  stuck_write_gate.store(false);
+  // Static because the detached loop thread may count after this test returns.
+  static std::atomic<std::uint64_t> loop_operations{0};
+  loop_operations.store(0);
+  const FileFaultPlan faults{.gated_write_call = 0,
+                             .write_gate = &stuck_write_gate,
+                             .loop_thread_operations = &loop_operations};
+  auto config = FaultRuntimeConfig();
+  config.destruction_timeout = 200ms;
+  auto created = RuntimeFactoryAccess::CreateRawFileRuntime(
+      config, ulog::RawFileRouteConfig{.path = path}, faults);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  const ulog::Logger logger = created.runtime->GetLogger();
+
+  LOG_INFO_TO(logger, "first");
+  // The open and the submitted append; a queued append would just be cancelled.
+  ASSERT_TRUE(WaitForLoopOperations(loop_operations, 2U));
+  const auto started = std::chrono::steady_clock::now();
+  created.runtime.reset();
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 1s);
+
+  // The detached loop thread finishes the released append and closes the file on its own.
+  stuck_write_gate.store(true);
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (ReadFileBytes(path) != kFirstFrame && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+  }
+  EXPECT_EQ(ReadFileBytes(path), kFirstFrame);
+  // Let the loop thread close the file before the directory is removed.
+  std::this_thread::sleep_for(50ms);
+}
+
 }  // namespace

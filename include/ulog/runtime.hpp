@@ -135,7 +135,13 @@ class Runtime final {
   [[nodiscard]] ULOG_API OperationStartResult Drain() noexcept;
   /// Drains through its watermark, then requests `fsync` for a file route on its I/O loop thread.
   [[nodiscard]] ULOG_API OperationStartResult DurableFlush() noexcept;
+  /// Closes admission and completes once every accepted Record finished; it has no deadline.
   [[nodiscard]] ULOG_API OperationStartResult Shutdown() noexcept;
+  /// Closes admission and drains until `deadline`, then cancels queued and in-flight work and
+  /// completes as kCancelled with exact unfinished accounting. A later Shutdown can only bring
+  /// the deadline forward, and every Shutdown completes with the same result.
+  [[nodiscard]] ULOG_API OperationStartResult
+  Shutdown(std::chrono::steady_clock::time_point deadline) noexcept;
 
  private:
   friend struct detail::RuntimeFactoryAccess;

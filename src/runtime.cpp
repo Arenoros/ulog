@@ -56,6 +56,8 @@ constexpr auto kWorkerRecheckInterval = 10ms;
 constexpr auto kMaximumLifecycleTimeout = std::chrono::hours{24};
 
 constexpr std::size_t kMaximumWriteBuffers = 64;
+constexpr auto kNoShutdownDeadline =
+    std::chrono::steady_clock::time_point::max().time_since_epoch().count();
 
 [[nodiscard]] std::optional<RuntimeCreateFailure> ValidateRuntimeConfig(
     const RuntimeConfig& config) noexcept {
@@ -605,7 +607,9 @@ class RuntimeDomain final {
     };
   }
 
-  [[nodiscard]] OperationStartResult StartAction(ControlActionKind kind) noexcept {
+  [[nodiscard]] OperationStartResult StartAction(
+      ControlActionKind kind, std::chrono::steady_clock::time_point deadline =
+                                  std::chrono::steady_clock::time_point::max()) noexcept {
     auto started = control_reserve_.TryStart();
     if (!started) {
       return {.failure = started.failure};
@@ -627,20 +631,39 @@ class RuntimeDomain final {
     {
       std::lock_guard lock{state_mutex_};
       if (!accepting_actions_) {
-        if (destruction_stop_requested_.load(std::memory_order_acquire)) {
-          immediate_outcome = OperationOutcome::kCancelled;
-        } else if (route_failed_) {
-          immediate_outcome = OperationOutcome::kFailed;
+        if (kind == ControlActionKind::kShutdown && final_shutdown_outcome_) {
+          // Every Shutdown observes the one result of the stop.
+          immediate_outcome = final_shutdown_outcome_;
+          immediate_report = final_shutdown_report_;
         } else {
-          // A stopped file route is closed, so a Durable Flush can no longer sync it.
-          immediate_outcome = ActionOutcome(durability, OperationOutcome::kSucceeded);
+          if (destruction_stop_requested_.load(std::memory_order_acquire) || shutdown_cancelled_) {
+            immediate_outcome = OperationOutcome::kCancelled;
+          } else if (route_failed_) {
+            immediate_outcome = OperationOutcome::kFailed;
+          } else {
+            // A stopped file route is closed, so a Durable Flush can no longer sync it.
+            immediate_outcome = ActionOutcome(durability, OperationOutcome::kSucceeded);
+          }
+          immediate_report = BuildReportLocked(producer_.GetSnapshot().accepted_records);
+          immediate_report.durability = durability;
+          if (kind == ControlActionKind::kShutdown) {
+            // The first completed Shutdown fixes the result, even before the worker completes
+            // the Shutdowns that were still pending.
+            final_shutdown_outcome_ = immediate_outcome;
+            final_shutdown_report_ = immediate_report;
+          }
         }
-        immediate_report = BuildReportLocked(producer_.GetSnapshot().accepted_records);
-        immediate_report.durability = durability;
       } else {
-        if (kind == ControlActionKind::kShutdown && !shutdown_requested_) {
-          shutdown_requested_ = true;
-          CloseAdmissionLocked();
+        if (kind == ControlActionKind::kShutdown) {
+          // A later Shutdown can only bring the deadline forward; only this lock writes it.
+          const auto ticks = deadline.time_since_epoch().count();
+          if (ticks < shutdown_deadline_ticks_.load(std::memory_order_relaxed)) {
+            shutdown_deadline_ticks_.store(ticks, std::memory_order_relaxed);
+          }
+          if (!shutdown_requested_) {
+            shutdown_requested_ = true;
+            CloseAdmissionLocked();
+          }
         }
 
         const std::uint64_t watermark = producer_.GetSnapshot().accepted_records;
@@ -695,10 +718,7 @@ class RuntimeDomain final {
     std::uint64_t observed_epoch = wake_epoch_.load(std::memory_order_acquire);
     while (true) {
       if (DestructionStopRequested()) {
-        PrepareDestructionStop();
-        CompleteActions(OperationOutcome::kCancelled);
-        SettleInFlight();
-        DrainDiscardedRecords();
+        CancelRemainingWork();
         break;
       }
 
@@ -715,6 +735,14 @@ class RuntimeDomain final {
       }
       shutdown_outcome = TryFinishShutdown();
       if (shutdown_outcome) {
+        break;
+      }
+      if (ShutdownDeadlinePassed()) {
+        {
+          std::lock_guard lock{state_mutex_};
+          shutdown_cancelled_ = true;
+        }
+        CancelRemainingWork();
         break;
       }
 
@@ -813,15 +841,30 @@ class RuntimeDomain final {
     return destruction_stop_requested_.load(std::memory_order_acquire);
   }
 
-  void PrepareDestructionStop() noexcept {
+  /// Reads the deadline without the state lock, so the worker path stays lock-free without one.
+  [[nodiscard]] bool ShutdownDeadlinePassed() const noexcept {
+    const auto deadline = shutdown_deadline_ticks_.load(std::memory_order_relaxed);
+    return deadline != kNoShutdownDeadline &&
+           std::chrono::steady_clock::now().time_since_epoch().count() >= deadline;
+  }
+
+  /// Cancels queued and in-flight work for destruction or an expired Shutdown deadline, completes
+  /// every pending action as cancelled with exact reports, and discards retained Records.
+  void CancelRemainingWork() noexcept {
     {
       std::lock_guard lock{state_mutex_};
       accepting_actions_ = false;
+      // As on the successful path, a completed Shutdown already reports a stopped worker.
+      worker_running_.store(false, std::memory_order_release);
       CloseAdmissionLocked();
     }
-    // Stop again on the worker so each completion either precedes every cancellation report or is
-    // rejected as cancelled; the destructor may not have reached its own Stop yet.
+    // Stop on the worker so each completion either precedes every cancellation report or is
+    // rejected as cancelled; the destructor or Shutdown caller may not have stopped it yet.
     route_.Stop();
+    // Writers that passed admission before it closed finish first, so reports cover them.
+    DrainDiscardedRecords();
+    CompleteActions(OperationOutcome::kCancelled);
+    SettleInFlight();
   }
 
   void PrepareRouteFailure() noexcept {
@@ -1067,6 +1110,15 @@ class RuntimeDomain final {
         completion = std::move(active->completion);
         report = ActionReportLocked(*active);
         action_outcome = ActionOutcome(active->durability, outcome);
+        if (active->kind == ControlActionKind::kShutdown) {
+          if (final_shutdown_outcome_) {
+            action_outcome = *final_shutdown_outcome_;
+            report = final_shutdown_report_;
+          } else {
+            final_shutdown_outcome_ = action_outcome;
+            final_shutdown_report_ = report;
+          }
+        }
       }
       static_cast<void>(completion.TryComplete(action_outcome, report));
     }
@@ -1101,6 +1153,12 @@ class RuntimeDomain final {
   bool worker_stopped_{false};
   bool accepting_actions_{true};
   bool shutdown_requested_{false};
+  bool shutdown_cancelled_{false};
+  /// Steady-clock ticks of the earliest Shutdown deadline; written under `state_mutex_`.
+  std::atomic<std::chrono::steady_clock::rep> shutdown_deadline_ticks_{kNoShutdownDeadline};
+  /// The single result that every Shutdown of this Runtime completes with.
+  std::optional<OperationOutcome> final_shutdown_outcome_{};
+  OperationReport final_shutdown_report_{};
   bool close_requested_{false};
   bool route_failed_{false};
   std::int32_t route_io_error_{0};
@@ -1284,6 +1342,10 @@ OperationStartResult Runtime::DurableFlush() noexcept {
 
 OperationStartResult Runtime::Shutdown() noexcept {
   return impl_->domain->StartAction(ControlActionKind::kShutdown);
+}
+
+OperationStartResult Runtime::Shutdown(std::chrono::steady_clock::time_point deadline) noexcept {
+  return impl_->domain->StartAction(ControlActionKind::kShutdown, deadline);
 }
 
 }  // namespace ulog

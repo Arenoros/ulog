@@ -25,7 +25,8 @@ The repository establishes seven independent test categories:
   and logging, stale-target dispatch, producer-lane
   saturation, FIFO publication and Raw delivery, byte conservation, retirement,
   bounded destruction, concurrent split file appends, Runtime destruction during
-  active appends, and race-free weak snapshots, plus completion/callback
+  active appends, Shutdown deadlines raced against producers and held-delivery
+  completions, and race-free weak snapshots, plus completion/callback
   registration races, and the [admission model oracle](#admission-model-oracle);
 - `tooling`: regression checks for dependency-graph enforcement and benchmark
   result collection, plus the frontend atomic-load and producer hot-path
@@ -87,8 +88,8 @@ destructor timing for successful delivery.
 
 File-route tests create unique directories below the system temporary directory
 and remove them afterwards. Deterministic file faults use a private Runtime factory
-that injects open, directory-creation, write, partial-write, `fsync`, and close
-outcomes on the I/O thread and counts filesystem operations per thread and `fsync`
+that injects open, directory-creation, write, partial-write, stuck-write, `fsync`,
+and close outcomes on the I/O thread and counts filesystem operations per thread and `fsync`
 calls, which proves that Drain and Shutdown never call `fsync`; that factory is not
 part of the installed API. In shared builds those tests link a private static copy of the library,
 because the shared library hides its internal symbols.

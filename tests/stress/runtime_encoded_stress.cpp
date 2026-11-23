@@ -546,6 +546,108 @@ constexpr std::size_t kLateCompletionRounds = 32;
   return true;
 }
 
+/// Races Shutdown deadlines against producers and held-delivery completions. Every Shutdown
+/// of a round completes with one balanced result, and each completion is counted exactly once.
+[[nodiscard]] bool RunShutdownDeadlineRaces() {
+  constexpr std::size_t kRounds = 16;
+  constexpr std::size_t kRaceProducers = 2;
+  bool valid = true;
+  for (std::size_t round = 0; valid && round < kRounds; ++round) {
+    ulog::testing::InMemoryEncodedDestination destination{{
+        .capacity_records = 4,
+        .maximum_record_bytes = kMaximumRecordBytes,
+    }};
+    destination.SetDeliveryMode(ulog::testing::EncodedDeliveryMode::kHold);
+    auto config = StressConfig();
+    config.producer_slots = kRaceProducers;
+    config.ingress_cells = 8;
+    config.payload_capacity_bytes = 8U * kMaximumRecordBytes;
+    config.control_operations = 3;
+    auto created = ulog::Runtime::Create(config, destination);
+    if (!created) {
+      return false;
+    }
+
+    std::atomic<bool> stop{false};
+    std::atomic<std::uint64_t> evaluations{0};
+    std::array<std::thread, kRaceProducers> producers;
+    for (auto& producer : producers) {
+      producer = std::thread{[&] {
+        const ulog::Logger logger = created.runtime->GetLogger();
+        // Producers keep logging after Shutdown; those calls must be rejected safely.
+        while (!stop.load(std::memory_order_acquire)) {
+          logger.Log<ulog::Level::kInfo>(kSource, [&]() noexcept {
+            evaluations.fetch_add(1, std::memory_order_relaxed);
+            return kDeferredMessage;
+          });
+        }
+      }};
+    }
+    std::uint64_t completed_by_test = 0;
+    std::uint64_t failed_by_test = 0;
+    std::thread completer{[&] {
+      while (!stop.load(std::memory_order_acquire)) {
+        auto delivery = destination.TryTakePendingDelivery();
+        if (!delivery) {
+          std::this_thread::yield();
+          continue;
+        }
+        const bool fail = FailsDelivery(delivery->AdmissionSequence());
+        const auto status = fail ? delivery->Fail() : delivery->Complete();
+        if (status == ulog::testing::EncodedDeliveryCompletionStatus::kCompleted) {
+          ++(fail ? failed_by_test : completed_by_test);
+        }
+        // Taking observed frames keeps destination slots available for later deliveries.
+        while (destination.TryTake()) {
+        }
+      }
+    }};
+
+    std::this_thread::sleep_for(std::chrono::milliseconds{round % 4U});
+    auto bounded = created.runtime->Shutdown(std::chrono::steady_clock::now() +
+                                             std::chrono::milliseconds{round % 3U});
+    ulog::OperationStartResult unbounded;
+    std::thread second_caller{[&] { unbounded = created.runtime->Shutdown(); }};
+    second_caller.join();
+    ulog::OperationResult first;
+    ulog::OperationResult second;
+    const bool completed = WaitForReport(bounded, first) && WaitForReport(unbounded, second);
+    stop.store(true, std::memory_order_release);
+    for (auto& producer : producers) {
+      producer.join();
+    }
+    completer.join();
+
+    const ulog::OperationReport& report = first.Report();
+    const auto snapshot = created.runtime->GetSnapshot();
+    valid = completed && first == second &&
+            (first.Outcome() == ulog::OperationOutcome::kSucceeded ||
+             first.Outcome() == ulog::OperationOutcome::kCancelled) &&
+            IsBalanced(report) && report.watermark_records == snapshot.accepted_records &&
+            evaluations.load(std::memory_order_relaxed) == snapshot.accepted_records &&
+            report.delivered_records == completed_by_test &&
+            report.failed_records == failed_by_test && !snapshot.worker_running &&
+            !snapshot.admission_open;
+    if (!valid) {
+      std::fprintf(stderr,
+                   "shutdown deadline stress failed in round %zu: outcome=%u/%u accepted=%llu "
+                   "evaluated=%llu watermark=%llu delivered=%llu/%llu failed=%llu/%llu "
+                   "unfinished=%llu\n",
+                   round, static_cast<unsigned>(first.Outcome()),
+                   static_cast<unsigned>(second.Outcome()),
+                   static_cast<unsigned long long>(snapshot.accepted_records),
+                   static_cast<unsigned long long>(evaluations.load()),
+                   static_cast<unsigned long long>(report.watermark_records),
+                   static_cast<unsigned long long>(report.delivered_records),
+                   static_cast<unsigned long long>(completed_by_test),
+                   static_cast<unsigned long long>(report.failed_records),
+                   static_cast<unsigned long long>(failed_by_test),
+                   static_cast<unsigned long long>(report.unfinished_records));
+    }
+  }
+  return valid;
+}
+
 [[nodiscard]] bool RunStress() {
   Watchdog watchdog;
   const bool backpressure_and_fifo = RunConcurrentBackpressureAndFifo();
@@ -555,7 +657,9 @@ constexpr std::size_t kLateCompletionRounds = 32;
   }
   const bool deferred_completion = RunDeferredCompletionRaces();
   const bool late_completion = RunLateCompletionDuringDestruction();
-  return backpressure_and_fifo && bounded_destruction && deferred_completion && late_completion;
+  const bool shutdown_deadline = RunShutdownDeadlineRaces();
+  return backpressure_and_fifo && bounded_destruction && deferred_completion && late_completion &&
+         shutdown_deadline;
 }
 
 }  // namespace

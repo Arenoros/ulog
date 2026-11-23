@@ -13,6 +13,7 @@
 #include <string_view>
 #include <thread>
 #include <ulog/log.hpp>
+#include <ulog/logger.hpp>
 #include <ulog/runtime.hpp>
 #include <ulog/testing/in_memory_destination.hpp>
 #include <utility>
@@ -355,6 +356,78 @@ TEST(RuntimeTracer, DurableFlushStartsWhileSaturatedAndClaimsNoInMemoryDurabilit
   EXPECT_EQ(RequireValue(late_result.completion).Outcome(), OperationOutcome::kSucceeded);
   EXPECT_EQ(RequireValue(late_result.completion).Report().durability,
             OperationDurability::kNotApplicable);
+}
+
+/// Restores the previous Default Logger even when an assertion returns early.
+class DefaultLoggerScope final {
+ public:
+  explicit DefaultLoggerScope(Logger logger) noexcept : previous_(ExchangeDefaultLogger(logger)) {}
+  DefaultLoggerScope(const DefaultLoggerScope&) = delete;
+  DefaultLoggerScope& operator=(const DefaultLoggerScope&) = delete;
+  ~DefaultLoggerScope() { static_cast<void>(ExchangeDefaultLogger(previous_)); }
+
+ private:
+  Logger previous_;
+};
+
+TEST(RuntimeTracer, ShutdownDeadlineStartsWhileSaturatedAndLeavesLoggersSafe) {
+  testing::InMemoryDestination destination{{
+      .capacity_records = 1,
+      .maximum_record_bytes = 512,
+      .start_paused = true,
+  }};
+  auto created = Runtime::Create(SmallRuntimeConfig(), destination);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  Runtime& runtime = *created.runtime;
+  const Logger logger = runtime.GetLogger();
+  const DefaultLoggerScope default_scope{logger};
+
+  LOG_INFO_TO(logger, "accepted");
+  LOG_INFO_TO(logger, "rejected");
+  EXPECT_EQ(runtime.GetSnapshot().dropped_newest_records, 1U);
+
+  // Shutdown uses the control reserve, so it starts while the payload budget is exhausted.
+  auto shutdown = runtime.Shutdown(std::chrono::steady_clock::now() + 30ms);
+  ASSERT_TRUE(shutdown);
+  const auto stopped = shutdown.operation.WaitUntil(std::chrono::steady_clock::now() + 1s);
+  ASSERT_EQ(stopped.status, OperationWaitStatus::kCompleted);
+  EXPECT_EQ(RequireValue(stopped.completion).Outcome(), OperationOutcome::kCancelled);
+  EXPECT_EQ(RequireValue(stopped.completion).Report(),
+            (OperationReport{.watermark_records = 1, .unfinished_records = 1}));
+
+  // Later calls through the Runtime Logger and the Default Logger are rejected before evaluation.
+  std::size_t late_evaluations = 0;
+  LOG_INFO_TO(logger, "late={}", ++late_evaluations);
+  LOG_INFO("late default={}", ++late_evaluations);
+  EXPECT_EQ(late_evaluations, 0U);
+  EXPECT_EQ(GetDefaultLogger(), logger);
+  EXPECT_EQ(logger.SetLevel(Level::kTrace), LevelChangeStatus::kClosed);
+  const auto snapshot = runtime.GetSnapshot();
+  EXPECT_EQ(snapshot.accepted_records, 1U);
+  EXPECT_FALSE(snapshot.admission_open);
+  EXPECT_FALSE(snapshot.worker_running);
+
+  // The discarded Record never reaches the destination.
+  destination.Resume();
+  EXPECT_FALSE(destination.TryTake());
+}
+
+TEST(RuntimeTracer, ShutdownWithAnExpiredDeadlineSucceedsWhenNothingIsPending) {
+  testing::InMemoryDestination destination{{
+      .capacity_records = 1,
+      .maximum_record_bytes = 512,
+  }};
+  auto created = Runtime::Create(SmallRuntimeConfig(), destination);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  Runtime& runtime = *created.runtime;
+  const Logger logger = runtime.GetLogger();
+
+  LOG_INFO_TO(logger, "delivered");
+  auto drain = runtime.Drain();
+  ExpectSucceeded(drain);
+  // The worker finishes a Shutdown whose barrier is already reached before checking the deadline.
+  auto shutdown = runtime.Shutdown(std::chrono::steady_clock::now() - 1s);
+  ExpectSucceeded(shutdown);
 }
 
 TEST(RuntimeTracer, PausedDestinationClaimsNoSlotAcrossWorkerRechecks) {

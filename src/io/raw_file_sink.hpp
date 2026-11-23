@@ -30,6 +30,11 @@ struct FileFaultPlan final {
   /// Zero-based write submission that fails with `write_error` instead of reaching the OS.
   std::uint64_t failing_write_call{kNoInjectedWriteFailure};
   std::int32_t write_error{0};
+  /// Zero-based write submission that first waits on a libuv threadpool thread until
+  /// `*write_gate` is true, like a slow or stuck write that the loop cannot cancel. The gate must
+  /// outlive the loop thread, which a Runtime may detach.
+  std::uint64_t gated_write_call{kNoInjectedWriteFailure};
+  const std::atomic<bool>* write_gate{nullptr};
   /// Reports this libuv error after the file is really closed.
   std::int32_t close_error{0};
   /// Fails every `fsync` with this libuv error instead of reaching the OS.

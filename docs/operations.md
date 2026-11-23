@@ -116,8 +116,11 @@ open. `Runtime::DurableFlush()` reaches the same barrier and then requests `fsyn
 for the file route; it succeeds only when that `fsync` succeeds, or reports
 `kNotApplicable` on a route without durable semantics. `Runtime::Shutdown()`
 closes admission, finishes all already accepted Records, completes, and stops the
-worker. Drain and Shutdown succeed once their barrier is reached; failed deliveries are counted in the report rather
-than turning the barrier into `kFailed`. A successful Drain or Shutdown does not
+worker. `Runtime::Shutdown(deadline)` does the same until its deadline, then
+cancels the remaining work and completes as `kCancelled` with the unfinished
+Records in its report. Every Shutdown of a Runtime completes with the same result.
+Drain and Shutdown succeed once their barrier is reached; failed deliveries are
+counted in the report rather than turning the barrier into `kFailed`. A successful Drain or Shutdown does not
 mean an application has taken or released the destination's observed Records.
 
 `kFailed` reports a route that stopped after an internal encoding failure or a

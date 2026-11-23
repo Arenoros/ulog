@@ -1,5 +1,7 @@
 #include "io/raw_file_sink.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -93,6 +95,7 @@ struct RawFileSinkState final {
   uv_fs_t write_request{};
   uv_fs_t close_request{};
   uv_fs_t sync_request{};
+  uv_work_t gate_work{};
   uv_file file{-1};
 
   mutable std::mutex mutex;
@@ -155,23 +158,14 @@ void OnWriteComplete(uv_fs_t* request) noexcept {
   FinishWriteLocked(state, result);
 }
 
-void StartWriteLocked(RawFileSinkState& state, std::size_t index) noexcept {
+/// Submits the rest of the active frame, capped by the fault plan.
+void SubmitWriteLocked(RawFileSinkState& state) noexcept {
+  const std::size_t index = state.writing_slot;
   auto& slot = state.slots[index];
-  slot.state = FileSlotState::kWriting;
-  state.writing = true;
-  state.writing_slot = index;
-
   std::size_t length = slot.encoded_bytes - slot.written_bytes;
   if (state.faults.maximum_write_bytes != 0U && state.faults.maximum_write_bytes < length) {
     length = state.faults.maximum_write_bytes;
   }
-  const std::uint64_t call = state.write_calls++;
-  ObserveOperation(state.faults);
-  if (call == state.faults.failing_write_call) {
-    FinishWriteLocked(state, state.faults.write_error);
-    return;
-  }
-
   const uv_buf_t buffer =
       uv_buf_init(state.Buffer(index) + slot.written_bytes, static_cast<unsigned int>(length));
   state.write_request.data = &state;
@@ -181,6 +175,43 @@ void StartWriteLocked(RawFileSinkState& state, std::size_t index) noexcept {
   if (error < 0) {
     FinishWriteLocked(state, error);
   }
+}
+
+void WaitForWriteGate(uv_work_t* work) noexcept {
+  const auto& state = *static_cast<RawFileSinkState*>(work->data);
+  while (!state.faults.write_gate->load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+}
+
+void OnWriteGateOpen(uv_work_t* work, int /*status*/) noexcept {
+  auto& state = *static_cast<RawFileSinkState*>(work->data);
+  std::lock_guard lock{state.mutex};
+  SubmitWriteLocked(state);
+}
+
+void StartWriteLocked(RawFileSinkState& state, std::size_t index) noexcept {
+  auto& slot = state.slots[index];
+  slot.state = FileSlotState::kWriting;
+  state.writing = true;
+  state.writing_slot = index;
+
+  const std::uint64_t call = state.write_calls++;
+  ObserveOperation(state.faults);
+  if (call == state.faults.failing_write_call) {
+    FinishWriteLocked(state, state.faults.write_error);
+    return;
+  }
+  if (call == state.faults.gated_write_call && state.faults.write_gate != nullptr) {
+    state.gate_work.data = &state;
+    const int error =
+        uv_queue_work(&state.loop, &state.gate_work, &WaitForWriteGate, &OnWriteGateOpen);
+    if (error < 0) {
+      FinishWriteLocked(state, error);
+    }
+    return;
+  }
+  SubmitWriteLocked(state);
 }
 
 void FinishWriteLocked(RawFileSinkState& state, std::int64_t result) noexcept {
