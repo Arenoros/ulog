@@ -4,8 +4,9 @@ Ulog is a standalone, performance-oriented C++20 logging library under active
 development. Its current production interface exposes native levels, source
 locations, a cheap Logger handle, bounded Operation completion primitives, and
 the basic text/fmt `LOG*` macro family. The installed package also exposes a
-bounded single-route Runtime whose production route appends Raw frames to a file
-through a private libuv loop, plus structured-record and Raw-encoded in-memory
+bounded single-route Runtime whose production route appends TSKV, LTSV, or Raw
+frames to a file through a private libuv loop, plus structured-record and encoded
+in-memory
 test destinations with deferred delivery completion and exact Drain, Durable
 Flush, and Shutdown reports.
 The initial process-wide target is a static Null Logger. Applications can
@@ -54,13 +55,14 @@ LOG_WARNING("retry {} of {}", retry, maximum_retries);
 LOG_ERROR_TO(logger, "request failed: {}", error_text);
 ```
 
-A Runtime writes to a file through its Raw file route:
+A Runtime writes to a file through its file route, here in TSKV:
 
 ```cpp
 #include <ulog/runtime.hpp>
 
-auto created = ulog::Runtime::Create(ulog::RuntimeConfig{},
-                                     ulog::RawFileRouteConfig{.path = "logs/app.log"});
+auto created = ulog::Runtime::Create(
+    ulog::RuntimeConfig{},
+    ulog::RawFileRouteConfig{.path = "logs/app.log", .format = ulog::Format::kTskv});
 if (!created) return Report(created.failure->Message(), created.failure->HowToFix());
 const ulog::Logger logger = created.runtime->GetLogger();
 LOG_INFO_TO(logger, "written by the I/O loop thread");

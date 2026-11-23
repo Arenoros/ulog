@@ -15,7 +15,7 @@
 #include <utility>
 
 #include "control/thread_role.hpp"
-#include "encoding/raw_encoder.hpp"
+#include "encoding/text_encoder.hpp"
 
 #if defined(_WIN32) && !defined(NOMINMAX)
 #define NOMINMAX
@@ -68,7 +68,8 @@ struct RawFileSinkState final {
         create_parent_directories(config.create_parent_directories),
         truncate_on_start(config.truncate_on_start),
         buffer_count(config.write_buffers),
-        buffer_bytes(encoding::MaximumRawEncodedBytes(config.maximum_record_bytes)),
+        buffer_bytes(encoding::MaximumEncodedBytes(config.format, config.maximum_record_bytes)),
+        format(config.format),
         faults(config.faults),
         buffers(std::make_unique<char[]>(buffer_count * buffer_bytes)),
         slots(std::make_unique<FileSlot[]>(buffer_count)) {}
@@ -84,6 +85,7 @@ struct RawFileSinkState final {
   const bool truncate_on_start;
   const std::size_t buffer_count;
   const std::size_t buffer_bytes;
+  const Format format;
   const FileFaultPlan faults;
   std::unique_ptr<char[]> buffers;
   std::unique_ptr<FileSlot[]> slots;
@@ -612,8 +614,8 @@ route::StoreResult FileWriteClaim::StoreRaw(std::uint64_t admission_sequence,
     return {};
   }
   auto& state = *state_;
-  const auto encoded = encoding::EncodeRawRecord(
-      record, std::span<char>{state.Buffer(identity_.index), state.buffer_bytes});
+  const auto encoded = encoding::EncodeRecord(
+      state.format, record, std::span<char>{state.Buffer(identity_.index), state.buffer_bytes});
   if (!encoded.complete) {
     Reset();
     return {};

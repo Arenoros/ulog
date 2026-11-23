@@ -50,7 +50,7 @@ set(ULOG_PRODUCER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/producer/producer_kernel.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/producer/record_storage.cpp"
 )
-set(ULOG_ENCODING_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/encoding/raw_encoder.cpp")
+set(ULOG_ENCODING_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/encoding/text_encoder.cpp")
 set(ULOG_CONTROL_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/control/control_reserve.cpp"
                                  "${CMAKE_CURRENT_SOURCE_DIR}/src/control/thread_role.cpp"
 )
@@ -142,6 +142,7 @@ install(
 install(
   FILES include/ulog/export.hpp
         include/ulog/fields.hpp
+        include/ulog/format.hpp
         include/ulog/level.hpp
         include/ulog/log.hpp
         include/ulog/logger.hpp

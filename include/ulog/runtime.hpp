@@ -8,6 +8,7 @@
 #include <optional>
 #include <string_view>
 #include <ulog/export.hpp>
+#include <ulog/format.hpp>
 #include <ulog/level.hpp>
 #include <ulog/logger.hpp>
 #include <ulog/operation.hpp>
@@ -38,7 +39,7 @@ struct RuntimeConfig final {
   EventClock event_clock{};
 };
 
-/// One immutable route that appends Raw frames to a file through Ulog's private I/O loop.
+/// One immutable route that appends encoded frames to a file through Ulog's private I/O loop.
 struct RawFileRouteConfig final {
   /// File created if missing and opened for append. Must name a file, not a directory.
   std::filesystem::path path{};
@@ -48,6 +49,8 @@ struct RawFileRouteConfig final {
   bool create_parent_directories{true};
   /// Truncates an existing file when the route opens instead of appending after its content.
   bool truncate_on_start{false};
+  /// Encoding of every frame; TSKV, LTSV, and Raw are available.
+  Format format{Format::kRaw};
 };
 
 enum class RuntimeCreateErrorCode : std::uint8_t {
@@ -69,6 +72,7 @@ enum class RuntimeCreateErrorCode : std::uint8_t {
   kIoLoopStartFailed,
   kFileOpenFailed,
   kDirectoryCreateFailed,
+  kUnsupportedFormat,
 };
 
 struct RuntimeCreateFailure final {

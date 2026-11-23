@@ -97,13 +97,14 @@ if(ULOG_BUILD_UNIT_TESTS)
     default_logger_probe.cpp
     default_logger_test.cpp
     fields_test.cpp
+    format_test.cpp
     frontend_test.cpp
     level_test.cpp
     log_macro_test.cpp
     memory_resource_test.cpp
     operation_test.cpp
     producer_kernel_test.cpp
-    raw_encoder_test.cpp
+    text_encoder_test.cpp
     version_test.cpp
   )
   target_compile_features(ulog-unit-tests PRIVATE cxx_std_20)

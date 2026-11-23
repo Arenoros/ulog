@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -12,10 +13,14 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <ulog/fields.hpp>
+#include <ulog/format.hpp>
 #include <ulog/level.hpp>
 #include <ulog/log.hpp>
 #include <ulog/operation.hpp>
 #include <ulog/runtime.hpp>
+#include <ulog/source_location.hpp>
+#include <ulog/timestamp.hpp>
 
 #include "support/temporary_directory.hpp"
 
@@ -98,6 +103,49 @@ TEST(RuntimeFileRoute, AppendsExactFifoRawFramesAndReportsLocalCompletion) {
   EXPECT_FALSE(created.runtime->GetSnapshot().worker_running);
   created.runtime.reset();
   EXPECT_EQ(ReadFileBytes(path), kExpected);
+}
+
+[[nodiscard]] std::int64_t FixedClock(void*) noexcept { return 946'782'245'123'456; }
+
+TEST(RuntimeFileRoute, TskvAndLtsvRoutesWriteTheirFormatWithTheEventTimestamp) {
+  const TemporaryDirectory directory;
+  const std::string timestamp{ulog::FormatLocalTimestamp(946'782'245'123'456).View()};
+  const auto source = ulog::SourceLocation::Custom("src/app.cpp", "Handle", 12);
+  struct Case final {
+    ulog::Format format;
+    std::string expected;
+  };
+  const Case cases[] = {
+      {ulog::Format::kTskv, "tskv\ttimestamp=" + timestamp +
+                                "\tlevel=WARNING\tmodule=Handle ( src/app.cpp:12 )" +
+                                "\tid=7\ttext=first\ntskv\ttimestamp=" + timestamp +
+                                "\tlevel=ERROR\tmodule=Handle ( src/app.cpp:12 )\ttext=second\n"},
+      {ulog::Format::kLtsv, "timestamp:" + timestamp +
+                                "\tlevel:WARNING\tmodule:Handle ( src/app.cpp:12 )" +
+                                "\tid:7\ttext:first\ntimestamp:" + timestamp +
+                                "\tlevel:ERROR\tmodule:Handle ( src/app.cpp:12 )\ttext:second\n"},
+  };
+  for (const Case& test : cases) {
+    const std::filesystem::path path =
+        directory.Path() / (std::string{ulog::ToString(test.format)} + ".log");
+    auto config = FileRuntimeConfig();
+    config.event_clock = ulog::EventClock{.context = nullptr, .now = &FixedClock};
+    auto created = ulog::Runtime::Create(
+        config, ulog::RawFileRouteConfig{.path = path, .write_buffers = 1, .format = test.format});
+    ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+    const ulog::Logger logger = created.runtime->GetLogger();
+    logger.Log<ulog::Level::kWarning>(
+        source, [](ulog::FieldWriter& fields) { fields.Add("id", 7); }, [] { return "first"; });
+    logger.Log<ulog::Level::kError>(source, [] { return "second"; });
+
+    auto shutdown = created.runtime->Shutdown();
+    const ulog::OperationResult stopped = WaitForResult(shutdown);
+    EXPECT_EQ(stopped.Outcome(), ulog::OperationOutcome::kSucceeded);
+    EXPECT_EQ(stopped.Report().delivered_records, 2U);
+    EXPECT_EQ(stopped.Report().delivered_bytes, test.expected.size());
+    created.runtime.reset();
+    EXPECT_EQ(ReadFileBytes(path), test.expected) << ulog::ToString(test.format);
+  }
 }
 
 TEST(RuntimeFileRoute, AppendOpenKeepsExistingBytes) {
@@ -245,6 +293,13 @@ TEST(RuntimeFileRoute, InvalidPathAndCapacityAreRejectedWithGuidance) {
                                        ulog::RawFileRouteConfig{.path = directory.Path() / "a.log",
                                                                 .write_buffers = 65}),
                  ulog::RuntimeCreateErrorCode::kInvalidWriteBuffers, "write_buffers");
+  for (const ulog::Format format : {ulog::Format::kJson, ulog::Format::kJsonYaDeploy,
+                                    std::bit_cast<ulog::Format>(std::uint8_t{9})}) {
+    expect_failure(ulog::Runtime::Create(FileRuntimeConfig(),
+                                         ulog::RawFileRouteConfig{
+                                             .path = directory.Path() / "a.log", .format = format}),
+                   ulog::RuntimeCreateErrorCode::kUnsupportedFormat, "Format::kTskv");
+  }
   auto invalid_runtime = FileRuntimeConfig();
   invalid_runtime.worker_threads = 2;
   expect_failure(ulog::Runtime::Create(

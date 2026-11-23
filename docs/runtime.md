@@ -2,12 +2,12 @@
 
 The installed package provides a concrete, bounded `ulog::Runtime` that moves
 accepted native Records through one FIFO worker route. The production route is the
-[Raw file route](#raw-file-route), which appends encoded frames to a file through
-Ulog's private libuv loop. Two in-memory test destinations,
+[Raw file route](#raw-file-route), which appends frames encoded in one of the
+[formats](#formats) to a file through Ulog's private libuv loop. Two in-memory test destinations,
 `ulog::testing::InMemoryDestination` and
 `ulog::testing::InMemoryEncodedDestination`, make the same pipeline observable. The structured destination exposes
-Record contents; the encoded destination runs the built-in Raw encoder on the
-worker, submits each frame as one serialized delivery, and exposes exact bytes.
+Record contents; the encoded destination runs the built-in encoder of its format
+on the worker, submits each frame as one serialized delivery, and exposes exact bytes.
 Its deliveries can complete inline, fail inline, or stay held until the test
 completes them. These are executable Runtime test seams: they make admission,
 ownership, ordering, encoding, delivery completion, control, and shutdown
@@ -174,9 +174,10 @@ of [ADR 0010](adr/0010-bound-pipeline-memory-and-configure-shedding.md).
 `InMemoryEncodedDestination` has the same one-shot attachment, pause, FIFO, and
 slot-pinning behavior. Its `maximum_record_bytes` is the Structured Record bound,
 not an independently undersized output limit. Construction derives each encoded
-slot as `2 * maximum_record_bytes + 11` bytes, checks all arithmetic before
-allocation, and reports the value through `MaximumEncodedRecordBytes()`. This
-reserve covers full Raw escaping and framing, so every valid Record either commits
+slot from the worst-case frame of its [format](#formats), `2 * maximum_record_bytes
++ 11` bytes for Raw, checks all arithmetic before allocation, and reports the value
+through `MaximumEncodedRecordBytes()`. This reserve covers full escaping and
+framing, so every valid Record either commits
 one complete frame or triggers the terminal internal-failure path; it is never
 silently truncated a second time.
 
@@ -277,10 +278,66 @@ creation: it adds no lock, allocation, or shared counter to the producer path.
 `FormatUtcTimestamp` for UTC and `FormatLocalTimestamp` for the process-local
 zone. See [Native frontend](native-frontend.md#event-timestamps).
 
+## Formats
+
+`<ulog/format.hpp>` defines `ulog::Format` with the five baseline names `tskv`,
+`ltsv`, `raw`, `json`, and `json_yadeploy`. `ParseFormat()` accepts exactly
+those lowercase names; anything else is rejected, and `HowToFix()` lists the
+accepted set. `ToString()` returns the canonical name.
+
+Each encoded route selects its format at construction through
+`RawFileRouteConfig::format` or `InMemoryEncodedDestinationConfig::format`. Both
+default to `Format::kRaw`, so existing configurations keep their output. TSKV,
+LTSV, and Raw are available. Until the JSON encoders land, a file route with a
+JSON format, or a value that is not a `Format` enumerator, fails `Create` as
+`kUnsupportedFormat`; the encoded destination constructor throws
+`std::invalid_argument` for the same values.
+
+A TSKV frame is one line:
+
+```text
+tskv<TAB>timestamp=2000-01-02T03:04:05.123456<TAB>level=INFO<TAB>module=Handle ( src/app.cpp:12 )<TAB>id=7<TAB>text=message<LF>
+```
+
+- `timestamp` is the Record's event timestamp in the process-local time zone with
+  six microsecond digits, formatted as by `FormatLocalTimestamp()`. An instant the
+  platform cannot convert, such as one before 1970 on Windows, leaves the value
+  empty.
+- `level` is the uppercase level name.
+- `module` is `Function ( path:line )` from the Record's source location. The
+  function name is the stored one: `SourceLocation::Current()` records the
+  compiler's `std::source_location` name, which GCC, Clang, and MSVC render as a
+  full signature, while `SourceLocation::Custom()` stores the name it is given.
+- The Record's fields follow in Record order, then `text`.
+
+LTSV writes the same pairs without the `tskv` prefix and separates each key from
+its value with `:` instead of `=`. All three formats share the escaping and value
+forms described under [Observing Raw bytes](#observing-raw-bytes); `:` is never
+escaped. Raw is TSKV without `timestamp`, `level`, and `module`.
+
+Encoding runs only on the worker, never allocates once warmed, and keeps
+admission order. It sizes a frame before writing it, so a frame is written whole
+or not at all. Each route buffer holds the worst-case frame of its format:
+
+| Format | Worst-case frame bytes |
+| --- | --- |
+| Raw | `2 * maximum_record_bytes + 11` |
+| TSKV | `2 * maximum_record_bytes + 87` |
+| LTSV | `2 * maximum_record_bytes + 82` |
+
+Every serialized byte of the message, source path, function name, field keys,
+and string values encodes to at most two bytes. Each field carries 24 bytes of
+serialized metadata, which cover its two separators and a number of at most 24
+characters, so the variable part never exceeds twice the serialized Record. The
+constant covers the prefix, the `text` key, the final LF, and for TSKV and LTSV
+the `timestamp`, `level`, and `module` keys, a 26-byte timestamp, an 8-byte level
+name, the module punctuation, and a 10-digit line number. A frame that still did
+not fit would fail encoding with exact accounting and never be written partially.
+
 ## Raw file route
 
-`Runtime::Create(RuntimeConfig, RawFileRouteConfig)` builds one immutable Raw route
-that appends every accepted Record to a file:
+`Runtime::Create(RuntimeConfig, RawFileRouteConfig)` builds one immutable route
+that appends every accepted Record to a file in its `format`, Raw by default:
 
 ```cpp
 auto created = ulog::Runtime::Create(
@@ -319,8 +376,8 @@ Every create, open, truncate, inspection, and separator step runs on the route's
 I/O thread before `Create` returns.
 
 `write_buffers` is the number of Runtime-owned complete-frame buffers, from 1
-through 64. Each holds one Raw frame of up to `2 * maximum_record_bytes + 11`
-bytes, so the setting bounds queued and in-flight appends and their bytes. The
+through 64. Each holds one frame of the route's [worst-case size](#formats), so
+the setting bounds queued and in-flight appends and their bytes. The
 buffers, their metadata, and the loop state are allocated during `Create` and
 reported in `fixed_backing_bytes`.
 
@@ -445,11 +502,12 @@ observe its successful Operation when delivery is required, or
 ## Current boundary
 
 Each Runtime intentionally has one immutable route, one worker, and drop-newest
-admission. The private route selects the Raw file route, the structured in-memory
-copy, or the Raw-encoded in-memory destination at construction. Its fixed topology follows
+admission. The private route selects the file route, the structured in-memory
+copy, or the encoded in-memory destination at construction. Its fixed topology follows
 [ADR 0015](adr/0015-keep-route-topology-immutable.md). The following remain later
 roadmap work:
 
+- the JSON and YaDeploy JSON encoders;
 - generic Encoder, Sink, and ContextProvider extension seams;
 - Reopen and rotation;
 - network and IPC delivery;

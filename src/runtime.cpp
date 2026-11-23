@@ -22,6 +22,7 @@
 
 #include "control/control_reserve.hpp"
 #include "control/thread_role.hpp"
+#include "encoding/text_encoder.hpp"
 #include "io/raw_file_sink.hpp"
 #include "producer/producer_kernel.hpp"
 #include "route/delivery_accounting.hpp"
@@ -149,6 +150,8 @@ template <typename Destination>
       return "Runtime could not create, open, truncate, or separate the file route path.";
     case RuntimeCreateErrorCode::kDirectoryCreateFailed:
       return "Runtime could not create a missing parent directory of the file route path.";
+    case RuntimeCreateErrorCode::kUnsupportedFormat:
+      return "The route format has no encoder in this build; JSON formats are not available yet.";
   }
   return "Runtime creation failed.";
 }
@@ -199,6 +202,8 @@ template <typename Destination>
       return "Check IoErrorName(io_error): grant write permission on the nearest existing parent "
              "directory, remove a file that occupies a directory name, or create the parent "
              "directory beforehand, then retry.";
+    case RuntimeCreateErrorCode::kUnsupportedFormat:
+      return "Set the route format to Format::kTskv, Format::kLtsv, or Format::kRaw.";
   }
   return "Correct the Runtime configuration and retry.";
 }
@@ -224,6 +229,9 @@ template <typename Destination>
   }
   if (route.write_buffers == 0U || route.write_buffers > kMaximumWriteBuffers) {
     return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidWriteBuffers};
+  }
+  if (!detail::encoding::IsEncodable(route.format)) {
+    return RuntimeCreateFailure{RuntimeCreateErrorCode::kUnsupportedFormat};
   }
   return std::nullopt;
 }
@@ -1236,6 +1244,7 @@ struct Runtime::Impl final {
                                      .maximum_record_bytes = config.maximum_record_bytes,
                                      .create_parent_directories = route.create_parent_directories,
                                      .truncate_on_start = route.truncate_on_start,
+                                     .format = route.format,
                                      .faults = faults});
     } catch (const std::bad_alloc&) {
       result.failure.emplace(RuntimeCreateErrorCode::kAllocationFailed);

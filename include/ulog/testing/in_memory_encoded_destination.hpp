@@ -6,6 +6,7 @@
 #include <optional>
 #include <string_view>
 #include <ulog/export.hpp>
+#include <ulog/format.hpp>
 
 namespace ulog::detail::testing {
 
@@ -24,6 +25,8 @@ struct InMemoryEncodedDestinationConfig final {
   std::size_t capacity_records{64};
   std::size_t maximum_record_bytes{16'384};
   bool start_paused{false};
+  /// Encoding of every frame; TSKV, LTSV, and Raw are available.
+  Format format{Format::kRaw};
 };
 
 /// Selects how the destination completes each later delivery submitted by its Runtime.
@@ -110,9 +113,10 @@ class ObservedEncodedRecord final {
 
 class InMemoryEncodedDestination final {
  public:
-  /// Constructs a bounded Raw destination and preallocates all frame storage.
+  /// Constructs a bounded encoded destination and preallocates all frame storage.
   ///
-  /// Invalid or overflowing bounds throw std::invalid_argument before backing allocation.
+  /// Invalid or overflowing bounds and a format without an encoder, such as JSON, throw
+  /// std::invalid_argument before backing allocation.
   explicit ULOG_API InMemoryEncodedDestination(InMemoryEncodedDestinationConfig config);
 
   /// Copies share one bounded destination state and its encoded frames.
@@ -131,8 +135,9 @@ class InMemoryEncodedDestination final {
   ULOG_API void Resume() noexcept;
   [[nodiscard]] ULOG_API std::size_t Capacity() const noexcept;
   [[nodiscard]] ULOG_API std::size_t MaximumRecordBytes() const noexcept;
-  /// Returns the internally derived complete Raw frame bound for each slot.
+  /// Returns the internally derived complete frame bound of the configured format for each slot.
   [[nodiscard]] ULOG_API std::size_t MaximumEncodedRecordBytes() const noexcept;
+  [[nodiscard]] ULOG_API Format GetFormat() const noexcept;
 
  private:
   friend class ulog::detail::testing::InMemoryEncodedDestinationAccess;

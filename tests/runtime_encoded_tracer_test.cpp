@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -11,10 +12,12 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <ulog/format.hpp>
 #include <ulog/level.hpp>
 #include <ulog/log.hpp>
 #include <ulog/operation.hpp>
 #include <ulog/runtime.hpp>
+#include <ulog/source_location.hpp>
 #include <ulog/testing/in_memory_encoded_destination.hpp>
 
 namespace ulog {
@@ -334,6 +337,39 @@ TEST(RuntimeEncodedTracer, ObservationRemainsValidAfterDestinationAndRuntimeDest
   EXPECT_EQ(RequireValue(observed).Bytes(), "tskv\ttext=survives\n");
 }
 
+TEST(RuntimeEncodedTracer, DestinationEncodesItsConfiguredFormatAndRejectsJson) {
+  ulog::testing::InMemoryEncodedDestination destination{{
+      .capacity_records = 2,
+      .maximum_record_bytes = 512,
+      .format = ulog::Format::kLtsv,
+  }};
+  EXPECT_EQ(destination.GetFormat(), ulog::Format::kLtsv);
+  EXPECT_EQ(destination.MaximumEncodedRecordBytes(), 1'106U);
+
+  auto created = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  const auto source = ulog::SourceLocation::Custom("x.cpp", "Run", 3);
+  created.runtime->GetLogger().Log<ulog::Level::kInfo>(source, [] { return "ltsv"; });
+  auto shutdown = created.runtime->Shutdown();
+  ExpectSucceeded(shutdown);
+  auto frame = destination.TryTake();
+  ASSERT_TRUE(frame.has_value());
+  const std::string_view bytes = RequireValue(frame).Bytes();
+  EXPECT_TRUE(bytes.starts_with("timestamp:")) << bytes;
+  EXPECT_TRUE(bytes.ends_with("\tlevel:INFO\tmodule:Run ( x.cpp:3 )\ttext:ltsv\n")) << bytes;
+
+  for (const ulog::Format format : {ulog::Format::kJson, ulog::Format::kJsonYaDeploy,
+                                    std::bit_cast<ulog::Format>(std::uint8_t{9})}) {
+    try {
+      ulog::testing::InMemoryEncodedDestination rejected{{.format = format}};
+      ADD_FAILURE() << "format " << static_cast<int>(format) << " was accepted";
+    } catch (const std::invalid_argument& error) {
+      EXPECT_NE(std::string_view{error.what()}.find("Format::kTskv"), std::string_view::npos)
+          << error.what();
+    }
+  }
+}
+
 TEST(RuntimeEncodedTracer, DestinationBoundIsDerivedAndStateAttachesOnlyOnce) {
   ulog::testing::InMemoryEncodedDestination destination{{
       .capacity_records = 2,
@@ -342,6 +378,7 @@ TEST(RuntimeEncodedTracer, DestinationBoundIsDerivedAndStateAttachesOnlyOnce) {
   EXPECT_EQ(destination.Capacity(), 2U);
   EXPECT_EQ(destination.MaximumRecordBytes(), 512U);
   EXPECT_EQ(destination.MaximumEncodedRecordBytes(), 1'035U);
+  EXPECT_EQ(destination.GetFormat(), ulog::Format::kRaw);
 
   auto first = ulog::Runtime::Create(SmallRuntimeConfig(), destination);
   ASSERT_TRUE(first) << (first.failure ? first.failure->Message() : "missing Runtime");

@@ -10,7 +10,7 @@
 #include <string_view>
 #include <utility>
 
-#include "encoding/raw_encoder.hpp"
+#include "encoding/text_encoder.hpp"
 #include "testing/in_memory_encoded_destination_access.hpp"
 
 namespace ulog::detail::testing {
@@ -62,8 +62,12 @@ struct EncodedSlotMetadata final {
         "maximum_record_bytes must be a 64-byte multiple from 128 through 16384;",
         "maximum_record_bytes to the same supported bound used by Runtime");
   }
+  if (!encoding::IsEncodable(config.format)) {
+    ThrowInvalidConfiguration("format has no encoder in this build;",
+                              "format to Format::kTskv, Format::kLtsv, or Format::kRaw");
+  }
   const std::size_t maximum_encoded_record_bytes =
-      encoding::MaximumRawEncodedBytes(config.maximum_record_bytes);
+      encoding::MaximumEncodedBytes(config.format, config.maximum_record_bytes);
   const std::size_t maximum_size = std::numeric_limits<std::size_t>::max();
   if (maximum_encoded_record_bytes == 0U ||
       config.capacity_records > maximum_size / maximum_encoded_record_bytes ||
@@ -102,11 +106,13 @@ struct InMemoryEncodedDestinationState final {
                                   std::size_t validated_fixed_backing_bytes)
       : backing(std::make_unique<char[]>(
             config.capacity_records *
-            encoding::MaximumRawEncodedBytes(config.maximum_record_bytes))),
+            encoding::MaximumEncodedBytes(config.format, config.maximum_record_bytes))),
         slots(std::make_unique<EncodedSlotMetadata[]>(config.capacity_records)),
         capacity_records(config.capacity_records),
         maximum_record_bytes(config.maximum_record_bytes),
-        maximum_encoded_record_bytes(encoding::MaximumRawEncodedBytes(config.maximum_record_bytes)),
+        maximum_encoded_record_bytes(
+            encoding::MaximumEncodedBytes(config.format, config.maximum_record_bytes)),
+        format(config.format),
         fixed_backing_bytes(validated_fixed_backing_bytes),
         paused(config.start_paused) {}
 
@@ -147,6 +153,7 @@ struct InMemoryEncodedDestinationState final {
   const std::size_t capacity_records;
   const std::size_t maximum_record_bytes;
   const std::size_t maximum_encoded_record_bytes;
+  const Format format;
   const std::size_t fixed_backing_bytes;
   EncodedDestinationWake wake{};
   ulog::testing::EncodedDeliveryMode delivery_mode{
@@ -230,8 +237,8 @@ EncodedDestinationStoreResult EncodedDestinationWriteClaim::StoreRaw(
   }
 
   auto& slot = state_->slots[identity_.index];
-  const auto encoded = encoding::EncodeRawRecord(
-      record,
+  const auto encoded = encoding::EncodeRecord(
+      state_->format, record,
       std::span<char>{state_->SlotBacking(identity_.index), state_->maximum_encoded_record_bytes});
   if (!encoded.complete) {
     Reset();
@@ -579,6 +586,10 @@ std::size_t InMemoryEncodedDestination::MaximumRecordBytes() const noexcept {
 
 std::size_t InMemoryEncodedDestination::MaximumEncodedRecordBytes() const noexcept {
   return state_ != nullptr ? state_->maximum_encoded_record_bytes : 0U;
+}
+
+Format InMemoryEncodedDestination::GetFormat() const noexcept {
+  return state_ != nullptr ? state_->format : Format::kRaw;
 }
 
 }  // namespace ulog::testing

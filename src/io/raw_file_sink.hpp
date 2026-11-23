@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <ulog/format.hpp>
 
 #include "producer/producer_kernel.hpp"
 #include "route/delivery_accounting.hpp"
@@ -67,6 +68,7 @@ struct FileSinkConfig final {
   std::size_t maximum_record_bytes{0};
   bool create_parent_directories{true};
   bool truncate_on_start{false};
+  Format format{Format::kRaw};
   FileFaultPlan faults{};
 };
 

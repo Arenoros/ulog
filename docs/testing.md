@@ -6,7 +6,9 @@ The repository establishes seven independent test categories:
   Null-Logger allocation/ownership guarantees, atomic Default Logger exchange,
   stale-target completion, bounded producer transactions, Operation polling,
   deadlines, callback dispatch, control-reserve exhaustion, structured and Raw
-  in-memory Runtime lifecycle, saturation, exact encoding, Raw file-route
+  in-memory Runtime lifecycle, saturation, exact encoding, format names, TSKV and
+  LTSV encoding with every level, module escaping, whole-frame failure, and
+  derived worst-case frame bounds, Raw file-route
   append, truncate-on-start, the non-empty-file separator, parent-directory
   creation, Unicode paths, validation and open errors, injected partial writes and
   open/directory/write/close failures, level names, the runtime threshold matrix, Null
@@ -17,7 +19,9 @@ The repository establishes seven independent test categories:
   memory resources;
 - `integration`/`package`: install Ulog, configure a copied external project,
   link only `ulog::ulog`, and exercise the frontend, in-memory Runtime tracers,
-  and a Raw file route writing a temporary file through installed public headers;
+  a Raw file route writing a temporary file, and every committed `tskv-*` and
+  `ltsv-*` corpus case with an injected clock, the UTC time zone, and a normalized
+  source path, through installed public headers;
 - `dependencies`: compile and run the production fmt integration together with
   the private libuv dependency;
 - `stress`: deterministic concurrent checks for allocation instrumentation,
