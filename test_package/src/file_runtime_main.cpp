@@ -14,10 +14,9 @@ namespace {
 
 using namespace std::chrono_literals;
 
-[[nodiscard]] std::filesystem::path UniqueLogPath() {
+[[nodiscard]] std::filesystem::path UniqueLogDirectory() {
   const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-  return std::filesystem::temp_directory_path() /
-         ("ulog-file-consumer-" + std::to_string(nonce) + ".log");
+  return std::filesystem::temp_directory_path() / ("ulog-file-consumer-" + std::to_string(nonce));
 }
 
 [[nodiscard]] int WriteThroughRuntime(const std::filesystem::path& path) {
@@ -58,9 +57,11 @@ using namespace std::chrono_literals;
 }  // namespace
 
 int main() {
-  const std::filesystem::path path = UniqueLogPath();
+  // The route creates the missing directories itself.
+  const std::filesystem::path directory = UniqueLogDirectory();
+  const std::filesystem::path path = directory / "logs" / "app.log";
   std::error_code ignored;
-  std::filesystem::remove(path, ignored);
+  std::filesystem::remove_all(directory, ignored);
 
   int status = WriteThroughRuntime(path);
   if (status == 0) {
@@ -69,6 +70,6 @@ int main() {
                             std::istreambuf_iterator<char>{}};
     if (bytes != "tskv\ttext=first\ntskv\ttext=second 2\n") status = 5;
   }
-  std::filesystem::remove(path, ignored);
+  std::filesystem::remove_all(directory, ignored);
   return status;
 }

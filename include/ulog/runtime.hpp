@@ -40,10 +40,14 @@ struct RuntimeConfig final {
 
 /// One immutable route that appends Raw frames to a file through Ulog's private I/O loop.
 struct RawFileRouteConfig final {
-  /// File created if missing and always opened for append. Must name a file, not a directory.
+  /// File created if missing and opened for append. Must name a file, not a directory.
   std::filesystem::path path{};
   /// Runtime-owned complete-frame buffers; bounds queued and in-flight appends and their bytes.
   std::size_t write_buffers{8};
+  /// Creates missing parent directories before opening; existing directories are left unchanged.
+  bool create_parent_directories{true};
+  /// Truncates an existing file when the route opens instead of appending after its content.
+  bool truncate_on_start{false};
 };
 
 enum class RuntimeCreateErrorCode : std::uint8_t {
@@ -64,11 +68,13 @@ enum class RuntimeCreateErrorCode : std::uint8_t {
   kInvalidWriteBuffers,
   kIoLoopStartFailed,
   kFileOpenFailed,
+  kDirectoryCreateFailed,
 };
 
 struct RuntimeCreateFailure final {
   RuntimeCreateErrorCode code{RuntimeCreateErrorCode::kAllocationFailed};
-  /// Negative libuv error for I/O loop or file-open failures; zero otherwise. See IoErrorName().
+  /// Negative libuv error for I/O loop, directory, or file-open failures; zero otherwise.
+  /// See IoErrorName().
   std::int32_t io_error{0};
 
   [[nodiscard]] ULOG_API std::string_view Message() const noexcept;

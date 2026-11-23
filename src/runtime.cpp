@@ -144,7 +144,9 @@ template <typename Destination>
     case RuntimeCreateErrorCode::kIoLoopStartFailed:
       return "Runtime could not start its private I/O loop thread before startup_timeout.";
     case RuntimeCreateErrorCode::kFileOpenFailed:
-      return "Runtime could not create or append-open the file route path.";
+      return "Runtime could not create, open, truncate, or separate the file route path.";
+    case RuntimeCreateErrorCode::kDirectoryCreateFailed:
+      return "Runtime could not create a missing parent directory of the file route path.";
   }
   return "Runtime creation failed.";
 }
@@ -188,8 +190,13 @@ template <typename Destination>
       return "Check IoErrorName(io_error); make an OS thread and event handle available or "
              "raise startup_timeout, then retry.";
     case RuntimeCreateErrorCode::kFileOpenFailed:
-      return "Check IoErrorName(io_error): create the parent directory, grant write permission, "
-             "or choose a path that is not a directory, then retry.";
+      return "Check IoErrorName(io_error): create the parent directory or enable "
+             "create_parent_directories, grant write permission, or choose a path that is not a "
+             "directory, then retry.";
+    case RuntimeCreateErrorCode::kDirectoryCreateFailed:
+      return "Check IoErrorName(io_error): grant write permission on the nearest existing parent "
+             "directory, remove a file that occupies a directory name, or create the parent "
+             "directory beforehand, then retry.";
   }
   return "Correct the Runtime configuration and retry.";
 }
@@ -226,6 +233,8 @@ template <typename Destination>
       break;
     case detail::io::FileSinkStartStatus::kOpenFailed:
       return {.code = RuntimeCreateErrorCode::kFileOpenFailed, .io_error = started.io_error};
+    case detail::io::FileSinkStartStatus::kDirectoryCreateFailed:
+      return {.code = RuntimeCreateErrorCode::kDirectoryCreateFailed, .io_error = started.io_error};
     case detail::io::FileSinkStartStatus::kThreadFailed:
     case detail::io::FileSinkStartStatus::kLoopFailed:
     case detail::io::FileSinkStartStatus::kTimedOut:
@@ -1068,6 +1077,8 @@ struct Runtime::Impl final {
           detail::io::FileSinkConfig{.path_utf8 = std::move(*path),
                                      .write_buffers = route.write_buffers,
                                      .maximum_record_bytes = config.maximum_record_bytes,
+                                     .create_parent_directories = route.create_parent_directories,
+                                     .truncate_on_start = route.truncate_on_start,
                                      .faults = faults});
     } catch (const std::bad_alloc&) {
       result.failure.emplace(RuntimeCreateErrorCode::kAllocationFailed);

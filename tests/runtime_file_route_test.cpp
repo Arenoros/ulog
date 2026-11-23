@@ -116,6 +116,94 @@ TEST(RuntimeFileRoute, AppendOpenKeepsExistingBytes) {
   EXPECT_EQ(ReadFileBytes(path), "existing line\ntskv\ttext=appended\n");
 }
 
+/// Opens `path` with `route`, appends one Record, shuts down, and returns the file bytes.
+[[nodiscard]] std::string AppendOneRecord(const ulog::RawFileRouteConfig& route) {
+  auto created = ulog::Runtime::Create(FileRuntimeConfig(), route);
+  if (!created) {
+    ADD_FAILURE() << (created.failure ? created.failure->Message() : "missing Runtime");
+    return {};
+  }
+  const ulog::Logger logger = created.runtime->GetLogger();
+  LOG_INFO_TO(logger, "appended");
+  auto shutdown = created.runtime->Shutdown();
+  const ulog::OperationResult stopped = WaitForResult(shutdown);
+  EXPECT_EQ(stopped.Outcome(), ulog::OperationOutcome::kSucceeded);
+  // A separator is not a Record, so reports count only the frame.
+  EXPECT_EQ(stopped.Report().delivered_bytes, "tskv\ttext=appended\n"sv.size());
+  created.runtime.reset();
+  return ReadFileBytes(route.path);
+}
+
+TEST(RuntimeFileRoute, AppendOpenSeparatesOnlyContentWithoutAFinalNewline) {
+  const TemporaryDirectory directory;
+  constexpr std::string_view kFrame = "tskv\ttext=appended\n";
+  const struct {
+    std::string_view name;
+    std::string_view existing;
+    std::string_view separator;
+  } cases[] = {
+      {"empty", "", ""},
+      {"newline", "line\n", ""},
+      {"crlf", "line\r\n", ""},
+      {"lone-newline", "\n", ""},
+      {"partial", "partial frame", "\n"},
+      {"carriage-return", "line\r", "\n"},
+  };
+  for (const auto& test_case : cases) {
+    SCOPED_TRACE(test_case.name);
+    const std::filesystem::path path = directory.Path() / (std::string{test_case.name} + ".log");
+    {
+      std::ofstream existing{path, std::ios::binary};
+      existing << test_case.existing;
+    }
+    EXPECT_EQ(
+        AppendOneRecord(ulog::RawFileRouteConfig{.path = path}),
+        std::string{test_case.existing} + std::string{test_case.separator} + std::string{kFrame});
+  }
+}
+
+TEST(RuntimeFileRoute, TruncateOnStartReplacesExistingContentWithoutSeparator) {
+  const TemporaryDirectory directory;
+  const std::filesystem::path path = directory.Path() / "truncated.log";
+  {
+    std::ofstream existing{path, std::ios::binary};
+    existing << "old partial frame";
+  }
+  EXPECT_EQ(AppendOneRecord(ulog::RawFileRouteConfig{.path = path, .truncate_on_start = true}),
+            "tskv\ttext=appended\n");
+
+  const std::filesystem::path created = directory.Path() / "created.log";
+  EXPECT_EQ(AppendOneRecord(ulog::RawFileRouteConfig{.path = created, .truncate_on_start = true}),
+            "tskv\ttext=appended\n");
+
+  // Append stays the default: a later route keeps what the truncating one wrote.
+  EXPECT_EQ(AppendOneRecord(ulog::RawFileRouteConfig{.path = path}),
+            "tskv\ttext=appended\ntskv\ttext=appended\n");
+}
+
+TEST(RuntimeFileRoute, CreatesMissingUnicodeParentDirectories) {
+  const TemporaryDirectory directory;
+  const std::filesystem::path parent =
+      directory.Path() / std::filesystem::path{u8"журнал-ü"} / "nested" / "";
+  const std::filesystem::path path = parent / std::filesystem::path{u8"\U0001F600.log"};
+  EXPECT_EQ(AppendOneRecord(ulog::RawFileRouteConfig{.path = path}), "tskv\ttext=appended\n");
+  EXPECT_TRUE(std::filesystem::is_directory(parent));
+
+  // A `..` component resolves through directories that already exist.
+  const std::filesystem::path sibling =
+      directory.Path() / std::filesystem::path{u8"журнал-ü"} / "nested" / ".." / "sibling.log";
+  EXPECT_EQ(AppendOneRecord(ulog::RawFileRouteConfig{.path = sibling}), "tskv\ttext=appended\n");
+  EXPECT_TRUE(std::filesystem::exists(directory.Path() / std::filesystem::path{u8"журнал-ü"} /
+                                      "sibling.log"));
+
+  // A repeated separator names one ancestor, not an empty one.
+  std::filesystem::path repeated = directory.Path() / "outer";
+  repeated += "//inner";
+  repeated /= "app.log";
+  EXPECT_EQ(AppendOneRecord(ulog::RawFileRouteConfig{.path = repeated}), "tskv\ttext=appended\n");
+  EXPECT_TRUE(std::filesystem::is_directory(directory.Path() / "outer" / "inner"));
+}
+
 TEST(RuntimeFileRoute, UnicodeNativePathReceivesExactUtf8Bytes) {
   const TemporaryDirectory directory;
   const std::filesystem::path path =
@@ -169,7 +257,8 @@ TEST(RuntimeFileRoute, OpenFailuresReportTheIoErrorAndCorrection) {
   const TemporaryDirectory directory;
   const auto missing_parent = ulog::Runtime::Create(
       FileRuntimeConfig(),
-      ulog::RawFileRouteConfig{.path = directory.Path() / "missing" / "app.log"});
+      ulog::RawFileRouteConfig{.path = directory.Path() / "missing" / "app.log",
+                               .create_parent_directories = false});
   ASSERT_FALSE(missing_parent);
   ASSERT_TRUE(missing_parent.failure.has_value());
   EXPECT_EQ(RequireValue(missing_parent.failure).code,
@@ -178,6 +267,9 @@ TEST(RuntimeFileRoute, OpenFailuresReportTheIoErrorAndCorrection) {
   EXPECT_EQ(ulog::IoErrorName(RequireValue(missing_parent.failure).io_error), "ENOENT");
   EXPECT_NE(RequireValue(missing_parent.failure).HowToFix().find("parent directory"),
             std::string_view::npos);
+  EXPECT_NE(RequireValue(missing_parent.failure).HowToFix().find("create_parent_directories"),
+            std::string_view::npos);
+  EXPECT_FALSE(std::filesystem::exists(directory.Path() / "missing"));
 
   const auto directory_path = ulog::Runtime::Create(
       FileRuntimeConfig(), ulog::RawFileRouteConfig{.path = directory.Path()});

@@ -7,8 +7,9 @@ The repository establishes seven independent test categories:
   stale-target completion, bounded producer transactions, Operation polling,
   deadlines, callback dispatch, control-reserve exhaustion, structured and Raw
   in-memory Runtime lifecycle, saturation, exact encoding, Raw file-route
-  append, Unicode paths, validation and open errors, injected partial writes and
-  open/write/close failures, level names, the runtime threshold matrix, Null
+  append, truncate-on-start, the non-empty-file separator, parent-directory
+  creation, Unicode paths, validation and open errors, injected partial writes and
+  open/directory/write/close failures, level names, the runtime threshold matrix, Null
   Logger level rejection, the Default Logger level scope, typed fields with their collision, reserved-key,
   ownership, laziness, and truncation policy, the field-rich Raw corpus cases,
   multi-translation-unit source path prefix trimming, injected event clocks, UTC and process-local
@@ -86,9 +87,9 @@ destructor timing for successful delivery.
 
 File-route tests create unique directories below the system temporary directory
 and remove them afterwards. Deterministic file faults use a private Runtime factory
-that injects open, write, partial-write, and close outcomes on the I/O thread and
-counts filesystem operations per thread; that factory is not part of the installed
-API. In shared builds those tests link a private static copy of the library,
+that injects open, directory-creation, write, partial-write, and close outcomes on
+the I/O thread and counts filesystem operations per thread; that factory is not
+part of the installed API. In shared builds those tests link a private static copy of the library,
 because the shared library hides its internal symbols.
 
 The presets build the library, architecture check, and installed consumer once

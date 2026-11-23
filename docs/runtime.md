@@ -294,11 +294,29 @@ if (!created) {
 }
 ```
 
-The path is created when missing and always opened for append; existing bytes are
-kept. It is passed to libuv as UTF-8 on Windows and as native bytes elsewhere, so
+The path is passed to libuv as UTF-8 on Windows and as native bytes elsewhere, so
 Unicode names work on every supported platform. An empty path, a path containing
 NUL, a path without a file name such as `logs/`, or a name without a UTF-8
 representation fails as `kInvalidFilePath`.
+
+The file is created when missing and opened for append, so existing bytes are
+kept. Opening follows these rules:
+
+- `create_parent_directories` (default `true`) creates missing parent directories
+  when the open reports `ENOENT`. Only missing directories are created, with mode
+  `0755` reduced by the process umask; existing directories keep their permissions.
+  A creation failure is `kDirectoryCreateFailed`. With `false`, a missing parent
+  fails the open as `kFileOpenFailed` with `ENOENT`.
+- `truncate_on_start` (default `false`) empties an existing file when the route
+  opens instead of appending after its content.
+- When the opened file is not empty and its last byte is not `\n`, Ulog writes
+  one `\n` before the first frame, so the first new Record starts on its own line.
+  A file that ends with `\n`, an empty file, and a truncated file get no separator.
+  If the last byte cannot be read, Ulog writes the separator. The separator is not a
+  Record and is not counted in delivered bytes or Operation reports.
+
+Every create, open, truncate, inspection, and separator step runs on the route's
+I/O thread before `Create` returns.
 
 `write_buffers` is the number of Runtime-owned complete-frame buffers, from 1
 through 64. Each holds one Raw frame of up to `2 * maximum_record_bytes + 11`
@@ -309,10 +327,12 @@ reported in `fixed_backing_bytes`.
 `Create` validates the configuration, allocates the buffers, starts the worker,
 and starts a dedicated I/O thread that owns a private libuv loop. That thread
 opens the file before `Create` returns. A loop that cannot start fails as
-`kIoLoopStartFailed`; a file that cannot be opened fails as `kFileOpenFailed`.
-Both failures carry the negative libuv error in `io_error`, and `HowToFix()` names
-the usual corrections, such as creating the parent directory or granting write
-permission. Ulog never reads or changes the process-wide `UV_THREADPOOL_SIZE`.
+`kIoLoopStartFailed`, a parent directory that cannot be created fails as
+`kDirectoryCreateFailed`, and a file that cannot be opened, truncated, or separated
+fails as `kFileOpenFailed`. These failures carry the negative libuv error in
+`io_error`, and `HowToFix()` names the usual corrections, such as creating the
+parent directory or granting write permission. Ulog never reads or changes the
+process-wide `UV_THREADPOOL_SIZE`.
 
 Producers only publish Records. The worker encodes each Record into a free buffer
 and queues it; the I/O thread performs one `uv_fs_write` append at a time in
@@ -387,7 +407,7 @@ copy, or the Raw-encoded in-memory destination at construction. Its fixed topolo
 roadmap work:
 
 - generic Encoder, Sink, and ContextProvider extension seams;
-- file truncation, Reopen, rotation, and Durable Flush;
+- Reopen, rotation, and Durable Flush;
 - network and IPC delivery;
 - multiple routes, route reliability classes, and route-local budgets;
 - batching, retry, reconnect, and durable flush; and

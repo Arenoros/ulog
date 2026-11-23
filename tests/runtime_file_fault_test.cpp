@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -216,6 +217,98 @@ TEST(RuntimeFileFaults, InjectedOpenFailureIsACreationResult) {
   EXPECT_EQ(RequireValue(created.failure).io_error, UV_EACCES);
   EXPECT_EQ(ulog::IoErrorName(RequireValue(created.failure).io_error), "EACCES");
   EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+struct OpenObservation final {
+  std::uint64_t loop_operations{0};
+  std::uint64_t other_operations{0};
+  std::string bytes;
+};
+
+/// Opens and shuts down a route without Records, counting its filesystem operations.
+[[nodiscard]] OpenObservation OpenAndClose(const ulog::RawFileRouteConfig& route) {
+  std::atomic<std::uint64_t> loop_operations{0};
+  std::atomic<std::uint64_t> other_operations{0};
+  const FileFaultPlan faults{.loop_thread_operations = &loop_operations,
+                             .other_thread_operations = &other_operations};
+  auto created = RuntimeFactoryAccess::CreateRawFileRuntime(FaultRuntimeConfig(), route, faults);
+  if (!created) {
+    ADD_FAILURE() << (created.failure ? created.failure->Message() : "missing Runtime");
+    return {};
+  }
+  auto shutdown = created.runtime->Shutdown();
+  EXPECT_EQ(WaitForResult(shutdown).Outcome(), ulog::OperationOutcome::kSucceeded);
+  created.runtime.reset();
+  return {.loop_operations = loop_operations.load(),
+          .other_operations = other_operations.load(),
+          .bytes = ReadFileBytes(route.path)};
+}
+
+void WriteFile(const std::filesystem::path& path, std::string_view bytes) {
+  std::ofstream file{path, std::ios::binary};
+  file << bytes;
+}
+
+TEST(RuntimeFileFaults, OpenCreateSeparateAndTruncateStepsRunOnTheLoopThread) {
+  const TemporaryDirectory directory;
+
+  // Missing open, mkdir of the missing parent, mkdir of its parent, mkdir again, open, close.
+  const auto nested =
+      OpenAndClose(ulog::RawFileRouteConfig{.path = directory.Path() / "a" / "b" / "app.log"});
+  EXPECT_EQ(nested.loop_operations, 6U);
+  EXPECT_EQ(nested.other_operations, 0U);
+  EXPECT_TRUE(std::filesystem::is_directory(directory.Path() / "a" / "b"));
+
+  // An existing parent needs only the open and the close.
+  const auto existing = OpenAndClose(ulog::RawFileRouteConfig{.path = directory.Path() / "a.log"});
+  EXPECT_EQ(existing.loop_operations, 2U);
+  EXPECT_EQ(existing.other_operations, 0U);
+
+  // Open, read-only open, read of the last byte, its close, separator write, close.
+  const std::filesystem::path partial = directory.Path() / "partial.log";
+  WriteFile(partial, "partial");
+  const auto separated = OpenAndClose(ulog::RawFileRouteConfig{.path = partial});
+  EXPECT_EQ(separated.loop_operations, 6U);
+  EXPECT_EQ(separated.other_operations, 0U);
+  EXPECT_EQ(separated.bytes, "partial\n");
+
+  // A final newline needs no separator write.
+  const std::filesystem::path line = directory.Path() / "line.log";
+  WriteFile(line, "line\n");
+  const auto unseparated = OpenAndClose(ulog::RawFileRouteConfig{.path = line});
+  EXPECT_EQ(unseparated.loop_operations, 5U);
+  EXPECT_EQ(unseparated.other_operations, 0U);
+  EXPECT_EQ(unseparated.bytes, "line\n");
+
+  // Truncation is part of the open, so the empty result needs no inspection.
+  const auto truncated =
+      OpenAndClose(ulog::RawFileRouteConfig{.path = partial, .truncate_on_start = true});
+  EXPECT_EQ(truncated.loop_operations, 2U);
+  EXPECT_EQ(truncated.other_operations, 0U);
+  EXPECT_EQ(truncated.bytes, "");
+}
+
+TEST(RuntimeFileFaults, DirectoryCreationFailureIsACreationResult) {
+  const TemporaryDirectory directory;
+  const std::filesystem::path path = directory.Path() / "missing" / "app.log";
+  std::atomic<std::uint64_t> loop_operations{0};
+  std::atomic<std::uint64_t> other_operations{0};
+  const FileFaultPlan faults{.directory_error = UV_EACCES,
+                             .loop_thread_operations = &loop_operations,
+                             .other_thread_operations = &other_operations};
+  const auto created = RuntimeFactoryAccess::CreateRawFileRuntime(
+      FaultRuntimeConfig(), ulog::RawFileRouteConfig{.path = path}, faults);
+  ASSERT_FALSE(created);
+  ASSERT_TRUE(created.failure.has_value());
+  EXPECT_EQ(RequireValue(created.failure).code,
+            ulog::RuntimeCreateErrorCode::kDirectoryCreateFailed);
+  EXPECT_EQ(RequireValue(created.failure).io_error, UV_EACCES);
+  EXPECT_FALSE(RequireValue(created.failure).Message().empty());
+  EXPECT_NE(RequireValue(created.failure).HowToFix().find("permission"), std::string_view::npos);
+  EXPECT_FALSE(std::filesystem::exists(directory.Path() / "missing"));
+  // The failed open and the one rejected directory creation; nothing is retried.
+  EXPECT_EQ(loop_operations.load(), 2U);
+  EXPECT_EQ(other_operations.load(), 0U);
 }
 
 }  // namespace

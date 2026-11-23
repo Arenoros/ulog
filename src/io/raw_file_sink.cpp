@@ -46,6 +46,8 @@ struct FileSlot final {
 
 // Owner read/write plus group and other read; Windows applies only the owner write bit.
 constexpr int kCreatedFileMode = 0644;
+// Owner all plus group and other read/search, reduced by the process umask; ignored on Windows.
+constexpr int kCreatedDirectoryMode = 0755;
 // POSIX file-type bits, which libuv also reports on Windows.
 constexpr std::uint64_t kFileTypeMask = 0170000;
 constexpr std::uint64_t kDirectoryType = 0040000;
@@ -60,6 +62,9 @@ constexpr std::uint64_t kDirectoryType = 0040000;
 struct RawFileSinkState final {
   explicit RawFileSinkState(FileSinkConfig config)
       : path(std::move(config.path_utf8)),
+        directory_scratch(path),
+        create_parent_directories(config.create_parent_directories),
+        truncate_on_start(config.truncate_on_start),
         buffer_count(config.write_buffers),
         buffer_bytes(encoding::MaximumRawEncodedBytes(config.maximum_record_bytes)),
         faults(config.faults),
@@ -71,6 +76,10 @@ struct RawFileSinkState final {
   }
 
   const std::string path;
+  /// Copy of `path` that directory creation terminates at each ancestor, allocated before Start().
+  std::string directory_scratch;
+  const bool create_parent_directories;
+  const bool truncate_on_start;
   const std::size_t buffer_count;
   const std::size_t buffer_bytes;
   const FileFaultPlan faults;
@@ -276,6 +285,169 @@ void MarkLoopExited(RawFileSinkState& state) noexcept {
   state.lifecycle.notify_all();
 }
 
+[[nodiscard]] bool IsPathSeparator(char character) noexcept {
+#if defined(_WIN32)
+  return character == '/' || character == '\\';
+#else
+  return character == '/';
+#endif
+}
+
+/// Returns whether `path[end]` ends an ancestor: a separator that follows a non-separator.
+[[nodiscard]] bool EndsAncestor(const std::string& path, std::size_t end) noexcept {
+  return end > 0U && IsPathSeparator(path[end]) && !IsPathSeparator(path[end - 1U]);
+}
+
+[[nodiscard]] std::size_t PreviousAncestorEnd(const std::string& path,
+                                              std::size_t before) noexcept {
+  for (std::size_t end = before; end-- > 0U;) {
+    if (EndsAncestor(path, end)) {
+      return end;
+    }
+  }
+  return std::string::npos;
+}
+
+[[nodiscard]] std::size_t NextAncestorEnd(const std::string& path, std::size_t after) noexcept {
+  for (std::size_t end = after + 1U; end < path.size(); ++end) {
+    if (EndsAncestor(path, end)) {
+      return end;
+    }
+  }
+  return std::string::npos;
+}
+
+[[nodiscard]] int MakeAncestor(RawFileSinkState& state, std::size_t end) noexcept {
+  ObserveOperation(state.faults);
+  if (state.faults.directory_error != 0) {
+    return state.faults.directory_error;
+  }
+  auto& scratch = state.directory_scratch;
+  scratch[end] = '\0';
+  uv_fs_t request{};
+  const int error =
+      uv_fs_mkdir(&state.loop, &request, scratch.c_str(), kCreatedDirectoryMode, nullptr);
+  uv_fs_req_cleanup(&request);
+  scratch[end] = state.path[end];
+  return error;
+}
+
+/// Creates the missing ancestors of the file path. It walks up from the parent only while an
+/// ancestor is missing, so existing directories are never modified.
+[[nodiscard]] int CreateParentDirectories(RawFileSinkState& state) noexcept {
+  const std::string& path = state.path;
+  std::size_t end = PreviousAncestorEnd(path, path.size());
+  int error = UV_ENOENT;
+  while (end != std::string::npos) {
+    error = MakeAncestor(state, end);
+    if (error != UV_ENOENT) {
+      break;
+    }
+    end = PreviousAncestorEnd(path, end);
+  }
+  if (error != 0 && error != UV_EEXIST) {
+    return error;
+  }
+  for (end = NextAncestorEnd(path, end); end != std::string::npos;
+       end = NextAncestorEnd(path, end)) {
+    error = MakeAncestor(state, end);
+    if (error != 0 && error != UV_EEXIST) {
+      return error;
+    }
+  }
+  return 0;
+}
+
+[[nodiscard]] int OpenForAppend(RawFileSinkState& state) noexcept {
+  ObserveOperation(state.faults);
+  if (state.faults.open_error != 0) {
+    return state.faults.open_error;
+  }
+  const int truncate = state.truncate_on_start ? UV_FS_O_TRUNC : 0;
+  uv_fs_t request{};
+  const int opened = uv_fs_open(&state.loop, &request, state.path.c_str(),
+                                UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_APPEND | truncate,
+                                kCreatedFileMode, nullptr);
+  uv_fs_req_cleanup(&request);
+  return opened;
+}
+
+void CloseSynchronously(RawFileSinkState& state, uv_file file) noexcept {
+  ObserveOperation(state.faults);
+  uv_fs_t request{};
+  static_cast<void>(uv_fs_close(&state.loop, &request, file, nullptr));
+  uv_fs_req_cleanup(&request);
+}
+
+/// Reads the last existing byte through a read-only handle, because the append handle cannot
+/// read. Content that cannot be read counts as not ending in a newline.
+[[nodiscard]] bool EndsWithNewline(RawFileSinkState& state, std::uint64_t size) noexcept {
+  ObserveOperation(state.faults);
+  uv_fs_t request{};
+  const int reader =
+      uv_fs_open(&state.loop, &request, state.path.c_str(), UV_FS_O_RDONLY, 0, nullptr);
+  uv_fs_req_cleanup(&request);
+  if (reader < 0) {
+    return false;
+  }
+  char last = '\0';
+  const uv_buf_t buffer = uv_buf_init(&last, 1);
+  ObserveOperation(state.faults);
+  const int read = uv_fs_read(&state.loop, &request, reader, &buffer, 1,
+                              static_cast<std::int64_t>(size - 1U), nullptr);
+  uv_fs_req_cleanup(&request);
+  CloseSynchronously(state, reader);
+  return read == 1 && last == '\n';
+}
+
+/// Starts the first new frame on its own line after existing content that does not end with one.
+[[nodiscard]] int WriteSeparator(RawFileSinkState& state, uv_file file) noexcept {
+  char newline = '\n';
+  const uv_buf_t buffer = uv_buf_init(&newline, 1);
+  ObserveOperation(state.faults);
+  uv_fs_t request{};
+  const int written = uv_fs_write(&state.loop, &request, file, &buffer, 1, -1, nullptr);
+  uv_fs_req_cleanup(&request);
+  if (written < 0) {
+    return written;
+  }
+  return written == 1 ? 0 : UV_EIO;
+}
+
+/// Opens the route file for append, creating ancestors and separating existing content.
+[[nodiscard]] FileSinkStartResult OpenRouteFile(RawFileSinkState& state, uv_file& file) noexcept {
+  int opened = OpenForAppend(state);
+  if (opened == UV_ENOENT && state.create_parent_directories) {
+    const int created = CreateParentDirectories(state);
+    if (created != 0) {
+      return {.status = FileSinkStartStatus::kDirectoryCreateFailed, .io_error = created};
+    }
+    opened = OpenForAppend(state);
+  }
+  if (opened < 0) {
+    return {.status = FileSinkStartStatus::kOpenFailed, .io_error = opened};
+  }
+
+  // Windows can open a directory handle for append, so reject directories on every platform.
+  uv_fs_t stat_request{};
+  int error = uv_fs_fstat(&state.loop, &stat_request, opened, nullptr);
+  const bool directory =
+      error == 0 && (stat_request.statbuf.st_mode & kFileTypeMask) == kDirectoryType;
+  const std::uint64_t size = stat_request.statbuf.st_size;
+  uv_fs_req_cleanup(&stat_request);
+  if (error == 0 && directory) {
+    error = UV_EISDIR;
+  } else if (error == 0 && size != 0U && !EndsWithNewline(state, size)) {
+    error = WriteSeparator(state, opened);
+  }
+  if (error < 0) {
+    CloseSynchronously(state, opened);
+    return {.status = FileSinkStartStatus::kOpenFailed, .io_error = error};
+  }
+  file = opened;
+  return {.status = FileSinkStartStatus::kStarted};
+}
+
 void RunLoop(RawFileSinkState& state) noexcept {
   const control::ScopedUlogThreadRole io_role{control::UlogThreadRole::kIo};
   const int loop_error = uv_loop_init(&state.loop);
@@ -293,33 +465,13 @@ void RunLoop(RawFileSinkState& state) noexcept {
     return;
   }
 
-  int opened = state.faults.open_error;
-  ObserveOperation(state.faults);
-  if (opened == 0) {
-    uv_fs_t request{};
-    opened = uv_fs_open(&state.loop, &request, state.path.c_str(),
-                        UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_APPEND, kCreatedFileMode, nullptr);
-    uv_fs_req_cleanup(&request);
-  }
-  if (opened >= 0) {
-    // Windows can open a directory handle for append, so reject directories on every platform.
-    uv_fs_t stat_request{};
-    const int stat_error = uv_fs_fstat(&state.loop, &stat_request, opened, nullptr);
-    const bool directory =
-        stat_error == 0 && (stat_request.statbuf.st_mode & kFileTypeMask) == kDirectoryType;
-    uv_fs_req_cleanup(&stat_request);
-    if (stat_error < 0 || directory) {
-      uv_fs_t close_request{};
-      static_cast<void>(uv_fs_close(&state.loop, &close_request, opened, nullptr));
-      uv_fs_req_cleanup(&close_request);
-      opened = stat_error < 0 ? stat_error : UV_EISDIR;
-    }
-  }
-  if (opened < 0) {
+  uv_file opened = -1;
+  const FileSinkStartResult open_result = OpenRouteFile(state, opened);
+  if (open_result.status != FileSinkStartStatus::kStarted) {
     uv_close(reinterpret_cast<uv_handle_t*>(&state.wake_async), nullptr);
     static_cast<void>(uv_run(&state.loop, UV_RUN_DEFAULT));
     static_cast<void>(uv_loop_close(&state.loop));
-    ReportStart(state, {.status = FileSinkStartStatus::kOpenFailed, .io_error = opened});
+    ReportStart(state, open_result);
     MarkLoopExited(state);
     return;
   }

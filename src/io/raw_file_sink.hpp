@@ -23,6 +23,8 @@ inline constexpr std::uint64_t kNoInjectedWriteFailure = std::numeric_limits<std
 struct FileFaultPlan final {
   /// Fails the open with this libuv error instead of opening the path.
   std::int32_t open_error{0};
+  /// Fails every parent-directory creation with this libuv error instead of creating it.
+  std::int32_t directory_error{0};
   /// Caps every write submission, forcing partial-write continuation when non-zero.
   std::size_t maximum_write_bytes{0};
   /// Zero-based write submission that fails with `write_error` instead of reaching the OS.
@@ -39,6 +41,7 @@ enum class FileSinkStartStatus : std::uint8_t {
   kStarted,
   kThreadFailed,
   kLoopFailed,
+  kDirectoryCreateFailed,
   kOpenFailed,
   kTimedOut,
 };
@@ -53,6 +56,8 @@ struct FileSinkConfig final {
   std::string path_utf8;
   std::size_t write_buffers{0};
   std::size_t maximum_record_bytes{0};
+  bool create_parent_directories{true};
+  bool truncate_on_start{false};
   FileFaultPlan faults{};
 };
 
