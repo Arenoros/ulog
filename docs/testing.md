@@ -87,8 +87,9 @@ destructor timing for successful delivery.
 
 File-route tests create unique directories below the system temporary directory
 and remove them afterwards. Deterministic file faults use a private Runtime factory
-that injects open, directory-creation, write, partial-write, and close outcomes on
-the I/O thread and counts filesystem operations per thread; that factory is not
+that injects open, directory-creation, write, partial-write, `fsync`, and close
+outcomes on the I/O thread and counts filesystem operations per thread and `fsync`
+calls, which proves that Drain and Shutdown never call `fsync`; that factory is not
 part of the installed API. In shared builds those tests link a private static copy of the library,
 because the shared library hides its internal symbols.
 

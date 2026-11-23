@@ -141,6 +141,8 @@ TEST(RuntimeFileFaults, WriteFailureFailsTheRouteWithoutRetryOrReplay) {
   EXPECT_EQ(report.unfinished_records, 1U);
   EXPECT_EQ(report.delivered_bytes + report.failed_bytes + report.unfinished_bytes,
             report.processed_bytes);
+  EXPECT_EQ(report.io_error, UV_EIO);
+  EXPECT_EQ(report.durability, ulog::OperationDurability::kNotRequested);
 
   ASSERT_TRUE(WaitForRouteFailure(*created.runtime));
   const auto snapshot = created.runtime->GetSnapshot();
@@ -176,7 +178,8 @@ TEST(RuntimeFileFaults, FailureAfterAPartialWriteNeverReplaysThatFrame) {
                                                      .processed_records = 1,
                                                      .processed_bytes = kFirstFrame.size(),
                                                      .failed_records = 1,
-                                                     .failed_bytes = kFirstFrame.size()}));
+                                                     .failed_bytes = kFirstFrame.size(),
+                                                     .io_error = UV_ENOSPC}));
   ASSERT_TRUE(WaitForRouteFailure(*created.runtime));
   EXPECT_EQ(created.runtime->GetSnapshot().route_io_error, UV_ENOSPC);
   created.runtime.reset();
@@ -309,6 +312,136 @@ TEST(RuntimeFileFaults, DirectoryCreationFailureIsACreationResult) {
   // The failed open and the one rejected directory creation; nothing is retried.
   EXPECT_EQ(loop_operations.load(), 2U);
   EXPECT_EQ(other_operations.load(), 0U);
+}
+
+[[nodiscard]] ulog::OperationReport DeliveredReport(std::uint64_t records, std::uint64_t bytes,
+                                                    ulog::OperationDurability durability) {
+  return ulog::OperationReport{.watermark_records = records,
+                               .processed_records = records,
+                               .processed_bytes = bytes,
+                               .delivered_records = records,
+                               .delivered_bytes = bytes,
+                               .durability = durability};
+}
+
+TEST(RuntimeFileFaults, DurableFlushSyncsOnTheLoopThreadAndDrainNeverDoes) {
+  const TemporaryDirectory directory;
+  const std::filesystem::path path = directory.Path() / "durable.log";
+  std::atomic<std::uint64_t> loop_operations{0};
+  std::atomic<std::uint64_t> other_operations{0};
+  std::atomic<std::uint64_t> sync_operations{0};
+  const FileFaultPlan faults{.loop_thread_operations = &loop_operations,
+                             .other_thread_operations = &other_operations,
+                             .sync_operations = &sync_operations};
+  auto created = RuntimeFactoryAccess::CreateRawFileRuntime(
+      FaultRuntimeConfig(), ulog::RawFileRouteConfig{.path = path}, faults);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  const ulog::Logger logger = created.runtime->GetLogger();
+
+  LOG_INFO_TO(logger, "first");
+  auto drain = created.runtime->Drain();
+  const ulog::OperationResult drained = WaitForResult(drain);
+  EXPECT_EQ(drained.Outcome(), ulog::OperationOutcome::kSucceeded);
+  EXPECT_EQ(drained.Report(),
+            DeliveredReport(1, kFirstFrame.size(), ulog::OperationDurability::kNotRequested));
+  EXPECT_EQ(sync_operations.load(), 0U);
+
+  LOG_INFO_TO(logger, "second");
+  auto flush = created.runtime->DurableFlush();
+  const ulog::OperationResult flushed = WaitForResult(flush);
+  const std::uint64_t both = kFirstFrame.size() + kSecondFrame.size();
+  EXPECT_EQ(flushed.Outcome(), ulog::OperationOutcome::kSucceeded);
+  EXPECT_EQ(flushed.Report(), DeliveredReport(2, both, ulog::OperationDurability::kSynced));
+  EXPECT_EQ(sync_operations.load(), 1U);
+
+  auto late_drain = created.runtime->Drain();
+  EXPECT_EQ(WaitForResult(late_drain).Report(),
+            DeliveredReport(2, both, ulog::OperationDurability::kNotRequested));
+  auto shutdown = created.runtime->Shutdown();
+  const ulog::OperationResult stopped = WaitForResult(shutdown);
+  EXPECT_EQ(stopped.Outcome(), ulog::OperationOutcome::kSucceeded);
+  EXPECT_EQ(stopped.Report(), DeliveredReport(2, both, ulog::OperationDurability::kNotRequested));
+  created.runtime.reset();
+  EXPECT_EQ(sync_operations.load(), 1U);
+  EXPECT_EQ(ReadFileBytes(path), std::string{kFirstFrame} + std::string{kSecondFrame});
+  // Open, two appends, one fsync, and close, all on the loop thread.
+  EXPECT_EQ(loop_operations.load(), 5U);
+  EXPECT_EQ(other_operations.load(), 0U);
+}
+
+TEST(RuntimeFileFaults, SyncFailureFailsTheRouteWithTheIoError) {
+  const TemporaryDirectory directory;
+  const std::filesystem::path path = directory.Path() / "sync-failure.log";
+  std::atomic<std::uint64_t> sync_operations{0};
+  const FileFaultPlan faults{.sync_error = UV_EIO, .sync_operations = &sync_operations};
+  auto created = RuntimeFactoryAccess::CreateRawFileRuntime(
+      FaultRuntimeConfig(), ulog::RawFileRouteConfig{.path = path}, faults);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  const ulog::Logger logger = created.runtime->GetLogger();
+
+  LOG_INFO_TO(logger, "first");
+  auto flush = created.runtime->DurableFlush();
+  const ulog::OperationResult flushed = WaitForResult(flush);
+  EXPECT_EQ(flushed.Outcome(), ulog::OperationOutcome::kFailed);
+  auto expected = DeliveredReport(1, kFirstFrame.size(), ulog::OperationDurability::kNotSynced);
+  expected.io_error = UV_EIO;
+  EXPECT_EQ(flushed.Report(), expected);
+
+  ASSERT_TRUE(WaitForRouteFailure(*created.runtime));
+  const auto snapshot = created.runtime->GetSnapshot();
+  EXPECT_EQ(snapshot.route_io_error, UV_EIO);
+  EXPECT_FALSE(snapshot.admission_open);
+
+  // The failed sync is not retried, and a later flush cannot claim durability.
+  auto late_flush = created.runtime->DurableFlush();
+  const ulog::OperationResult late = WaitForResult(late_flush);
+  EXPECT_EQ(late.Outcome(), ulog::OperationOutcome::kFailed);
+  EXPECT_EQ(late.Report(), expected);
+  auto shutdown = created.runtime->Shutdown();
+  const ulog::OperationResult stopped = WaitForResult(shutdown);
+  EXPECT_EQ(stopped.Outcome(), ulog::OperationOutcome::kFailed);
+  EXPECT_EQ(stopped.Report().durability, ulog::OperationDurability::kNotRequested);
+  EXPECT_EQ(stopped.Report().io_error, UV_EIO);
+  created.runtime.reset();
+  EXPECT_EQ(sync_operations.load(), 1U);
+  EXPECT_EQ(ReadFileBytes(path), kFirstFrame);
+}
+
+TEST(RuntimeFileFaults, ShutdownWaitsForStartedDurableFlushesAndLaterOnesFail) {
+  const TemporaryDirectory directory;
+  const std::filesystem::path path = directory.Path() / "flush-shutdown.log";
+  std::atomic<std::uint64_t> sync_operations{0};
+  const FileFaultPlan faults{.sync_operations = &sync_operations};
+  auto created = RuntimeFactoryAccess::CreateRawFileRuntime(
+      FaultRuntimeConfig(), ulog::RawFileRouteConfig{.path = path}, faults);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  const ulog::Logger logger = created.runtime->GetLogger();
+
+  LOG_INFO_TO(logger, "first");
+  auto first_flush = created.runtime->DurableFlush();
+  auto second_flush = created.runtime->DurableFlush();
+  auto shutdown = created.runtime->Shutdown();
+  const auto synced = DeliveredReport(1, kFirstFrame.size(), ulog::OperationDurability::kSynced);
+  const ulog::OperationResult first = WaitForResult(first_flush);
+  EXPECT_EQ(first.Outcome(), ulog::OperationOutcome::kSucceeded);
+  EXPECT_EQ(first.Report(), synced);
+  const ulog::OperationResult second = WaitForResult(second_flush);
+  EXPECT_EQ(second.Outcome(), ulog::OperationOutcome::kSucceeded);
+  EXPECT_EQ(second.Report(), synced);
+  const ulog::OperationResult stopped = WaitForResult(shutdown);
+  EXPECT_EQ(stopped.Outcome(), ulog::OperationOutcome::kSucceeded);
+  // Concurrent flushes may share one fsync.
+  const std::uint64_t syncs = sync_operations.load();
+  EXPECT_GE(syncs, 1U);
+  EXPECT_LE(syncs, 2U);
+
+  // The closed file can no longer be synced, so the flush fails without claiming durability.
+  auto closed_flush = created.runtime->DurableFlush();
+  const ulog::OperationResult closed = WaitForResult(closed_flush);
+  EXPECT_EQ(closed.Outcome(), ulog::OperationOutcome::kFailed);
+  EXPECT_EQ(closed.Report(),
+            DeliveredReport(1, kFirstFrame.size(), ulog::OperationDurability::kNotSynced));
+  EXPECT_EQ(sync_operations.load(), syncs);
 }
 
 }  // namespace

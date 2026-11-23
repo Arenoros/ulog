@@ -26,8 +26,9 @@ constexpr std::uint64_t kCycles = 256;
 constexpr std::string_view kMessage = "allocation-free-file-runtime";
 constexpr std::string_view kExpectedFrame = "tskv\ttext=allocation-free-file-runtime\n";
 
-[[nodiscard]] bool WaitSucceeded(ulog::OperationStartResult& started,
-                                 std::uint64_t expected_records) noexcept {
+[[nodiscard]] bool WaitSucceeded(
+    ulog::OperationStartResult& started, std::uint64_t expected_records,
+    ulog::OperationDurability durability = ulog::OperationDurability::kNotRequested) noexcept {
   if (!started) {
     std::fprintf(stderr, "file runtime allocation test: control start failed: in_use=%zu\n",
                  started.failure ? started.failure->controls_in_use : 0U);
@@ -43,7 +44,7 @@ constexpr std::string_view kExpectedFrame = "tskv\ttext=allocation-free-file-run
   const auto& report = waited.completion->Report();
   return report.delivered_records == expected_records &&
          report.delivered_bytes == expected_records * kExpectedFrame.size() &&
-         report.unfinished_records == 0U;
+         report.unfinished_records == 0U && report.durability == durability;
 }
 
 [[nodiscard]] bool Run() {
@@ -75,7 +76,9 @@ constexpr std::string_view kExpectedFrame = "tskv\ttext=allocation-free-file-run
   LOG_INFO_TO(logger, kMessage);
   {
     auto warm_up = runtime.Drain();
-    if (!WaitSucceeded(warm_up, 1U)) {
+    auto warm_up_flush = runtime.DurableFlush();
+    if (!WaitSucceeded(warm_up, 1U) ||
+        !WaitSucceeded(warm_up_flush, 1U, ulog::OperationDurability::kSynced)) {
       std::fputs("file runtime allocation test: warm-up failed\n", stderr);
       return false;
     }
@@ -86,8 +89,14 @@ constexpr std::string_view kExpectedFrame = "tskv\ttext=allocation-free-file-run
   bool valid = true;
   for (std::uint64_t cycle = 0; valid && cycle < kCycles; ++cycle) {
     LOG_INFO_TO(logger, kMessage);
-    auto drain = runtime.Drain();
-    valid = WaitSucceeded(drain, cycle + 2U);
+    // Odd cycles also request fsync, which must not allocate either.
+    if (cycle % 2U == 0U) {
+      auto drain = runtime.Drain();
+      valid = WaitSucceeded(drain, cycle + 2U);
+    } else {
+      auto flush = runtime.DurableFlush();
+      valid = WaitSucceeded(flush, cycle + 2U, ulog::OperationDurability::kSynced);
+    }
   }
   const std::uint64_t allocations_after =
       allocation_tracking::allocation_count.load(std::memory_order_relaxed);

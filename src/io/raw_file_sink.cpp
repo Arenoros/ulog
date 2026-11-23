@@ -92,6 +92,7 @@ struct RawFileSinkState final {
   uv_async_t wake_async{};
   uv_fs_t write_request{};
   uv_fs_t close_request{};
+  uv_fs_t sync_request{};
   uv_file file{-1};
 
   mutable std::mutex mutex;
@@ -99,6 +100,10 @@ struct RawFileSinkState final {
   route::RouteWake wake{};
   FileSinkStartResult start_result{};
   std::uint64_t write_calls{0};
+  /// Sync tickets: requested by the worker, covered by the active sync, and completed.
+  std::uint64_t sync_requested{0};
+  std::uint64_t sync_target{0};
+  std::uint64_t sync_completed{0};
   std::size_t writing_slot{0};
   std::int32_t failure_error{0};
   std::int32_t close_result{0};
@@ -110,6 +115,7 @@ struct RawFileSinkState final {
   bool closing{false};
   bool closed{false};
   bool writing{false};
+  bool syncing{false};
 };
 
 namespace {
@@ -204,6 +210,46 @@ void FinishWriteLocked(RawFileSinkState& state, std::int64_t result) noexcept {
   PumpLocked(state);
 }
 
+void FinishSyncLocked(RawFileSinkState& state, std::int64_t result) noexcept {
+  state.syncing = false;
+  if (result < 0) {
+    // A failed fsync may have dropped dirty pages, so a later success cannot be trusted.
+    state.failure_error = static_cast<std::int32_t>(result);
+    CancelQueuedLocked(state);
+  } else {
+    state.sync_completed = state.sync_target;
+  }
+  state.wake.Notify();
+  PumpLocked(state);
+}
+
+void OnSyncComplete(uv_fs_t* request) noexcept {
+  auto& state = *static_cast<RawFileSinkState*>(request->data);
+  const auto result = static_cast<std::int64_t>(request->result);
+  uv_fs_req_cleanup(request);
+  std::lock_guard lock{state.mutex};
+  FinishSyncLocked(state, result);
+}
+
+/// Starts one fsync while no append is active, so it covers every completed append.
+void StartSyncLocked(RawFileSinkState& state) noexcept {
+  state.syncing = true;
+  state.sync_target = state.sync_requested;
+  ObserveOperation(state.faults);
+  if (state.faults.sync_operations != nullptr) {
+    state.faults.sync_operations->fetch_add(1, std::memory_order_relaxed);
+  }
+  if (state.faults.sync_error != 0) {
+    FinishSyncLocked(state, state.faults.sync_error);
+    return;
+  }
+  state.sync_request.data = &state;
+  const int error = uv_fs_fsync(&state.loop, &state.sync_request, state.file, &OnSyncComplete);
+  if (error < 0) {
+    FinishSyncLocked(state, error);
+  }
+}
+
 void FinishCloseLocked(RawFileSinkState& state, std::int64_t result) noexcept {
   state.file = -1;
   state.closing = false;
@@ -240,10 +286,14 @@ void StartCloseLocked(RawFileSinkState& state) noexcept {
 }
 
 void PumpLocked(RawFileSinkState& state) noexcept {
-  if (state.writing || state.closing || state.closed) {
+  if (state.writing || state.syncing || state.closing || state.closed) {
     return;
   }
   if (state.failure_error == 0 && !state.stopping) {
+    if (state.sync_completed < state.sync_requested) {
+      StartSyncLocked(state);
+      return;
+    }
     std::optional<std::size_t> selected;
     for (std::size_t index = 0; index < state.buffer_count; ++index) {
       const auto& slot = state.slots[index];
@@ -658,6 +708,18 @@ route::InFlightSummary RawFileSink::SummarizeInFlight(std::uint64_t watermark) c
     }
   }
   return summary;
+}
+
+std::uint64_t RawFileSink::RequestSync() noexcept {
+  std::lock_guard lock{state_->mutex};
+  ++state_->sync_requested;
+  SendWakeLocked(*state_);
+  return state_->sync_requested;
+}
+
+bool RawFileSink::SyncCompleted(std::uint64_t ticket) const noexcept {
+  std::lock_guard lock{state_->mutex};
+  return state_->sync_completed >= ticket;
 }
 
 std::int32_t RawFileSink::FailureError() const noexcept {

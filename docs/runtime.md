@@ -345,17 +345,18 @@ without waiting.
 A write error, or a write that makes no progress, stops the route. That Record is
 counted as failed and is never retried or replayed, even though the file may keep
 the prefix already written. Queued frames are cancelled, admission closes, pending
-Drain and Shutdown Operations complete as `kFailed` with exact reports, and
+Drain, Durable Flush, and Shutdown Operations complete as `kFailed` with exact
+reports, and
 `RuntimeSnapshot::route_failed` and `route_io_error` expose the failure. Ulog
 reports it only through these values: it throws nothing and writes nothing to
 stderr. A later Runtime with a new file route is the recovery path until Reopen
 exists.
 
-## Drain, Shutdown, and destruction
+## Drain, Durable Flush, Shutdown, and destruction
 
-`Drain()` and `Shutdown()` return the public
+`Drain()`, `DurableFlush()`, and `Shutdown()` return the public
 [`OperationStartResult`](operations.md). Their state comes from the fixed control
-reserve, independent of payload capacity. Starting either action can therefore
+reserve, independent of payload capacity. Starting any of them can therefore
 succeed when payload ingress is saturated, although it fails explicitly when every
 control slot is already retained.
 
@@ -371,6 +372,23 @@ control slot is already retained.
   its whole frame was written to the file. Drain neither performs nor claims
   `fsync`, as defined by
   [ADR 0013](adr/0013-separate-drain-from-durable-file-flush.md).
+- `DurableFlush()` captures a watermark like Drain. Once every Record through it has
+  a terminal outcome, the I/O thread issues one `fsync` (`FlushFileBuffers` on
+  Windows) for the file route, between appends, so it covers every completed
+  write. The flush succeeds only when the OS reports success, and its report has
+  `durability == OperationDurability::kSynced`. Concurrent flushes may share one
+  `fsync`. Ulog promises nothing beyond what the OS reports for `fsync`.
+- A failed `fsync` stops the file route like a write failure, because retrying it
+  can report success after the OS dropped unwritten data. The flush and every other
+  pending Operation complete as `kFailed`, and the libuv error is in
+  `OperationReport::io_error` and `RuntimeSnapshot::route_io_error`.
+- An in-memory destination has no durable semantics. `DurableFlush()` behaves as
+  Drain there and reports `kNotApplicable`, never a durability claim. Later stream
+  and network routes follow the same rule.
+- A Durable Flush on a file route that is cancelled, fails, or starts after the
+  route stopped reports `kNotSynced`; its outcome is never `kSucceeded`. Shutdown
+  waits for flushes already started before it closes the file. Drain and Shutdown
+  never call `fsync` and report `kNotRequested`.
 - The first `Shutdown()` closes admission before returning, so later logging through
   an existing Logger is rejected before evaluation. The worker finishes every
   accepted Record, including held deliveries. The file route then closes its file
@@ -407,7 +425,7 @@ copy, or the Raw-encoded in-memory destination at construction. Its fixed topolo
 roadmap work:
 
 - generic Encoder, Sink, and ContextProvider extension seams;
-- Reopen, rotation, and Durable Flush;
+- Reopen and rotation;
 - network and IPC delivery;
 - multiple routes, route reliability classes, and route-local budgets;
 - batching, retry, reconnect, and durable flush; and

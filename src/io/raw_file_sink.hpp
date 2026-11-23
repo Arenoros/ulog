@@ -32,9 +32,13 @@ struct FileFaultPlan final {
   std::int32_t write_error{0};
   /// Reports this libuv error after the file is really closed.
   std::int32_t close_error{0};
+  /// Fails every `fsync` with this libuv error instead of reaching the OS.
+  std::int32_t sync_error{0};
   /// Counts filesystem operations issued on and off the dedicated loop thread.
   std::atomic<std::uint64_t>* loop_thread_operations{nullptr};
   std::atomic<std::uint64_t>* other_thread_operations{nullptr};
+  /// Counts `fsync` submissions, which are also counted as loop-thread operations.
+  std::atomic<std::uint64_t>* sync_operations{nullptr};
 };
 
 enum class FileSinkStartStatus : std::uint8_t {
@@ -115,6 +119,10 @@ class RawFileSink final {
   [[nodiscard]] std::optional<route::DeliveryRetirement> TryRetire(
       std::uint64_t admission_sequence) noexcept;
   [[nodiscard]] route::InFlightSummary SummarizeInFlight(std::uint64_t watermark) const noexcept;
+  /// Requests one `fsync` that starts after every append completed so far; returns its ticket.
+  [[nodiscard]] std::uint64_t RequestSync() noexcept;
+  /// Returns whether an `fsync` that covers `ticket` succeeded. A failure fails the route instead.
+  [[nodiscard]] bool SyncCompleted(std::uint64_t ticket) const noexcept;
   /// Returns the libuv error that failed the route, or zero while it remains usable.
   [[nodiscard]] std::int32_t FailureError() const noexcept;
   /// Cancels queued appends, rejects later claims, and closes after the active append.

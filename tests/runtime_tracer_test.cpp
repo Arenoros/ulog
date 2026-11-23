@@ -311,6 +311,52 @@ TEST(RuntimeTracer, SaturationDropsNewestBeforeEvaluationWhileControlReserveStil
   ExpectSucceeded(shutdown);
 }
 
+TEST(RuntimeTracer, DurableFlushStartsWhileSaturatedAndClaimsNoInMemoryDurability) {
+  testing::InMemoryDestination destination{{
+      .capacity_records = 1,
+      .maximum_record_bytes = 512,
+      .start_paused = true,
+  }};
+  auto config = SmallRuntimeConfig();
+  // The flush, Shutdown, and late flush handles each retain a control slot.
+  config.control_operations = 3;
+  auto created = Runtime::Create(config, destination);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  Runtime& runtime = *created.runtime;
+  const Logger logger = runtime.GetLogger();
+
+  LOG_INFO_TO(logger, "accepted");
+  LOG_INFO_TO(logger, "rejected");
+  const auto saturated = runtime.GetSnapshot();
+  EXPECT_EQ(saturated.accepted_records, 1U);
+  EXPECT_EQ(saturated.dropped_newest_records, 1U);
+
+  // The flush uses the control reserve, so it starts while the payload budget is exhausted.
+  auto flush = runtime.DurableFlush();
+  ASSERT_TRUE(flush);
+  EXPECT_EQ(flush.operation.Poll().status, OperationPollStatus::kPending);
+  destination.Resume();
+  const auto flushed = flush.operation.WaitUntil(std::chrono::steady_clock::now() + 1s);
+  ASSERT_EQ(flushed.status, OperationWaitStatus::kCompleted);
+  EXPECT_EQ(RequireValue(flushed.completion).Outcome(), OperationOutcome::kSucceeded);
+  EXPECT_EQ(RequireValue(flushed.completion).Report(),
+            (OperationReport{.watermark_records = 1,
+                             .processed_records = 1,
+                             .delivered_records = 1,
+                             .durability = OperationDurability::kNotApplicable}));
+
+  auto shutdown = runtime.Shutdown();
+  ExpectSucceeded(shutdown);
+  // After the route stopped, an in-memory flush still only reports the barrier.
+  auto late = runtime.DurableFlush();
+  ASSERT_TRUE(late);
+  const auto late_result = late.operation.WaitUntil(std::chrono::steady_clock::now() + 1s);
+  ASSERT_EQ(late_result.status, OperationWaitStatus::kCompleted);
+  EXPECT_EQ(RequireValue(late_result.completion).Outcome(), OperationOutcome::kSucceeded);
+  EXPECT_EQ(RequireValue(late_result.completion).Report().durability,
+            OperationDurability::kNotApplicable);
+}
+
 TEST(RuntimeTracer, PausedDestinationClaimsNoSlotAcrossWorkerRechecks) {
   testing::InMemoryDestination destination{{
       .capacity_records = 1,

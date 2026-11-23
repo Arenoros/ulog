@@ -22,6 +22,18 @@ struct OperationResultAccess;
 struct OperationVTable;
 }  // namespace detail
 
+/// Durability result of the route for an Operation.
+enum class OperationDurability : std::uint8_t {
+  /// The Operation is not a Durable Flush.
+  kNotRequested,
+  /// The route has no durable semantics, so no durability is claimed.
+  kNotApplicable,
+  /// The OS reported success for `fsync` after every Record through the watermark was written.
+  kSynced,
+  /// The Durable Flush failed or was cancelled before `fsync` reported success.
+  kNotSynced,
+};
+
 /// Exact single-route accounting for the admitted Records before an Operation watermark.
 ///
 /// Byte counts are encoded route bytes; a route without an encoder reports zero bytes.
@@ -36,6 +48,9 @@ struct OperationReport final {
   std::uint64_t failed_bytes{0};
   std::uint64_t unfinished_records{0};
   std::uint64_t unfinished_bytes{0};
+  OperationDurability durability{OperationDurability::kNotRequested};
+  /// Negative libuv error that failed the route before completion; zero otherwise.
+  std::int32_t io_error{0};
 
   friend constexpr bool operator==(const OperationReport&,
                                    const OperationReport&) noexcept = default;

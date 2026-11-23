@@ -102,7 +102,7 @@ struct RuntimeSnapshot final {
   std::size_t fixed_backing_bytes{0};
   bool admission_open{false};
   bool worker_running{false};
-  /// The route stopped after an encoding, write, or close failure.
+  /// The route stopped after an encoding, write, `fsync`, or close failure.
   bool route_failed{false};
   /// Negative libuv error that failed a file route; zero for other failures or a healthy route.
   std::int32_t route_io_error{0};
@@ -133,6 +133,8 @@ class Runtime final {
   [[nodiscard]] ULOG_API Logger GetLogger() noexcept;
   [[nodiscard]] ULOG_API RuntimeSnapshot GetSnapshot() const noexcept;
   [[nodiscard]] ULOG_API OperationStartResult Drain() noexcept;
+  /// Drains through its watermark, then requests `fsync` for a file route on its I/O loop thread.
+  [[nodiscard]] ULOG_API OperationStartResult DurableFlush() noexcept;
   [[nodiscard]] ULOG_API OperationStartResult Shutdown() noexcept;
 
  private:

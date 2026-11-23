@@ -6,8 +6,8 @@ locations, a cheap Logger handle, bounded Operation completion primitives, and
 the basic text/fmt `LOG*` macro family. The installed package also exposes a
 bounded single-route Runtime whose production route appends Raw frames to a file
 through a private libuv loop, plus structured-record and Raw-encoded in-memory
-test destinations with deferred delivery completion and exact Drain and Shutdown
-reports.
+test destinations with deferred delivery completion and exact Drain, Durable
+Flush, and Shutdown reports.
 The initial process-wide target is a static Null Logger. Applications can
 atomically replace that non-owning target; Runtime does not install its Logger
 automatically.
@@ -77,8 +77,8 @@ contract, supported macro forms, and compile-time cutoff.
 The public [`Operation`](docs/operations.md) handle provides non-blocking
 polling, one asynchronously dispatched completion callback, and explicit
 deadline-bounded waiting. The current
-[`Runtime`](docs/runtime.md) uses Operations for Drain and Shutdown while
-keeping its control reserve outside the logging hot path.
+[`Runtime`](docs/runtime.md) uses Operations for Drain, Durable Flush, and
+Shutdown while keeping its control reserve outside the logging hot path.
 
 For the full Conan, unit, stress, dependency, and benchmark workflow, see
 [`docs/testing.md`](docs/testing.md). The shared performance workload and

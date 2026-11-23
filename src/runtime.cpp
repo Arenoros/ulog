@@ -243,14 +243,26 @@ template <typename Destination>
   return {.code = RuntimeCreateErrorCode::kIoLoopStartFailed, .io_error = started.io_error};
 }
 
-enum class ControlActionKind : std::uint8_t { kDrain, kShutdown };
+enum class ControlActionKind : std::uint8_t { kDrain, kDurableFlush, kShutdown };
 
 struct ControlAction final {
   ControlActionKind kind{ControlActionKind::kDrain};
   std::uint64_t watermark{0};
+  OperationDurability durability{OperationDurability::kNotRequested};
+  /// The route sync requested once a Durable Flush reached its watermark.
+  std::optional<std::uint64_t> sync_ticket{};
   OperationCompletion completion{};
   bool active{false};
 };
+
+/// A Durable Flush on a durable route succeeds only after its sync did.
+[[nodiscard]] OperationOutcome ActionOutcome(OperationDurability durability,
+                                             OperationOutcome outcome) noexcept {
+  if (outcome == OperationOutcome::kSucceeded && durability == OperationDurability::kNotSynced) {
+    return OperationOutcome::kFailed;
+  }
+  return outcome;
+}
 
 struct RouteDeliveryResult final {
   ConsumeStatus consumed{ConsumeStatus::kEmpty};
@@ -370,6 +382,19 @@ class RuntimeRoute final {
       return sink->SummarizeInFlight(watermark);
     }
     return {};
+  }
+
+  /// Returns whether the route can request `fsync`; in-memory routes have no durable semantics.
+  [[nodiscard]] bool SupportsSync() const noexcept { return FileSink() != nullptr; }
+
+  [[nodiscard]] std::uint64_t RequestSync() noexcept {
+    auto* sink = FileSink();
+    return sink != nullptr ? sink->RequestSync() : 0U;
+  }
+
+  [[nodiscard]] bool SyncCompleted(std::uint64_t ticket) const noexcept {
+    const auto* sink = FileSink();
+    return sink == nullptr || sink->SyncCompleted(ticket);
   }
 
   /// Returns the libuv error that failed a file route; in-memory routes never fail this way.
@@ -586,6 +611,17 @@ class RuntimeDomain final {
       return {.failure = started.failure};
     }
 
+    OperationDurability durability = OperationDurability::kNotRequested;
+    if (kind == ControlActionKind::kDurableFlush) {
+      if (route_.SupportsSync()) {
+        durability = OperationDurability::kNotSynced;
+      } else {
+        // A route without durable semantics only drains and claims no durability.
+        durability = OperationDurability::kNotApplicable;
+        kind = ControlActionKind::kDrain;
+      }
+    }
+
     std::optional<OperationOutcome> immediate_outcome;
     OperationReport immediate_report{};
     {
@@ -596,9 +632,11 @@ class RuntimeDomain final {
         } else if (route_failed_) {
           immediate_outcome = OperationOutcome::kFailed;
         } else {
-          immediate_outcome = OperationOutcome::kSucceeded;
+          // A stopped file route is closed, so a Durable Flush can no longer sync it.
+          immediate_outcome = ActionOutcome(durability, OperationOutcome::kSucceeded);
         }
         immediate_report = BuildReportLocked(producer_.GetSnapshot().accepted_records);
+        immediate_report.durability = durability;
       } else {
         if (kind == ControlActionKind::kShutdown && !shutdown_requested_) {
           shutdown_requested_ = true;
@@ -617,14 +655,21 @@ class RuntimeDomain final {
           // Every Record through the watermark already retired, so the ledger is exact now.
           immediate_outcome = OperationOutcome::kSucceeded;
           immediate_report = BuildReportLocked(watermark);
+          immediate_report.durability = durability;
         } else if (free_action == nullptr) {
           immediate_outcome = OperationOutcome::kFailed;
           immediate_report = BuildReportLocked(watermark);
+          immediate_report.durability = durability;
         } else {
           free_action->kind = kind;
           free_action->watermark = watermark;
+          free_action->durability = durability;
+          free_action->sync_ticket.reset();
           free_action->completion = std::move(started.completion);
           free_action->active = true;
+          if (kind == ControlActionKind::kDurableFlush) {
+            active_durable_flushes_.fetch_add(1, std::memory_order_relaxed);
+          }
         }
       }
     }
@@ -658,6 +703,8 @@ class RuntimeDomain final {
       }
 
       RetireCompletedDeliveries();
+      // Before the failure check, so a flush whose sync succeeded before a later failure succeeds.
+      AdvanceDurableFlushes();
       if (const std::int32_t error = route_.TerminalError(); error != 0) {
         RecordRouteIoError(error);
         PrepareRouteFailure();
@@ -790,7 +837,7 @@ class RuntimeDomain final {
   /// Returns exact accounting for admitted sequences below `watermark`. Registered actions keep
   /// `watermark >= ledger_.retired_records`, so the in-order ledger never includes later Records.
   [[nodiscard]] OperationReport BuildReportLocked(std::uint64_t watermark) const noexcept {
-    OperationReport report{.watermark_records = watermark};
+    OperationReport report{.watermark_records = watermark, .io_error = route_io_error_};
     if (ledger_.settled) {
       report.processed_records = ledger_.processed_records;
       report.processed_bytes = ledger_.processed_bytes;
@@ -884,10 +931,49 @@ class RuntimeDomain final {
     route_.DiscardInFlight();
   }
 
-  [[nodiscard]] std::uint64_t ActionWatermarkLocked(const ControlAction& action) const noexcept {
+  [[nodiscard]] OperationReport ActionReportLocked(const ControlAction& action) const noexcept {
     // Shutdown covers every admitted Record, including writers that finish after admission closes.
-    return action.kind == ControlActionKind::kDrain ? action.watermark
-                                                    : producer_.GetSnapshot().accepted_records;
+    OperationReport report = BuildReportLocked(action.kind == ControlActionKind::kShutdown
+                                                   ? producer_.GetSnapshot().accepted_records
+                                                   : action.watermark);
+    report.durability = action.durability;
+    return report;
+  }
+
+  /// Requests one route sync for each Durable Flush that reached its watermark, and completes
+  /// each flush whose sync succeeded. A failed sync fails the route instead.
+  void AdvanceDurableFlushes() noexcept {
+    // Keeps the worker path free of an extra lock while no flush is pending.
+    while (active_durable_flushes_.load(std::memory_order_relaxed) != 0U) {
+      OperationCompletion completion;
+      OperationReport report;
+      {
+        std::lock_guard lock{state_mutex_};
+        ControlAction* ready = nullptr;
+        for (std::size_t index = 0; index < config_.control_operations; ++index) {
+          auto& action = actions_[index];
+          if (!action.active || action.kind != ControlActionKind::kDurableFlush ||
+              action.watermark > ledger_.retired_records) {
+            continue;
+          }
+          if (!action.sync_ticket) {
+            action.sync_ticket = route_.RequestSync();
+          } else if (route_.SyncCompleted(*action.sync_ticket)) {
+            ready = &action;
+            break;
+          }
+        }
+        if (ready == nullptr) {
+          return;
+        }
+        ready->active = false;
+        ready->durability = OperationDurability::kSynced;
+        active_durable_flushes_.fetch_sub(1, std::memory_order_relaxed);
+        completion = std::move(ready->completion);
+        report = ActionReportLocked(*ready);
+      }
+      static_cast<void>(completion.TryComplete(OperationOutcome::kSucceeded, report));
+    }
   }
 
   void CompleteReadyDrains() noexcept {
@@ -910,7 +996,7 @@ class RuntimeDomain final {
         }
         ready->active = false;
         completion = std::move(ready->completion);
-        report = BuildReportLocked(ready->watermark);
+        report = ActionReportLocked(*ready);
       }
       static_cast<void>(completion.TryComplete(OperationOutcome::kSucceeded, report));
     }
@@ -933,6 +1019,11 @@ class RuntimeDomain final {
       if (ledger_.retired_records != snapshot.accepted_records) {
         return std::nullopt;
       }
+      // Durable Flushes started before the close sync first; later ones fail as unsynced.
+      if (!close_requested_ && active_durable_flushes_.load(std::memory_order_relaxed) != 0U) {
+        return std::nullopt;
+      }
+      close_requested_ = true;
     }
     route_.RequestClose();
     const auto closed = route_.CloseResult();
@@ -956,6 +1047,7 @@ class RuntimeDomain final {
     while (true) {
       OperationCompletion completion;
       OperationReport report;
+      OperationOutcome action_outcome = outcome;
       {
         std::lock_guard lock{state_mutex_};
         ControlAction* active = nullptr;
@@ -969,10 +1061,14 @@ class RuntimeDomain final {
           return;
         }
         active->active = false;
+        if (active->kind == ControlActionKind::kDurableFlush) {
+          active_durable_flushes_.fetch_sub(1, std::memory_order_relaxed);
+        }
         completion = std::move(active->completion);
-        report = BuildReportLocked(ActionWatermarkLocked(*active));
+        report = ActionReportLocked(*active);
+        action_outcome = ActionOutcome(active->durability, outcome);
       }
-      static_cast<void>(completion.TryComplete(outcome, report));
+      static_cast<void>(completion.TryComplete(action_outcome, report));
     }
   }
 
@@ -1005,8 +1101,11 @@ class RuntimeDomain final {
   bool worker_stopped_{false};
   bool accepting_actions_{true};
   bool shutdown_requested_{false};
+  bool close_requested_{false};
   bool route_failed_{false};
   std::int32_t route_io_error_{0};
+  /// Active Durable Flush actions; written under `state_mutex_`, read by the worker without it.
+  std::atomic<std::size_t> active_durable_flushes_{0};
   std::atomic<bool> destruction_stop_requested_{false};
   std::atomic<bool> worker_running_{false};
   std::atomic<std::uint64_t> wake_epoch_{0};
@@ -1177,6 +1276,10 @@ RuntimeSnapshot Runtime::GetSnapshot() const noexcept { return impl_->domain->Ge
 
 OperationStartResult Runtime::Drain() noexcept {
   return impl_->domain->StartAction(ControlActionKind::kDrain);
+}
+
+OperationStartResult Runtime::DurableFlush() noexcept {
+  return impl_->domain->StartAction(ControlActionKind::kDurableFlush);
 }
 
 OperationStartResult Runtime::Shutdown() noexcept {

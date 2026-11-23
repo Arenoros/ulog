@@ -1,7 +1,8 @@
 # Operations
 
 `ulog::Operation` is the move-only completion handle for ordered Runtime
-actions. The public [Runtime](runtime.md) uses it for Drain and Shutdown. Operation state is allocated from a control reserve that is
+actions. The public [Runtime](runtime.md) uses it for Drain, Durable Flush, and
+Shutdown. Operation state is allocated from a control reserve that is
 independent of producer payload credits, so a control action can still start
 when retained Records fill the payload budget.
 
@@ -39,7 +40,13 @@ is below the Operation watermark:
 - `delivered_*` and `failed_*` count terminal delivery outcomes; and
 - `unfinished_records` and `unfinished_bytes` cover Records without a terminal
   outcome when the action completed, such as cancelled deliveries or discarded
-  ingress Records.
+  ingress Records;
+- `durability` is `kNotRequested` for Drain and Shutdown. For Durable Flush it is
+  `kSynced` after a successful file `fsync`, `kNotSynced` when the flush failed or
+  was cancelled first, and `kNotApplicable` for a route without durable semantics;
+  and
+- `io_error` is the negative libuv error that failed the route before the
+  Operation completed, or zero.
 
 `delivered_records + failed_records + unfinished_records` always equals
 `watermark_records`. Bytes are encoded route bytes, so a Record that was never
@@ -105,9 +112,11 @@ producer source files; the frontend structural gate enforces that direction.
 single worker has retired a terminal delivery outcome for every Record through
 that watermark in its Raw file route or in-memory test destination. On the file
 route that outcome is local write completion, not `fsync`. It leaves admission
-open. `Runtime::Shutdown()` closes admission, finishes all
-already accepted Records, completes, and stops the worker. Both succeed once
-their barrier is reached; failed deliveries are counted in the report rather
+open. `Runtime::DurableFlush()` reaches the same barrier and then requests `fsync`
+for the file route; it succeeds only when that `fsync` succeeds, or reports
+`kNotApplicable` on a route without durable semantics. `Runtime::Shutdown()`
+closes admission, finishes all already accepted Records, completes, and stops the
+worker. Drain and Shutdown succeed once their barrier is reached; failed deliveries are counted in the report rather
 than turning the barrier into `kFailed`. A successful Drain or Shutdown does not
 mean an application has taken or released the destination's observed Records.
 
