@@ -10,6 +10,7 @@ from pathlib import Path
 EXPECTED_PRODUCER_COUNTERS = {
     "rejected_lane_full",
     "rejected_budget",
+    "rejected_priority_reserve",
     "abandoned_builds",
     "invalid_records",
     "truncated_records",
@@ -21,6 +22,9 @@ EXPECTED_ATOMIC_INVENTORY = Counter(
         ("src/producer/credit_ledger.hpp", "returned_credit_bytes"): 1,
         ("src/producer/credit_ledger.hpp", "logical_charge_bytes"): 1,
         ("src/producer/credit_ledger.hpp", "central_available_bytes_"): 1,
+        # The priority reserve pool; only Error and Critical Records that the payload budget
+        # rejected touch it.
+        ("src/producer/credit_ledger.hpp", "priority_available_bytes_"): 1,
         ("src/producer/producer_kernel.cpp", "next_missing_producer_shard"): 1,
         ("src/producer/producer_kernel.cpp", "next_kernel_identity"): 1,
         ("src/producer/producer_kernel.cpp", "registered_generation"): 1,
@@ -29,6 +33,7 @@ EXPECTED_ATOMIC_INVENTORY = Counter(
         ("src/producer/producer_kernel.cpp", "state"): 1,
         ("src/producer/producer_kernel.cpp", "rejected_lane_full"): 1,
         ("src/producer/producer_kernel.cpp", "rejected_budget"): 1,
+        ("src/producer/producer_kernel.cpp", "rejected_priority_reserve"): 1,
         ("src/producer/producer_kernel.cpp", "abandoned_builds"): 1,
         ("src/producer/producer_kernel.cpp", "invalid_records"): 1,
         ("src/producer/producer_kernel.cpp", "truncated_records"): 1,
@@ -46,6 +51,7 @@ EXPECTED_PUBLISH_COUNTER_MUTATIONS = Counter(
     {
         "counters.rejected_lane_full": 1,
         "counters.rejected_budget": 1,
+        "counters.rejected_priority_reserve": 1,
         "counters.abandoned_builds": 1,
         "counters.invalid_records": 6,
         "counters.truncated_records": 1,

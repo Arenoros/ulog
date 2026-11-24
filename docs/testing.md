@@ -141,14 +141,18 @@ single-route pipeline:
 - producer slots, per-producer ingress lanes, and per-producer credit refilled
   from the shared payload pool, with the 64-byte charge quantum;
 - drop-newest rejection by reason;
+- the priority reserve: Error and Critical attempts that the payload budget
+  rejects reserve from it, its bytes return when the worker takes the Record,
+  and a full reserve rejects them as `rejected_priority_reserve`;
 - worker progress through the encoded destination's slots;
 - in-order retirement of held, completed, failed, and abandoned deliveries;
 - the control reserve, with exact Drain and Shutdown reports.
 
 `ulog-admission-oracle` (`tests/stress/admission_oracle.cpp`) generates a
 seeded event trace and applies it to the model and to a real Runtime with an
-`InMemoryEncodedDestination`. Events log from registered and unregistered
-producer threads, change the delivery mode, complete, fail, or abandon held
+`InMemoryEncodedDestination`. Events log at Info, Error, or Critical from
+registered and unregistered producer threads, in scenarios with and without a
+priority reserve, change the delivery mode, complete, fail, or abandon held
 deliveries, take and release frames, start Drains and Shutdowns, and release
 Operation handles. A burst makes every producer thread log at once. It runs
 concurrently only while the route has no free slot and the shared pool covers

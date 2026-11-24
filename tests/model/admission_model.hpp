@@ -7,8 +7,8 @@
 // Runtime must converge to the same observable state after the same step.
 //
 // Extension points for later slices:
-// - Admit() decides one attempt; a new shedding policy (drop-oldest, thinning, priority reserve,
-//   blocking) adds an Admission reason and a decision stage there.
+// - Admit() decides one attempt; a new shedding policy (drop-oldest, thinning, blocking) adds an
+//   Admission reason and a decision stage there, as the priority reserve did.
 // - RouteModel owns destination slots and deliveries; another route type replaces it, and
 //   multiple routes become several RouteModel instances fed from the same admission sequence.
 // - ControlModel owns Operation reports; route-local watermarks extend its report builder.
@@ -45,9 +45,19 @@ struct Config final {
   std::size_t control_operations{1};
   /// Source path plus function name bytes of the call site every producer uses.
   std::size_t source_bytes{0};
+  /// Bytes that only priority (Error and Critical) Records use after the payload budget rejects
+  /// them; zero disables the reserve.
+  std::size_t priority_reserve_bytes{0};
 };
 
-enum class Admission : std::uint8_t { kAccepted, kFiltered, kNoProducer, kLaneFull, kBudget };
+enum class Admission : std::uint8_t {
+  kAccepted,
+  kFiltered,
+  kNoProducer,
+  kLaneFull,
+  kBudget,
+  kPriorityReserve,
+};
 
 enum class DeliveryMode : std::uint8_t { kCompleteInline, kHold, kFailInline };
 
@@ -74,6 +84,8 @@ struct Record final {
   bool delivered{false};
   bool retired{false};
   bool handle_taken{false};
+  /// Charged to the priority reserve, which takes its bytes back when the worker consumes it.
+  bool priority{false};
 
   [[nodiscard]] std::size_t charge_bytes() const noexcept { return ChargeBytes(serialized_bytes); }
   [[nodiscard]] std::size_t frame_bytes() const noexcept {
@@ -103,6 +115,7 @@ struct Counters final {
   std::uint64_t rejected_no_producer{0};
   std::uint64_t rejected_lane_full{0};
   std::uint64_t rejected_budget{0};
+  std::uint64_t rejected_priority_reserve{0};
   std::uint64_t retained_records{0};
   std::size_t logical_retained_bytes{0};
   /// Empty while it depends on an unresolved burst order.
@@ -113,7 +126,9 @@ struct Counters final {
 class AdmissionModel final {
  public:
   explicit AdmissionModel(Config config)
-      : config_(config), central_(config.payload_capacity_bytes) {
+      : config_(config),
+        central_(config.payload_capacity_bytes),
+        priority_available_(config.priority_reserve_bytes) {
     for (std::size_t slot = 0; slot < config.producer_slots; ++slot) {
       ProducerState producer;
       producer.lane_capacity = config.ingress_cells / config.producer_slots +
@@ -144,10 +159,13 @@ class AdmissionModel final {
     return thread < producers_.size() && producers_[thread].busy_burst != 0;
   }
 
-  /// One attempt by `thread` to log `message`.
-  Admission Log(std::size_t thread, std::string message) {
+  /// One attempt by `thread` to log `message`; a `priority` (Error or Critical) attempt may use
+  /// the priority reserve after the payload budget rejects it.
+  Admission Log(std::size_t thread, std::string message, bool priority = false) {
     const std::size_t bytes = message.size();
-    const Admission result = Admit(thread, SerializedBytes(bytes));
+    bool from_reserve = false;
+    const Admission result = Admit(thread, SerializedBytes(bytes), priority, from_reserve);
+    last_used_reserve_ = from_reserve;
     if (result == Admission::kAccepted) {
       Record record;
       record.sequence = records_.size();
@@ -155,11 +173,15 @@ class AdmissionModel final {
       record.message = std::move(message);
       record.message_bytes = bytes;
       record.serialized_bytes = SerializedBytes(bytes);
+      record.priority = from_reserve;
       records_.push_back(std::move(record));
     }
     Settle();
     return result;
   }
+
+  /// Whether the last Log() was admitted through the priority reserve.
+  [[nodiscard]] bool last_used_reserve() const noexcept { return last_used_reserve_; }
 
   /// Whether `count` attempts by each of `threads` with `message_bytes` messages have one outcome
   /// per thread for every interleaving: the worker cannot take a Record during the burst, and the
@@ -206,7 +228,9 @@ class AdmissionModel final {
     std::vector<std::size_t> accepted(threads.size(), 0);
     for (std::size_t index = 0; index < threads.size(); ++index) {
       for (std::size_t attempt = 0; attempt < count; ++attempt) {
-        if (Admit(threads[index], SerializedBytes(message_bytes)) != Admission::kAccepted) {
+        bool from_reserve = false;
+        if (Admit(threads[index], SerializedBytes(message_bytes), false, from_reserve) !=
+            Admission::kAccepted) {
           continue;
         }
         ++accepted[index];
@@ -363,7 +387,8 @@ class AdmissionModel final {
     }
     const bool physical_known = !shutdown_requested_ || bursts_.empty();
     if (physical_known) {
-      counters.physical_retained_bytes = config_.payload_capacity_bytes - central_;
+      counters.physical_retained_bytes = config_.payload_capacity_bytes - central_ +
+                                         config_.priority_reserve_bytes - priority_available_;
     }
     return counters;
   }
@@ -426,7 +451,9 @@ class AdmissionModel final {
 
   /// Drop-newest admission, checked in the producer kernel's order. A rejected attempt consumes
   /// no sequence and evaluates no message.
-  Admission Admit(std::size_t thread, std::size_t serialized_bytes) {
+  Admission Admit(std::size_t thread, std::size_t serialized_bytes, bool priority,
+                  bool& from_reserve) {
+    from_reserve = false;
     if (!admission_open_) {
       // Closing admission also sets the threshold to None, so the call is filtered uncounted.
       return Admission::kFiltered;
@@ -446,8 +473,20 @@ class AdmissionModel final {
     if (producer.local_credit < reserve) {
       const std::size_t deficit = reserve - producer.local_credit;
       if (central_ < deficit) {
-        ++rejections_.rejected_budget;
-        return Admission::kBudget;
+        if (!priority || config_.priority_reserve_bytes == 0U) {
+          ++rejections_.rejected_budget;
+          return Admission::kBudget;
+        }
+        // The reserve charges the worst case, and the commit returns the unused part at once.
+        const std::size_t worst_case = ChargeBytes(reserve);
+        if (priority_available_ < worst_case) {
+          ++rejections_.rejected_priority_reserve;
+          return Admission::kPriorityReserve;
+        }
+        priority_available_ -= ChargeBytes(serialized_bytes);
+        ++producer.lane_used;
+        from_reserve = true;
+        return Admission::kAccepted;
       }
       central_ -= deficit;
       producer.local_credit = reserve;
@@ -463,7 +502,7 @@ class AdmissionModel final {
     if (record.burst == 0U) {
       ProducerState& producer = producers_[record.producer];
       --producer.lane_used;
-      producer.local_credit += record.charge_bytes();
+      (record.priority ? priority_available_ : producer.local_credit) += record.charge_bytes();
       return;
     }
     for (auto it = bursts_.begin(); it != bursts_.end(); ++it) {
@@ -570,6 +609,8 @@ class AdmissionModel final {
   RouteModel route_;
   Counters rejections_;
   std::size_t central_{0};
+  std::size_t priority_available_{0};
+  bool last_used_reserve_{false};
   std::size_t processed_{0};
   std::size_t retired_{0};
   std::size_t last_burst_{0};

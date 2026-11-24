@@ -187,11 +187,74 @@ void ConsumeTruncated(void* context, std::uint64_t, const producer::RecordView& 
   return success;
 }
 
+/// Warmed admission through the priority reserve, and the rejections around it, allocate nothing.
+[[nodiscard]] bool RunPriorityReserve() {
+  producer::EventTimestamp timestamp = 0;
+  producer::ProducerKernel kernel{producer::KernelConfig{.threshold = ulog::Level::kTrace,
+                                                         .payload_capacity_bytes = 256,
+                                                         .maximum_record_bytes = 256,
+                                                         .producer_slots = 1,
+                                                         .ingress_cells = 4,
+                                                         .priority_reserve_bytes = 256},
+                                  producer::EventClock{&timestamp, &Clock::Now}};
+  auto registration = kernel.TryRegisterProducer();
+  if (!registration) {
+    std::cerr << "producer allocation test: reserve registration failed\n";
+    return false;
+  }
+  Counters counters;
+  const auto publish = [&](ulog::Level level) {
+    return kernel
+        .TryPublish(registration, level, kSource,
+                    producer::BuildOperation{&counters, &NativeBuild::Invoke})
+        .outcome;
+  };
+  // The budget holds the Info Record, the reserve the Error one; the Warning and the second
+  // Critical are rejected for each reason. Consuming both returns their bytes.
+  const auto cycle = [&]() {
+    counters.valid =
+        counters.valid && publish(ulog::Level::kInfo) == producer::PublishOutcome::kAccepted;
+    counters.valid = counters.valid &&
+                     publish(ulog::Level::kWarning) == producer::PublishOutcome::kBudgetExhausted;
+    counters.valid =
+        counters.valid && publish(ulog::Level::kError) == producer::PublishOutcome::kAccepted;
+    counters.valid = counters.valid && publish(ulog::Level::kCritical) ==
+                                           producer::PublishOutcome::kPriorityReserveExhausted;
+    for (int record = 0; record < 2; ++record) {
+      counters.valid = counters.valid && kernel.TryConsume(&counters, &ConsumeNative) ==
+                                             producer::ConsumeStatus::kRecord;
+    }
+  };
+  cycle();
+  const std::uint64_t allocations_before =
+      allocation_tracking::allocation_count.load(std::memory_order_relaxed);
+  for (std::uint64_t round = 0; round < kCycles; ++round) {
+    cycle();
+  }
+  const std::uint64_t allocations_after =
+      allocation_tracking::allocation_count.load(std::memory_order_relaxed);
+  const auto snapshot = kernel.GetSnapshot();
+  const bool success = counters.valid && allocations_after == allocations_before &&
+                       snapshot.accepted_records == 2U * (kCycles + 1U) &&
+                       snapshot.rejected_budget == kCycles + 1U &&
+                       snapshot.rejected_priority_reserve == kCycles + 1U &&
+                       snapshot.retained_records == 0U && snapshot.accounting_sample_consistent;
+  if (!success) {
+    std::cerr << "producer allocation test: reserve allocations="
+              << (allocations_after - allocations_before)
+              << " accepted=" << snapshot.accepted_records << " budget=" << snapshot.rejected_budget
+              << " reserve=" << snapshot.rejected_priority_reserve << '\n';
+  }
+  return success;
+}
+
 }  // namespace
 
 int main() noexcept {
   try {
-    return Run() ? 0 : 1;
+    const bool ordinary = Run();
+    const bool reserve = RunPriorityReserve();
+    return ordinary && reserve ? 0 : 1;
   } catch (const std::exception& error) {
     std::fprintf(stderr, "producer allocation test failed with exception: %s\n", error.what());
     return 1;

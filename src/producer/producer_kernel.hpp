@@ -43,6 +43,9 @@ struct KernelConfig final {
   std::size_t producer_slots{kMaximumProducerSlots};
   std::size_t ingress_cells{kMaximumIngressCells};
   ConsumerNotification consumer_notification{};
+  /// Bytes that only Error and Critical Records may use after the payload budget rejects them;
+  /// zero disables the reserve.
+  std::size_t priority_reserve_bytes{0};
 };
 
 struct WriteResult final {
@@ -125,6 +128,8 @@ enum class PublishOutcome : std::uint8_t {
   kNoProducerSlot,
   kLaneFull,
   kBudgetExhausted,
+  /// An Error or Critical Record found both the payload budget and the priority reserve full.
+  kPriorityReserveExhausted,
   kInvalidRecord,
 };
 
@@ -216,6 +221,7 @@ struct KernelSnapshot final {
   std::uint64_t rejected_no_producer{0};
   std::uint64_t rejected_lane_full{0};
   std::uint64_t rejected_budget{0};
+  std::uint64_t rejected_priority_reserve{0};
   std::uint64_t abandoned_builds{0};
   std::uint64_t invalid_records{0};
   std::uint64_t truncated_records{0};
@@ -223,6 +229,7 @@ struct KernelSnapshot final {
   std::size_t logical_retained_bytes{0};
   std::size_t physical_retained_bytes{0};
   std::size_t payload_capacity_bytes{0};
+  std::size_t priority_reserve_bytes{0};
   std::size_t fixed_backing_bytes{0};
   std::size_t active_producer_slots{0};
   std::size_t retiring_producer_slots{0};

@@ -74,6 +74,14 @@ constexpr auto kNoShutdownDeadline =
       config.payload_capacity_bytes % detail::producer::kAccountingQuantumBytes != 0U) {
     return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidPayloadCapacity};
   }
+  if (config.admission_policy != AdmissionPolicy::kDropNewest) {
+    return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidAdmissionPolicy};
+  }
+  if (config.priority_reserve_bytes % detail::producer::kAccountingQuantumBytes != 0U ||
+      (config.priority_reserve_bytes != 0U &&
+       config.priority_reserve_bytes < config.maximum_record_bytes)) {
+    return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidPriorityReserve};
+  }
   if (config.producer_slots == 0U ||
       config.producer_slots > detail::producer::kMaximumProducerSlots) {
     return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidProducerSlots};
@@ -152,6 +160,11 @@ template <typename Destination>
       return "Runtime could not create a missing parent directory of the file route path.";
     case RuntimeCreateErrorCode::kUnsupportedFormat:
       return "The route format is not a ulog::Format value.";
+    case RuntimeCreateErrorCode::kInvalidAdmissionPolicy:
+      return "Runtime admission_policy is not a ulog::AdmissionPolicy value.";
+    case RuntimeCreateErrorCode::kInvalidPriorityReserve:
+      return "Runtime priority_reserve_bytes cannot hold one maximum-sized Record or is not "
+             "64-byte aligned.";
   }
   return "Runtime creation failed.";
 }
@@ -205,6 +218,11 @@ template <typename Destination>
     case RuntimeCreateErrorCode::kUnsupportedFormat:
       return "Set the route format to a ulog::Format value, such as Format::kTskv or "
              "Format::kJson.";
+    case RuntimeCreateErrorCode::kInvalidAdmissionPolicy:
+      return "Set admission_policy to AdmissionPolicy::kDropNewest.";
+    case RuntimeCreateErrorCode::kInvalidPriorityReserve:
+      return "Set priority_reserve_bytes to zero to disable the reserve, or to a 64-byte-aligned "
+             "value of at least maximum_record_bytes.";
   }
   return "Correct the Runtime configuration and retry.";
 }
@@ -530,6 +548,7 @@ class RuntimeDomain final {
                 .producer_slots = config_.producer_slots,
                 .ingress_cells = config_.ingress_cells,
                 .consumer_notification = {this, &RuntimeDomain::NotifyConsumer},
+                .priority_reserve_bytes = config_.priority_reserve_bytes,
             },
             SelectEventClock(config_.event_clock)),
         control_reserve_(config_.control_operations),
@@ -585,8 +604,8 @@ class RuntimeDomain final {
       route_failed = route_failed_;
       route_io_error = route_io_error_;
     }
-    const std::uint64_t rejected =
-        producer.rejected_no_producer + producer.rejected_lane_full + producer.rejected_budget;
+    const std::uint64_t rejected = producer.rejected_no_producer + producer.rejected_lane_full +
+                                   producer.rejected_budget + producer.rejected_priority_reserve;
     return RuntimeSnapshot{
         .accepted_records = producer.accepted_records,
         .processed_records = ledger.processed_records,
@@ -601,11 +620,13 @@ class RuntimeDomain final {
         .rejected_no_producer = producer.rejected_no_producer,
         .rejected_lane_full = producer.rejected_lane_full,
         .rejected_budget = producer.rejected_budget,
+        .rejected_priority_reserve = producer.rejected_priority_reserve,
         .dropped_newest_records = rejected,
         .retained_records = producer.retained_records,
         .logical_retained_bytes = producer.logical_retained_bytes,
         .physical_retained_bytes = producer.physical_retained_bytes,
         .payload_capacity_bytes = producer.payload_capacity_bytes,
+        .priority_reserve_bytes = producer.priority_reserve_bytes,
         .fixed_backing_bytes = producer.fixed_backing_bytes + route_.FixedBackingBytes() +
                                controls.node_backing_bytes + controls.dispatcher_state_bytes +
                                config_.control_operations * sizeof(ControlAction),

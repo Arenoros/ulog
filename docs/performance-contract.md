@@ -95,6 +95,12 @@ all payload pools, and the independent control and progress reserves.
   accounted trade-off rather than hidden blocking or scanning.
 - Error and Critical Records have a configurable reserved byte budget and are
   shed last without introducing synchronous producer-side I/O.
+  `RuntimeConfig::priority_reserve_bytes` implements it as a separate atomic pool.
+  A call draws from it only after the ordinary budget rejected an Error or Critical
+  Record. An ordinary accepted call therefore adds no lock, allocation, or shared
+  counter traffic: the frontend hot-path contract check lists the pool and its
+  exceptional `rejected_priority_reserve` counter explicitly. The maximum
+  Ulog-owned payload memory is `payload_capacity_bytes + priority_reserve_bytes`.
 - Explicit `Block(deadline)` is supported separately, is never the default, and
   is forbidden on Ulog-owned threads.
 - A Record exceeding `max_record_bytes` is truncated at a valid UTF-8 boundary,

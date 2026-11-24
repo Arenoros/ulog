@@ -25,6 +25,12 @@ namespace detail {
 struct RuntimeFactoryAccess;
 }  // namespace detail
 
+/// How a Runtime admits a call when its producer lane or payload budget is full.
+enum class AdmissionPolicy : std::uint8_t {
+  /// Rejects the incoming call before its message is built; nothing already admitted is evicted.
+  kDropNewest,
+};
+
 struct RuntimeConfig final {
   Level threshold{Level::kInfo};
   std::size_t payload_capacity_bytes{1U << 20U};
@@ -37,6 +43,12 @@ struct RuntimeConfig final {
   std::chrono::milliseconds destruction_timeout{1'000};
   /// Event timestamp source; the default reads the system clock.
   EventClock event_clock{};
+  AdmissionPolicy admission_policy{AdmissionPolicy::kDropNewest};
+  /// Payload bytes that only Error and Critical Records may use, after `payload_capacity_bytes`
+  /// rejected them. Zero, the default, disables the reserve; otherwise it is 64-byte aligned and
+  /// at least `maximum_record_bytes`. The maximum Ulog-owned payload memory is
+  /// `payload_capacity_bytes + priority_reserve_bytes`.
+  std::size_t priority_reserve_bytes{0};
 };
 
 /// One immutable route that appends encoded frames to a file through Ulog's private I/O loop.
@@ -73,6 +85,8 @@ enum class RuntimeCreateErrorCode : std::uint8_t {
   kFileOpenFailed,
   kDirectoryCreateFailed,
   kUnsupportedFormat,
+  kInvalidAdmissionPolicy,
+  kInvalidPriorityReserve,
 };
 
 struct RuntimeCreateFailure final {
@@ -98,11 +112,15 @@ struct RuntimeSnapshot final {
   std::uint64_t rejected_no_producer{0};
   std::uint64_t rejected_lane_full{0};
   std::uint64_t rejected_budget{0};
+  /// Error and Critical calls rejected after both the payload budget and the reserve were full.
+  std::uint64_t rejected_priority_reserve{0};
+  /// Every rejected call: the sum of the four rejection reasons above.
   std::uint64_t dropped_newest_records{0};
   std::uint64_t retained_records{0};
   std::size_t logical_retained_bytes{0};
   std::size_t physical_retained_bytes{0};
   std::size_t payload_capacity_bytes{0};
+  std::size_t priority_reserve_bytes{0};
   std::size_t fixed_backing_bytes{0};
   bool admission_open{false};
   bool worker_running{false};

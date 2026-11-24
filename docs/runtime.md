@@ -78,6 +78,10 @@ The current Runtime accepts these bounds:
 - `maximum_record_bytes` is a 64-byte multiple from 128 through 16,384;
 - `payload_capacity_bytes` is a 64-byte multiple large enough for one maximum-sized
   Record;
+- `admission_policy` is `AdmissionPolicy::kDropNewest`, the default and only policy
+  so far;
+- `priority_reserve_bytes` is zero, the default, or a 64-byte multiple large enough
+  for one maximum-sized Record;
 - `producer_slots` is from 1 through 32, and `ingress_cells` is from
   `producer_slots` through 64;
 - `control_operations` is from 1 through 64;
@@ -138,12 +142,49 @@ address until application termination, as required by the
 
 Admission is bounded and non-blocking on producer threads. A call claims its
 producer-local ingress cell and reserves its complete worst-case Record charge before
-invoking the message factory or deferred macro operands. Producer-slot, lane, or
-payload exhaustion applies
-drop-newest, increments the corresponding snapshot rejection count, consumes no
-admission sequence, and evaluates no caller message expression. Successful
-publication assigns one global admission sequence. The single worker delivers
-Records to the destination in that sequence order.
+invoking the message factory or deferred macro operands. Successful publication
+assigns one global admission sequence. The single worker delivers Records to the
+destination in that sequence order.
+
+`RuntimeConfig::admission_policy` selects how a full Runtime sheds calls.
+`AdmissionPolicy::kDropNewest`, the default, rejects the incoming call: it
+increments one rejection count, consumes no admission sequence, and evaluates
+no caller message expression. Every rejection has exactly one of four reasons,
+counted in `RuntimeSnapshot`:
+
+| Reason | Snapshot count |
+| --- | --- |
+| The thread has no producer slot | `rejected_no_producer` |
+| The producer's ingress lane is full | `rejected_lane_full` |
+| The payload budget cannot hold one worst-case Record | `rejected_budget` |
+| An Error or Critical call found the budget and the priority reserve full | `rejected_priority_reserve` |
+
+`dropped_newest_records` is their sum. Operation reports count only admitted
+Records, so they are unaffected by rejections.
+
+### Priority reserve
+
+`priority_reserve_bytes` sets aside payload bytes that only Error and Critical
+Records use, so they are shed last (`DST-007`,
+[ADR 0010](adr/0010-bound-pipeline-memory-and-configure-shedding.md)). A call
+first reserves from the ordinary payload budget. An Error or Critical call that
+the budget rejects then reserves its worst-case charge from the priority
+reserve. It is rejected as `rejected_priority_reserve` only when the reserve is
+full too.
+
+- A Record admitted through the reserve returns its bytes to the reserve once the
+  worker takes it from ingress.
+- The reserve never makes a producer wait or perform I/O.
+- An ordinary accepted call never touches the reserve's shared counter.
+- The reserve holds bytes, not ingress cells, so a full producer lane still
+  rejects Error and Critical calls.
+- Explicit filtering still applies: a threshold or level filter that rejects a
+  Critical call is not overridden by the reserve.
+- The maximum Ulog-owned payload memory is
+  `payload_capacity_bytes + priority_reserve_bytes`.
+- `RuntimeSnapshot::priority_reserve_bytes` reports the configured reserve, and
+  `logical_retained_bytes` and `physical_retained_bytes` include what the reserve
+  holds.
 
 ## Observing Records
 
@@ -550,7 +591,7 @@ observe its successful Operation when delivery is required, or
 ## Current boundary
 
 Each Runtime intentionally has one immutable route, one worker, and drop-newest
-admission. The private route selects the file route, the structured in-memory
+admission with an optional priority reserve. The private route selects the file route, the structured in-memory
 copy, or the encoded in-memory destination at construction. Its fixed topology follows
 [ADR 0015](adr/0015-keep-route-topology-immutable.md). The following remain later
 roadmap work:

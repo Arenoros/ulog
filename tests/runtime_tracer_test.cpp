@@ -100,6 +100,18 @@ void SetTooLargeDestructionTimeout(RuntimeConfig& config) noexcept {
   config.destruction_timeout = 25h;
 }
 
+void SetInvalidAdmissionPolicy(RuntimeConfig& config) noexcept {
+  config.admission_policy = std::bit_cast<AdmissionPolicy>(std::uint8_t{7});
+}
+
+void SetUndersizedPriorityReserve(RuntimeConfig& config) noexcept {
+  config.priority_reserve_bytes = config.maximum_record_bytes - 64U;
+}
+
+void SetUnalignedPriorityReserve(RuntimeConfig& config) noexcept {
+  config.priority_reserve_bytes = config.maximum_record_bytes + 1U;
+}
+
 void SetInvalidDestinationBound(RuntimeConfig& config) noexcept {
   config.maximum_record_bytes = 1'024;
   config.payload_capacity_bytes = 1'024;
@@ -134,6 +146,14 @@ constexpr std::array kInvalidRuntimeConfigs{
                              "destruction_timeout"},
     InvalidRuntimeConfigCase{"destination bound", &SetInvalidDestinationBound,
                              RuntimeCreateErrorCode::kInvalidDestination, "destination"},
+    InvalidRuntimeConfigCase{"admission policy", &SetInvalidAdmissionPolicy,
+                             RuntimeCreateErrorCode::kInvalidAdmissionPolicy, "admission_policy"},
+    InvalidRuntimeConfigCase{"undersized priority reserve", &SetUndersizedPriorityReserve,
+                             RuntimeCreateErrorCode::kInvalidPriorityReserve,
+                             "priority_reserve_bytes"},
+    InvalidRuntimeConfigCase{"unaligned priority reserve", &SetUnalignedPriorityReserve,
+                             RuntimeCreateErrorCode::kInvalidPriorityReserve,
+                             "priority_reserve_bytes"},
 };
 
 void ExpectSucceeded(OperationStartResult& started) {
@@ -202,6 +222,28 @@ TEST(RuntimeTracer, CreationRejectsEveryInvalidConfigurationFieldWithGuidance) {
     EXPECT_EQ(failure.code, test_case.expected_code);
     EXPECT_FALSE(failure.Message().empty());
     EXPECT_NE(failure.HowToFix().find(test_case.correction_field), std::string_view::npos);
+  }
+}
+
+static_assert(RuntimeConfig{}.admission_policy == AdmissionPolicy::kDropNewest);
+static_assert(RuntimeConfig{}.priority_reserve_bytes == 0U);
+
+TEST(RuntimeTracer, SnapshotReportsTheConfiguredPriorityReserveAndItsRejections) {
+  for (const std::size_t reserve : {std::size_t{0}, std::size_t{1'024}}) {
+    SCOPED_TRACE(reserve);
+    testing::InMemoryDestination destination{{
+        .capacity_records = 1,
+        .maximum_record_bytes = 512,
+    }};
+    auto config = SmallRuntimeConfig();
+    config.priority_reserve_bytes = reserve;
+    auto created = Runtime::Create(config, destination);
+    ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+    const RuntimeSnapshot snapshot = created.runtime->GetSnapshot();
+    EXPECT_EQ(snapshot.priority_reserve_bytes, reserve);
+    EXPECT_EQ(snapshot.payload_capacity_bytes, 512U);
+    EXPECT_EQ(snapshot.rejected_priority_reserve, 0U);
+    EXPECT_EQ(snapshot.physical_retained_bytes, 0U);
   }
 }
 

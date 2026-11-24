@@ -214,6 +214,14 @@ void ValidateConfiguration(const KernelConfig& config, EventClock clock) {
         "payload_capacity_bytes", "must be 64-byte aligned and at least maximum_record_bytes;",
         "to an aligned value large enough for one complete Record reservation");
   }
+  if (config.priority_reserve_bytes % kAccountingQuantumBytes != 0U ||
+      (config.priority_reserve_bytes != 0U &&
+       config.priority_reserve_bytes < config.maximum_record_bytes)) {
+    ThrowInvalidConfiguration(
+        "priority_reserve_bytes",
+        "must be zero or 64-byte aligned and at least maximum_record_bytes;",
+        "to zero to disable the reserve, or to room for at least one complete Record");
+  }
   if (config.producer_slots == 0U || config.producer_slots > kMaximumProducerSlots) {
     ThrowInvalidConfiguration("producer_slots", "must be between 1 and 32;",
                               "to the number of concurrently active application producers");
@@ -280,10 +288,11 @@ struct ProducerKernel::Impl final {
   struct alignas(kAccountingQuantumBytes) ProducerCounters final {
     std::atomic<std::uint64_t> rejected_lane_full{0};
     std::atomic<std::uint64_t> rejected_budget{0};
+    std::atomic<std::uint64_t> rejected_priority_reserve{0};
     std::atomic<std::uint64_t> abandoned_builds{0};
     std::atomic<std::uint64_t> invalid_records{0};
     std::atomic<std::uint64_t> truncated_records{0};
-    std::array<std::byte, kAccountingQuantumBytes - 5U * sizeof(std::atomic<std::uint64_t>)>
+    std::array<std::byte, kAccountingQuantumBytes - 6U * sizeof(std::atomic<std::uint64_t>)>
         padding{};
   };
 
@@ -317,8 +326,9 @@ struct ProducerKernel::Impl final {
             &owner,
         },
         config(kernel_config) {
-    ledger.Reset(
-        {.capacity_bytes = config.payload_capacity_bytes, .producer_count = config.producer_slots});
+    ledger.Reset({.capacity_bytes = config.payload_capacity_bytes,
+                  .producer_count = config.producer_slots,
+                  .priority_capacity_bytes = config.priority_reserve_bytes});
   }
 
   [[nodiscard]] bool IsActive(std::size_t slot_index, std::uint64_t generation) const noexcept {
@@ -561,8 +571,18 @@ PublishOutcome ProducerKernel::BeginSlot(std::size_t slot_index, std::uint64_t g
   }
   auto reservation = impl_->ledger.TryReserve(slot_index, impl_->config.maximum_record_bytes);
   if (!reservation) {
-    counters.rejected_budget.fetch_add(1, std::memory_order_relaxed);
-    return PublishOutcome::kBudgetExhausted;
+    // Only Error and Critical Records fall back to the priority reserve, after the ordinary budget
+    // rejected them; an ordinary accepted call never touches the reserve.
+    if (impl_->config.priority_reserve_bytes == 0U ||
+        static_cast<std::uint8_t>(level) < static_cast<std::uint8_t>(Level::kError)) {
+      counters.rejected_budget.fetch_add(1, std::memory_order_relaxed);
+      return PublishOutcome::kBudgetExhausted;
+    }
+    reservation = impl_->ledger.TryReservePriority(slot_index, impl_->config.maximum_record_bytes);
+    if (!reservation) {
+      counters.rejected_priority_reserve.fetch_add(1, std::memory_order_relaxed);
+      return PublishOutcome::kPriorityReserveExhausted;
+    }
   }
 
   const EventTimestamp timestamp = impl_->clock.now(impl_->clock.context);
@@ -693,6 +713,7 @@ KernelSnapshot ProducerKernel::GetSnapshot() const noexcept {
       .accepted_records = impl_->lanes.AcceptedCount(),
       .consumed_records = impl_->consumed_records.load(std::memory_order_relaxed),
       .payload_capacity_bytes = impl_->config.payload_capacity_bytes,
+      .priority_reserve_bytes = impl_->config.priority_reserve_bytes,
       .fixed_backing_bytes = impl_->config.ingress_cells * sizeof(record::RecordSlot),
   };
   for (const auto& counter : impl_->missing_producer_counters) {
@@ -703,6 +724,8 @@ KernelSnapshot ProducerKernel::GetSnapshot() const noexcept {
     const auto& counters = impl_->counters[index];
     snapshot.rejected_lane_full += counters.rejected_lane_full.load(std::memory_order_relaxed);
     snapshot.rejected_budget += counters.rejected_budget.load(std::memory_order_relaxed);
+    snapshot.rejected_priority_reserve +=
+        counters.rejected_priority_reserve.load(std::memory_order_relaxed);
     snapshot.abandoned_builds += counters.abandoned_builds.load(std::memory_order_relaxed);
     producer_invalid_records += counters.invalid_records.load(std::memory_order_relaxed);
     snapshot.truncated_records += counters.truncated_records.load(std::memory_order_relaxed);
@@ -720,7 +743,8 @@ KernelSnapshot ProducerKernel::GetSnapshot() const noexcept {
   }
   snapshot.attempted_records = snapshot.accepted_records + snapshot.rejected_no_producer +
                                snapshot.rejected_lane_full + snapshot.rejected_budget +
-                               snapshot.abandoned_builds + producer_invalid_records;
+                               snapshot.rejected_priority_reserve + snapshot.abandoned_builds +
+                               producer_invalid_records;
   snapshot.invalid_records =
       producer_invalid_records + impl_->consumer_validation_errors.load(std::memory_order_relaxed);
   snapshot.retained_records = snapshot.accepted_records >= snapshot.consumed_records

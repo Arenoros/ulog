@@ -283,6 +283,108 @@ TEST(ProducerKernel, BudgetAndLaneRejectionDoNotEvaluateTheMessage) {
 
 struct CallerError final : std::exception {};
 
+[[nodiscard]] KernelConfig ReserveConfig(Level threshold = Level::kTrace) {
+  return KernelConfig{
+      .threshold = threshold,
+      .payload_capacity_bytes = 256,
+      .maximum_record_bytes = 256,
+      .producer_slots = 1,
+      .ingress_cells = 4,
+      .priority_reserve_bytes = 256,
+  };
+}
+
+TEST(ProducerKernel, PriorityReserveAdmitsErrorAndCriticalAfterTheBudgetRejects) {
+  FakeClock clock;
+  ProducerKernel kernel{ReserveConfig(), clock.Source()};
+  auto producer = kernel.TryRegisterProducer();
+  ASSERT_TRUE(producer);
+  std::size_t evaluations = 0;
+  const auto publish = [&](Level level) {
+    return kernel.TryPublish(producer, level, TestSource(),
+                             BuildOperation{&evaluations, &CountBuild});
+  };
+
+  // The ordinary budget holds one Record. Info and Warning are rejected after it; Error then
+  // uses the reserve, and the next Error and Critical find the reserve exhausted too.
+  EXPECT_EQ(publish(Level::kInfo).outcome, PublishOutcome::kAccepted);
+  EXPECT_EQ(publish(Level::kWarning).outcome, PublishOutcome::kBudgetExhausted);
+  EXPECT_EQ(publish(Level::kError).outcome, PublishOutcome::kAccepted);
+  EXPECT_EQ(publish(Level::kCritical).outcome, PublishOutcome::kPriorityReserveExhausted);
+  EXPECT_EQ(publish(Level::kError).outcome, PublishOutcome::kPriorityReserveExhausted);
+  EXPECT_EQ(evaluations, 2U);
+
+  auto snapshot = kernel.GetSnapshot();
+  EXPECT_EQ(snapshot.accepted_records, 2U);
+  EXPECT_EQ(snapshot.rejected_budget, 1U);
+  EXPECT_EQ(snapshot.rejected_priority_reserve, 2U);
+  EXPECT_EQ(snapshot.attempted_records, 5U);
+  EXPECT_EQ(snapshot.priority_reserve_bytes, 256U);
+  // Each pool retains one quantum-rounded Record; the payload pool also keeps the producer's
+  // unused local credit, which stays retained until the producer retires.
+  const std::size_t charge = ExpectedAccountingCharge(snapshot.logical_retained_bytes / 2U);
+  EXPECT_EQ(snapshot.physical_retained_bytes, 256U + charge);
+  EXPECT_TRUE(snapshot.accounting_sample_consistent);
+
+  // Consuming the reserve Record returns its bytes to the reserve, so Critical fits again while
+  // the ordinary Record still holds the budget.
+  ObservedRecord first;
+  ObservedRecord second;
+  ASSERT_EQ(kernel.TryConsume(&first, &ObserveRecord), ConsumeStatus::kRecord);
+  ASSERT_EQ(kernel.TryConsume(&second, &ObserveRecord), ConsumeStatus::kRecord);
+  EXPECT_EQ(publish(Level::kCritical).outcome, PublishOutcome::kAccepted);
+  EXPECT_EQ(kernel.GetSnapshot().rejected_priority_reserve, 2U);
+}
+
+TEST(ProducerKernel, PriorityReserveNeverBypassesFilteringOrTheLane) {
+  FakeClock clock;
+  ProducerKernel filtered_kernel{ReserveConfig(Level::kNone), clock.Source()};
+  auto filtered_producer = filtered_kernel.TryRegisterProducer();
+  ASSERT_TRUE(filtered_producer);
+  std::size_t evaluations = 0;
+  EXPECT_EQ(filtered_kernel
+                .TryPublish(filtered_producer, Level::kCritical, TestSource(),
+                            BuildOperation{&evaluations, &CountBuild})
+                .outcome,
+            PublishOutcome::kFiltered);
+  EXPECT_EQ(evaluations, 0U);
+  EXPECT_EQ(filtered_kernel.GetSnapshot().physical_retained_bytes, 0U);
+
+  KernelConfig lane_config = ReserveConfig();
+  lane_config.ingress_cells = 1;
+  ProducerKernel lane_kernel{lane_config, clock.Source()};
+  auto lane_producer = lane_kernel.TryRegisterProducer();
+  ASSERT_TRUE(lane_producer);
+  ASSERT_EQ(lane_kernel
+                .TryPublish(lane_producer, Level::kInfo, TestSource(),
+                            BuildOperation{&evaluations, &CountBuild})
+                .outcome,
+            PublishOutcome::kAccepted);
+  EXPECT_EQ(lane_kernel
+                .TryPublish(lane_producer, Level::kCritical, TestSource(),
+                            BuildOperation{&evaluations, &CountBuild})
+                .outcome,
+            PublishOutcome::kLaneFull);
+  EXPECT_EQ(lane_kernel.GetSnapshot().rejected_lane_full, 1U);
+  EXPECT_EQ(lane_kernel.GetSnapshot().rejected_priority_reserve, 0U);
+}
+
+TEST(ProducerKernel, PriorityReserveMustHoldOneAlignedRecord) {
+  FakeClock clock;
+  for (const std::size_t reserve : {std::size_t{128}, std::size_t{300}}) {
+    KernelConfig config = ReserveConfig();
+    config.priority_reserve_bytes = reserve;
+    try {
+      ProducerKernel kernel{config, clock.Source()};
+      static_cast<void>(kernel);
+      ADD_FAILURE() << "priority reserve " << reserve << " was accepted";
+    } catch (const std::invalid_argument& error) {
+      EXPECT_NE(std::string_view{error.what()}.find("priority_reserve_bytes"),
+                std::string_view::npos);
+    }
+  }
+}
+
 TEST(ProducerKernel, ThrowingFactoryAbandonsAllCapacityAndConsumesNoSequence) {
   FakeClock clock;
   ProducerKernel kernel{SmallConfig(256, 1, 1), clock.Source()};

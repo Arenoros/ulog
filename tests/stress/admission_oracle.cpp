@@ -103,6 +103,8 @@ struct Event final {
   EventKind kind{EventKind::kLog};
   std::uint32_t first{0};
   std::uint32_t second{0};
+  /// Log level of a kLog event: Info, Error, or Critical.
+  ulog::Level level{ulog::Level::kInfo};
 };
 
 struct Scenario final {
@@ -117,7 +119,8 @@ struct Scenario final {
   const std::string second = std::to_string(event.second);
   switch (event.kind) {
     case EventKind::kLog:
-      return "Log thread=" + first + " bytes-choice=" + second;
+      return "Log thread=" + first + " bytes-choice=" + second +
+             " level=" + std::string{ulog::ToString(event.level)};
     case EventKind::kBurst:
       return "Burst attempts=" + first + " bytes-choice=" + second;
     case EventKind::kMode:
@@ -154,6 +157,7 @@ struct Scenario final {
          " ingress_cells=" + std::to_string(config.ingress_cells) +
          " payload_capacity_bytes=" + std::to_string(config.payload_capacity_bytes) +
          " maximum_record_bytes=" + std::to_string(config.maximum_record_bytes) +
+         " priority_reserve_bytes=" + std::to_string(config.priority_reserve_bytes) +
          " destination_slots=" + std::to_string(config.destination_slots) +
          " control_operations=" + std::to_string(config.control_operations);
 }
@@ -171,6 +175,9 @@ struct Scenario final {
                                   model::kQuantumBytes * random.Between(0, 3);
   config.destination_slots = random.Between(1, 4);
   config.control_operations = random.Between(1, 3);
+  // A third of the scenarios run without the priority reserve. The choice and the log levels
+  // derive from values already drawn, so the random stream and the other events stay unchanged.
+  config.priority_reserve_bytes = config.maximum_record_bytes * ((seed + 1U) % 3U);
   config.source_bytes = kSourcePath.size() + kSourceFunction.size();
   // One extra thread sometimes registers after every slot is taken.
   scenario.threads = config.producer_slots + random.Between(0, 1);
@@ -181,7 +188,10 @@ struct Scenario final {
     const auto first = static_cast<std::uint32_t>(random.Next() % 1'000U);
     const auto second = static_cast<std::uint32_t>(random.Next() % 1'000U);
     if (roll < 34) {
-      event = {EventKind::kLog, first, second};
+      // A quarter of the attempts are Error or Critical and may use the priority reserve.
+      constexpr std::array<ulog::Level, 4> kLevels{ulog::Level::kInfo, ulog::Level::kInfo,
+                                                   ulog::Level::kError, ulog::Level::kCritical};
+      event = {EventKind::kLog, first, second, kLevels[first / 16U % kLevels.size()]};
     } else if (roll < 42) {
       event = {EventKind::kBurst, 1U + first % 4U, second};
     } else if (roll < 50) {
@@ -288,12 +298,24 @@ class ProducerThread final {
 };
 
 /// Logs one message and returns how many times its factory ran.
-std::size_t LogOnce(ulog::Logger logger, std::string_view message) {
+std::size_t LogOnce(ulog::Logger logger, std::string_view message,
+                    ulog::Level level = ulog::Level::kInfo) {
   std::size_t evaluations = 0;
-  logger.Log<ulog::Level::kInfo>(kSource, [&] {
+  const auto make_message = [&] {
     ++evaluations;
     return message;
-  });
+  };
+  switch (level) {
+    case ulog::Level::kError:
+      logger.Log<ulog::Level::kError>(kSource, make_message);
+      break;
+    case ulog::Level::kCritical:
+      logger.Log<ulog::Level::kCritical>(kSource, make_message);
+      break;
+    default:
+      logger.Log<ulog::Level::kInfo>(kSource, make_message);
+      break;
+  }
   return evaluations;
 }
 
@@ -311,6 +333,8 @@ enum class Covered : std::uint8_t {
   kNoProducer,
   kLaneFull,
   kBudget,
+  kPriorityReserveAccepted,
+  kPriorityReserveExhausted,
   kConcurrentBurst,
   kImmediateDrain,
   kPendingDrain,
@@ -330,6 +354,8 @@ constexpr std::array<std::string_view, static_cast<std::size_t>(Covered::kCount)
     "rejected-no-producer",
     "rejected-lane-full",
     "rejected-budget",
+    "priority-reserve-accepted",
+    "rejected-priority-reserve",
     "concurrent-burst",
     "immediate-drain",
     "pending-drain",
@@ -391,6 +417,7 @@ class ScenarioRun final {
             .startup_timeout = 5s,
             .destruction_timeout = 5s,
             .event_clock = ulog::EventClock{nullptr, &FixedNow},
+            .priority_reserve_bytes = config.priority_reserve_bytes,
         },
         destination_);
     if (!created) {
@@ -460,7 +487,7 @@ class ScenarioRun final {
   std::optional<std::string> Apply(const Event& event) {
     switch (event.kind) {
       case EventKind::kLog:
-        return ApplyLog(event.first % scenario_.threads, MessageBytes(event.second));
+        return ApplyLog(event.first % scenario_.threads, MessageBytes(event.second), event.level);
       case EventKind::kBurst:
         return ApplyBurst(event.first, MessageBytes(event.second));
       case EventKind::kMode:
@@ -511,19 +538,25 @@ class ScenarioRun final {
   }
 
   // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a thread index and a message size.
-  std::optional<std::string> ApplyLog(std::size_t thread, std::size_t bytes) {
+  std::optional<std::string> ApplyLog(std::size_t thread, std::size_t bytes,
+                                      ulog::Level level = ulog::Level::kInfo) {
     if (model_.IsBusy(thread)) {
       return std::nullopt;  // its lane and credit depend on an unresolved burst order
     }
     std::string message = Pad(fmt::format("m{}:", next_message_++), bytes);
-    const model::Admission admission = model_.Log(thread, message);
-    Cover(admission == model::Admission::kAccepted     ? Covered::kAccepted
-          : admission == model::Admission::kFiltered   ? Covered::kFiltered
-          : admission == model::Admission::kNoProducer ? Covered::kNoProducer
-          : admission == model::Admission::kLaneFull   ? Covered::kLaneFull
-                                                       : Covered::kBudget);
+    const bool priority = level == ulog::Level::kError || level == ulog::Level::kCritical;
+    const model::Admission admission = model_.Log(thread, message, priority);
+    Cover(admission == model::Admission::kAccepted && model_.last_used_reserve()
+              ? Covered::kPriorityReserveAccepted
+          : admission == model::Admission::kAccepted        ? Covered::kAccepted
+          : admission == model::Admission::kFiltered        ? Covered::kFiltered
+          : admission == model::Admission::kNoProducer      ? Covered::kNoProducer
+          : admission == model::Admission::kLaneFull        ? Covered::kLaneFull
+          : admission == model::Admission::kPriorityReserve ? Covered::kPriorityReserveExhausted
+                                                            : Covered::kBudget);
     std::size_t evaluations = 0;
-    threads_[thread]->Execute([&](ulog::Logger logger) { evaluations = LogOnce(logger, message); });
+    threads_[thread]->Execute(
+        [&](ulog::Logger logger) { evaluations = LogOnce(logger, message, level); });
     const std::size_t expected = admission == model::Admission::kAccepted ? 1U : 0U;
     if (evaluations != expected) {
       return Mismatch("message evaluations", expected, evaluations);
@@ -820,7 +853,7 @@ class ScenarioRun final {
   [[nodiscard]] std::optional<std::string> Compare() const {
     const model::Counters expected = model_.counters();
     const ulog::RuntimeSnapshot observed = runtime_->GetSnapshot();
-    const std::array<std::tuple<std::string_view, std::uint64_t, std::uint64_t>, 18> fields{{
+    const std::array<std::tuple<std::string_view, std::uint64_t, std::uint64_t>, 20> fields{{
         {"accepted_records", expected.accepted, observed.accepted_records},
         {"processed_records", expected.processed, observed.processed_records},
         {"processed_bytes", expected.processed_bytes, observed.processed_bytes},
@@ -833,14 +866,19 @@ class ScenarioRun final {
         {"rejected_no_producer", expected.rejected_no_producer, observed.rejected_no_producer},
         {"rejected_lane_full", expected.rejected_lane_full, observed.rejected_lane_full},
         {"rejected_budget", expected.rejected_budget, observed.rejected_budget},
+        {"rejected_priority_reserve", expected.rejected_priority_reserve,
+         observed.rejected_priority_reserve},
         {"dropped_newest_records",
-         expected.rejected_no_producer + expected.rejected_lane_full + expected.rejected_budget,
+         expected.rejected_no_producer + expected.rejected_lane_full + expected.rejected_budget +
+             expected.rejected_priority_reserve,
          observed.dropped_newest_records},
         {"retained_records", expected.retained_records, observed.retained_records},
         {"logical_retained_bytes", expected.logical_retained_bytes,
          observed.logical_retained_bytes},
         {"payload_capacity_bytes", scenario_.config.payload_capacity_bytes,
          observed.payload_capacity_bytes},
+        {"priority_reserve_bytes", scenario_.config.priority_reserve_bytes,
+         observed.priority_reserve_bytes},
         {"admission_open", expected.admission_open ? 1U : 0U, observed.admission_open ? 1U : 0U},
         {"worker_running", model_.worker_stopped() ? 0U : 1U, observed.worker_running ? 1U : 0U},
     }};
