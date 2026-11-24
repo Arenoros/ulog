@@ -145,6 +145,29 @@ bool CreditLedger::TryReconcileProducer(std::size_t producer_index) noexcept {
   return true;
 }
 
+void CreditLedger::TransferOwnership(Ownership& ownership, std::size_t producer_index) noexcept {
+  if (ownership.ledger_ != this || ownership.priority_ || !IsValidProducer(producer_index)) {
+    ownership.Release();
+    return;
+  }
+  producer_slots_[ownership.producer_index_].logical_charge_bytes.fetch_sub(
+      ownership.retained_bytes_, std::memory_order_relaxed);
+  producer_slots_[producer_index].local_credit_bytes += ownership.charge_bytes_;
+  ownership.ledger_ = nullptr;
+  ownership.producer_index_ = 0;
+  ownership.retained_bytes_ = 0;
+  ownership.charge_bytes_ = 0;
+}
+
+std::size_t CreditLedger::EstimateAvailableCredit(std::size_t producer_index) const noexcept {
+  if (!IsValidProducer(producer_index)) {
+    return 0;
+  }
+  const auto& slot = producer_slots_[producer_index];
+  return slot.local_credit_bytes + slot.returned_credit_bytes.load(std::memory_order_relaxed) +
+         central_available_bytes_.load(std::memory_order_relaxed);
+}
+
 CreditLedger::Snapshot CreditLedger::GetSnapshot() const noexcept {
   std::size_t logical_retained = 0;
   for (std::size_t index = 0; index < producer_count_; ++index) {

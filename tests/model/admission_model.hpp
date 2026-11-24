@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <ulog/level.hpp>
 #include <ulog/operation.hpp>
 #include <utility>
 #include <vector>
@@ -29,6 +30,8 @@ inline constexpr std::size_t kRecordMetadataBytes = 56;
 /// A Raw frame without fields is "tskv\ttext=" + message + "\n".
 inline constexpr std::size_t kRawFrameOverheadBytes = 11;
 inline constexpr std::size_t kUnknownProducer = static_cast<std::size_t>(-1);
+/// Evicted sequences the worker may skip ahead of an unretired delivery (the Runtime's bound).
+inline constexpr std::size_t kPendingShedCapacity = 64;
 
 /// Byte charge of one retained Record: at least one quantum, rounded up to whole quanta.
 [[nodiscard]] constexpr std::size_t ChargeBytes(std::size_t serialized_bytes) noexcept {
@@ -48,6 +51,8 @@ struct Config final {
   /// Bytes that only priority (Error and Critical) Records use after the payload budget rejects
   /// them; zero disables the reserve.
   std::size_t priority_reserve_bytes{0};
+  /// Drop-oldest: a Record the budget rejects evicts the oldest eligible ingress Records instead.
+  bool drop_oldest{false};
 };
 
 enum class Admission : std::uint8_t {
@@ -86,6 +91,9 @@ struct Record final {
   bool handle_taken{false};
   /// Charged to the priority reserve, which takes its bytes back when the worker consumes it.
   bool priority{false};
+  Level level{Level::kInfo};
+  /// Evicted by drop-oldest: it holds no bytes, and the worker skips it without a delivery.
+  bool shed{false};
 
   [[nodiscard]] std::size_t charge_bytes() const noexcept { return ChargeBytes(serialized_bytes); }
   [[nodiscard]] std::size_t frame_bytes() const noexcept {
@@ -116,6 +124,7 @@ struct Counters final {
   std::uint64_t rejected_lane_full{0};
   std::uint64_t rejected_budget{0};
   std::uint64_t rejected_priority_reserve{0};
+  std::uint64_t shed_records{0};
   std::uint64_t retained_records{0};
   std::size_t logical_retained_bytes{0};
   /// Empty while it depends on an unresolved burst order.
@@ -159,12 +168,12 @@ class AdmissionModel final {
     return thread < producers_.size() && producers_[thread].busy_burst != 0;
   }
 
-  /// One attempt by `thread` to log `message`; a `priority` (Error or Critical) attempt may use
-  /// the priority reserve after the payload budget rejects it.
-  Admission Log(std::size_t thread, std::string message, bool priority = false) {
+  /// One attempt by `thread` to log `message` at `level`. An Error or Critical attempt may use the
+  /// priority reserve after the payload budget rejects it; drop-oldest then evicts older Records.
+  Admission Log(std::size_t thread, std::string message, Level level = Level::kInfo) {
     const std::size_t bytes = message.size();
     bool from_reserve = false;
-    const Admission result = Admit(thread, SerializedBytes(bytes), priority, from_reserve);
+    const Admission result = Admit(thread, SerializedBytes(bytes), level, from_reserve);
     last_used_reserve_ = from_reserve;
     if (result == Admission::kAccepted) {
       Record record;
@@ -174,6 +183,7 @@ class AdmissionModel final {
       record.message_bytes = bytes;
       record.serialized_bytes = SerializedBytes(bytes);
       record.priority = from_reserve;
+      record.level = level;
       records_.push_back(std::move(record));
     }
     Settle();
@@ -191,6 +201,9 @@ class AdmissionModel final {
                                           std::size_t message_bytes) const noexcept {
     if (!admission_open_) {
       return true;
+    }
+    if (config_.drop_oldest) {
+      return false;  // an eviction's victim would depend on the interleaving
     }
     if (!worker_stopped_ && route_.FreeSlots(records_, config_.destination_slots) != 0U) {
       return false;
@@ -229,7 +242,7 @@ class AdmissionModel final {
     for (std::size_t index = 0; index < threads.size(); ++index) {
       for (std::size_t attempt = 0; attempt < count; ++attempt) {
         bool from_reserve = false;
-        if (Admit(threads[index], SerializedBytes(message_bytes), false, from_reserve) !=
+        if (Admit(threads[index], SerializedBytes(message_bytes), Level::kInfo, from_reserve) !=
             Admission::kAccepted) {
           continue;
         }
@@ -371,13 +384,17 @@ class AdmissionModel final {
     Counters counters = rejections_;
     counters.accepted = records_.size();
     counters.admission_open = admission_open_;
+    counters.shed_records = evicted_;
     for (const Record& record : records_) {
       if (!record.processed) {
         ++counters.retained_records;
-        counters.logical_retained_bytes += record.serialized_bytes;
+        counters.logical_retained_bytes += record.shed ? 0U : record.serialized_bytes;
         continue;
       }
       ++counters.processed;
+      if (record.shed) {
+        continue;
+      }
       counters.processed_bytes += record.frame_bytes();
       if (record.retired) {
         (record.delivered ? counters.delivered : counters.failed) += 1U;
@@ -418,8 +435,9 @@ class AdmissionModel final {
                                                std::size_t capacity) noexcept {
       std::size_t used = 0;
       for (const Record& record : records) {
-        if (record.processed && (!record.retired || record.stage == Stage::kReady ||
-                                 record.stage == Stage::kObserved)) {
+        if (record.processed && !record.shed &&
+            (!record.retired || record.stage == Stage::kReady ||
+             record.stage == Stage::kObserved)) {
           ++used;
         }
       }
@@ -451,9 +469,10 @@ class AdmissionModel final {
 
   /// Drop-newest admission, checked in the producer kernel's order. A rejected attempt consumes
   /// no sequence and evaluates no message.
-  Admission Admit(std::size_t thread, std::size_t serialized_bytes, bool priority,
+  Admission Admit(std::size_t thread, std::size_t serialized_bytes, Level level,
                   bool& from_reserve) {
     from_reserve = false;
+    const bool priority = level == Level::kError || level == Level::kCritical;
     if (!admission_open_) {
       // Closing admission also sets the threshold to None, so the call is filtered uncounted.
       return Admission::kFiltered;
@@ -473,31 +492,84 @@ class AdmissionModel final {
     if (producer.local_credit < reserve) {
       const std::size_t deficit = reserve - producer.local_credit;
       if (central_ < deficit) {
-        if (!priority || config_.priority_reserve_bytes == 0U) {
+        const bool reserve_applies = priority && config_.priority_reserve_bytes != 0U;
+        // The reserve charges the worst case, and the commit returns the unused part at once.
+        if (reserve_applies && priority_available_ >= ChargeBytes(reserve)) {
+          priority_available_ -= ChargeBytes(serialized_bytes);
+          ++producer.lane_used;
+          from_reserve = true;
+          return Admission::kAccepted;
+        }
+        if (!config_.drop_oldest || !EvictFor(thread, level)) {
+          if (reserve_applies) {
+            ++rejections_.rejected_priority_reserve;
+            return Admission::kPriorityReserve;
+          }
           ++rejections_.rejected_budget;
           return Admission::kBudget;
         }
-        // The reserve charges the worst case, and the commit returns the unused part at once.
-        const std::size_t worst_case = ChargeBytes(reserve);
-        if (priority_available_ < worst_case) {
-          ++rejections_.rejected_priority_reserve;
-          return Admission::kPriorityReserve;
-        }
-        priority_available_ -= ChargeBytes(serialized_bytes);
-        ++producer.lane_used;
-        from_reserve = true;
-        return Admission::kAccepted;
+        // EvictFor already refilled the producer's credit.
+      } else {
+        central_ -= deficit;
+        producer.local_credit = reserve;
       }
-      central_ -= deficit;
-      producer.local_credit = reserve;
     }
     producer.local_credit -= ChargeBytes(serialized_bytes);
     ++producer.lane_used;
     return Admission::kAccepted;
   }
 
+  /// Drop-oldest: evicts the oldest unclaimed ingress Records of at most `level` that did not use
+  /// the reserve, moving their charge to `thread`, until a worst-case reservation fits. Evicts
+  /// nothing when all of them together could not make it fit. On success the credit is reserved.
+  bool EvictFor(std::size_t thread, Level level) {
+    ProducerState& producer = producers_[thread];
+    const std::size_t reserve = config_.maximum_record_bytes;
+    std::vector<std::size_t> candidates;
+    std::size_t reachable = producer.local_credit + central_;
+    for (std::size_t sequence = processed_; sequence < records_.size(); ++sequence) {
+      const Record& record = records_[sequence];
+      if (!record.shed && !record.priority &&
+          static_cast<std::uint8_t>(record.level) <= static_cast<std::uint8_t>(level)) {
+        candidates.push_back(sequence);
+        reachable += record.charge_bytes();
+      }
+    }
+    if (reachable < ChargeBytes(reserve)) {
+      return false;
+    }
+    for (const std::size_t sequence : candidates) {
+      Record& record = records_[sequence];
+      record.shed = true;
+      ++evicted_;
+      producer.local_credit += record.charge_bytes();
+      const std::size_t deficit =
+          producer.local_credit < reserve ? reserve - producer.local_credit : 0U;
+      if (central_ >= deficit) {
+        central_ -= deficit;
+        producer.local_credit += deficit;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Evicted sequences skipped but not yet retired; the worker stops at kPendingShedCapacity.
+  [[nodiscard]] std::size_t PendingShed() const noexcept {
+    std::size_t pending = 0;
+    for (std::size_t sequence = retired_; sequence < processed_; ++sequence) {
+      pending += records_[sequence].shed ? 1U : 0U;
+    }
+    return pending;
+  }
+
   void Consume(Record& record) {
     record.processed = true;
+    if (record.shed) {
+      // Its credit moved to the evicting producer at eviction; only its lane cell is freed.
+      --producers_[record.producer].lane_used;
+      return;
+    }
     route_.Submit(record);
     if (record.burst == 0U) {
       ProducerState& producer = producers_[record.producer];
@@ -539,6 +611,10 @@ class AdmissionModel final {
     for (std::uint64_t sequence = 0; sequence < watermark; ++sequence) {
       const Record& record = records_[sequence];
       ++report.processed_records;
+      if (record.shed) {
+        ++report.shed_records;
+        continue;
+      }
       report.processed_bytes += record.frame_bytes();
       if (record.delivered) {
         ++report.delivered_records;
@@ -592,7 +668,20 @@ class AdmissionModel final {
           }
         }
       }
-      if (!worker_stopped_ && processed_ < records_.size() &&
+      // The worker skips an evicted Record without a destination slot; it retires in order.
+      if (!worker_stopped_ && processed_ < records_.size() && records_[processed_].shed &&
+          PendingShed() < kPendingShedCapacity) {
+        Record& record = records_[processed_];
+        Consume(record);
+        record.processed = true;
+        record.has_outcome = true;
+        record.stage = Stage::kReleased;
+        ++processed_;
+        progressed = true;
+        continue;
+      }
+      if (!worker_stopped_ && processed_ < records_.size() && !records_[processed_].shed &&
+          PendingShed() < kPendingShedCapacity &&
           RouteModel::FreeSlots(records_, config_.destination_slots) != 0U) {
         Consume(records_[processed_]);
         ++processed_;
@@ -611,6 +700,7 @@ class AdmissionModel final {
   std::size_t central_{0};
   std::size_t priority_available_{0};
   bool last_used_reserve_{false};
+  std::uint64_t evicted_{0};
   std::size_t processed_{0};
   std::size_t retired_{0};
   std::size_t last_burst_{0};

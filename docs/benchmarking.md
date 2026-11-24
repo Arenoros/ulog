@@ -172,7 +172,7 @@ API.
 ## Frontend performance gate
 
 `ulog-frontend-benchmarks` is a short sibling workload for the public logging
-frontend. It emits `ulog-frontend-results/1` with exactly six rows per
+frontend. It emits `ulog-frontend-results/1` with exactly seven rows per
 repetition, in this order:
 
 1. `compile-erased`;
@@ -181,9 +181,13 @@ repetition, in this order:
 4. `admission-rejected` with a full producer lane;
 5. `ordinary-accepted` using the fmt path;
 6. `stream-accepted`, the same Record written as `LOG_CRITICAL() << message`, so
-   its latency next to `ordinary-accepted` is the stream form's overhead.
+   its latency next to `ordinary-accepted` is the stream form's overhead;
+7. `drop-oldest-evicting`, drop-oldest with a budget of one worst-case Record:
+   every call scans ingress, evicts the previous Record, and moves its credit
+   before it fits, so its latency next to `ordinary-accepted` is the cost of one
+   eviction under saturation.
 
-Only the two accepted rows read the event clock: one `std::chrono::system_clock`
+Only the three accepted rows read the event clock: one `std::chrono::system_clock`
 read per Record, after reservation. Measured in isolation, that read costs about
 15 ns on Windows 10 (MSVC, `GetSystemTimePreciseAsFileTime`) and about 19 ns in a
 Debian 12 VM (GCC 12, vDSO `clock_gettime`); these figures are advisory and

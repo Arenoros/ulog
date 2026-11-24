@@ -63,17 +63,21 @@ enum class FrontendPath : std::uint8_t {
   kAdmissionRejected,
   kOrdinaryAccepted,
   kStreamAccepted,
+  /// Drop-oldest under a saturated budget: every call evicts the previous Record to fit.
+  kDropOldestEvicting,
 };
 
 /// The accepted paths: the fmt call form and the same Record written by a stream statement.
 [[nodiscard]] constexpr bool IsAccepted(FrontendPath path) noexcept {
-  return path == FrontendPath::kOrdinaryAccepted || path == FrontendPath::kStreamAccepted;
+  return path == FrontendPath::kOrdinaryAccepted || path == FrontendPath::kStreamAccepted ||
+         path == FrontendPath::kDropOldestEvicting;
 }
 
 constexpr FrontendPath kPaths[]{
-    FrontendPath::kCompileErased,    FrontendPath::kRuntimeFiltered,
-    FrontendPath::kNullLogger,       FrontendPath::kAdmissionRejected,
-    FrontendPath::kOrdinaryAccepted, FrontendPath::kStreamAccepted,
+    FrontendPath::kCompileErased,      FrontendPath::kRuntimeFiltered,
+    FrontendPath::kNullLogger,         FrontendPath::kAdmissionRejected,
+    FrontendPath::kOrdinaryAccepted,   FrontendPath::kStreamAccepted,
+    FrontendPath::kDropOldestEvicting,
 };
 
 std::atomic<bool> deterministic_failure{false};
@@ -92,19 +96,23 @@ std::atomic<bool> deterministic_failure{false};
       return "ordinary-accepted";
     case FrontendPath::kStreamAccepted:
       return "stream-accepted";
+    case FrontendPath::kDropOldestEvicting:
+      return "drop-oldest-evicting";
   }
   return "invalid";
 }
 
 class KernelFixture final {
  public:
-  KernelFixture(std::size_t payload_capacity_bytes, std::size_t ingress_cells)
+  KernelFixture(std::size_t payload_capacity_bytes, std::size_t ingress_cells,
+                bool drop_oldest = false)
       : kernel(producer::KernelConfig{
             .threshold = ulog::Level::kTrace,
             .payload_capacity_bytes = payload_capacity_bytes,
             .maximum_record_bytes = kMaximumRecordBytes,
             .producer_slots = 1,
             .ingress_cells = ingress_cells,
+            .drop_oldest = drop_oldest,
         }),
         registration(kernel.TryRegisterProducer()) {
     if (!registration) {
@@ -135,6 +143,12 @@ KernelFixture& ActiveFixture() {
 
 KernelFixture& RejectedFixture() {
   static KernelFixture fixture{kTwoRecordCapacityBytes, 1};
+  return fixture;
+}
+
+/// A budget of one worst-case Record, so each call must evict the Record before it.
+KernelFixture& EvictingFixture() {
+  static KernelFixture fixture{kMaximumRecordBytes, 2, true};
   return fixture;
 }
 
@@ -187,6 +201,9 @@ void Attempt(FrontendPath path, std::uint64_t& evaluations) {
       return;
     case FrontendPath::kStreamAccepted:
       LOG_CRITICAL() << CountMessage(evaluations);
+      return;
+    case FrontendPath::kDropOldestEvicting:
+      LOG_CRITICAL("{}", CountMessage(evaluations));
       return;
   }
 }
@@ -304,8 +321,12 @@ void PrintOutcomeMismatch(FrontendPath path, const KernelOutcomeDelta& actual,
 [[nodiscard]] FrontendResult RunPath(FrontendPath path, std::size_t repetition, Mode mode) {
   auto& active = ActiveFixture();
   auto& rejected = RejectedFixture();
-  producer::ProducerKernel& observed_kernel =
-      path == FrontendPath::kAdmissionRejected ? rejected.kernel : active.kernel;
+  auto& evicting = EvictingFixture();
+  const bool evicts = path == FrontendPath::kDropOldestEvicting;
+  KernelFixture& observed_fixture = path == FrontendPath::kAdmissionRejected ? rejected
+                                    : evicts                                 ? evicting
+                                                                             : active;
+  producer::ProducerKernel& observed_kernel = observed_fixture.kernel;
   active.kernel.SetLevel(path == FrontendPath::kRuntimeFiltered ? ulog::Level::kWarning
                                                                 : ulog::Level::kTrace);
   const ulog::Logger target =
@@ -316,18 +337,29 @@ void PrintOutcomeMismatch(FrontendPath path, const KernelOutcomeDelta& actual,
   const std::uint64_t measured_attempts =
       mode == Mode::kSmoke ? kSmokeMeasuredAttempts : kControlledMeasuredAttempts;
 
-  if (path == FrontendPath::kAdmissionRejected) {
+  if (path == FrontendPath::kAdmissionRejected || evicts) {
     LOG_CRITICAL(kMessage);
   }
+  // After each evicting call the worker side skips the evicted Record, outside the timed region.
+  const auto take_accepted = [&](Observation& taken) {
+    if (evicts) {
+      std::uint64_t shed_sequence = 0;
+      if (evicting.kernel.TrySkipShed(shed_sequence) == producer::ConsumeStatus::kShed) {
+        ++taken.records;
+      } else {
+        ++taken.invalid_records;
+      }
+    } else if (active.kernel.TryConsume(&taken, &ObserveRecord) !=
+               producer::ConsumeStatus::kRecord) {
+      ++taken.invalid_records;
+    }
+  };
   std::uint64_t warmup_evaluations = 0;
   Observation warmup_observation;
   for (std::uint64_t attempt = 0; attempt < warmup_attempts; ++attempt) {
     Attempt(path, warmup_evaluations);
     if (IsAccepted(path)) {
-      if (active.kernel.TryConsume(&warmup_observation, &ObserveRecord) !=
-          producer::ConsumeStatus::kRecord) {
-        ++warmup_observation.invalid_records;
-      }
+      take_accepted(warmup_observation);
     }
   }
 
@@ -350,9 +382,8 @@ void PrintOutcomeMismatch(FrontendPath path, const KernelOutcomeDelta& actual,
         std::chrono::duration_cast<std::chrono::nanoseconds>(producer_finished - producer_started);
     latency_nanoseconds[attempt] =
         static_cast<std::uint64_t>(std::max<std::chrono::nanoseconds::rep>(latency.count(), 0));
-    if (IsAccepted(path) && active.kernel.TryConsume(&observation, &ObserveRecord) !=
-                                producer::ConsumeStatus::kRecord) {
-      ++observation.invalid_records;
+    if (IsAccepted(path)) {
+      take_accepted(observation);
     }
   }
   const auto wall_finished = std::chrono::steady_clock::now();
@@ -362,11 +393,10 @@ void PrintOutcomeMismatch(FrontendPath path, const KernelOutcomeDelta& actual,
   const std::uint64_t allocation_failures_after =
       allocation_tracking::allocation_failure_count.load(std::memory_order_relaxed);
   const auto snapshot_after = observed_kernel.GetSnapshot();
-  if (path == FrontendPath::kAdmissionRejected &&
-      rejected.kernel.TryConsume(nullptr, &DiscardRecord) != producer::ConsumeStatus::kRecord) {
+  if ((path == FrontendPath::kAdmissionRejected || evicts) &&
+      observed_kernel.TryConsume(nullptr, &DiscardRecord) != producer::ConsumeStatus::kRecord) {
     ++observation.invalid_records;
   }
-  KernelFixture& observed_fixture = path == FrontendPath::kAdmissionRejected ? rejected : active;
   observed_fixture.ReconcileAndRegister();
   const auto final_snapshot = observed_kernel.GetSnapshot();
 
@@ -556,7 +586,7 @@ void RegisterWorkloads(Mode mode) {
   benchmark::AddCustomContext(
       "ulog_frontend_paths",
       "compile-erased,runtime-filtered,null-logger,admission-rejected,ordinary-accepted,"
-      "stream-accepted");
+      "stream-accepted,drop-oldest-evicting");
   benchmark::AddCustomContext("ulog_mode", std::string{ulog::benchmark_support::ToString(mode)});
   benchmark::AddCustomContext("ulog_timing_policy", "advisory");
   benchmark::AddCustomContext("ulog_repetitions", std::to_string(repetitions));

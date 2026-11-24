@@ -46,6 +46,9 @@ struct KernelConfig final {
   /// Bytes that only Error and Critical Records may use after the payload budget rejects them;
   /// zero disables the reserve.
   std::size_t priority_reserve_bytes{0};
+  /// Drop-oldest: a Record the payload budget rejects may evict the oldest unclaimed Records of
+  /// equal or lower level instead of being rejected.
+  bool drop_oldest{false};
 };
 
 struct WriteResult final {
@@ -209,7 +212,8 @@ class RecordView final {
   std::size_t accounting_charge_bytes_{0};
 };
 
-enum class ConsumeStatus : std::uint8_t { kRecord, kEmpty, kPending };
+/// kShed: the next Record was evicted; the consumer skipped it without observing it.
+enum class ConsumeStatus : std::uint8_t { kRecord, kEmpty, kPending, kShed };
 
 using RecordConsumer = void (*)(void*, std::uint64_t admission_sequence,
                                 const RecordView&) noexcept;
@@ -225,6 +229,8 @@ struct KernelSnapshot final {
   std::uint64_t abandoned_builds{0};
   std::uint64_t invalid_records{0};
   std::uint64_t truncated_records{0};
+  /// Records evicted by drop-oldest; they hold no bytes but keep their cells until skipped.
+  std::uint64_t evicted_records{0};
   std::uint64_t retained_records{0};
   std::size_t logical_retained_bytes{0};
   std::size_t physical_retained_bytes{0};
@@ -281,7 +287,13 @@ class ProducerKernel final {
 
   [[nodiscard]] PublishResult TryPublish(ProducerRegistration& producer, Level level,
                                          const SourceLocation& source, BuildOperation operation);
-  [[nodiscard]] ConsumeStatus TryConsume(void* context, RecordConsumer consumer) noexcept;
+  /// Consumes the next Record. An evicted Record is skipped instead: the result is kShed and its
+  /// admission sequence is stored in `shed_sequence` when that is not null.
+  [[nodiscard]] ConsumeStatus TryConsume(void* context, RecordConsumer consumer,
+                                         std::uint64_t* shed_sequence = nullptr) noexcept;
+  /// Skips the next Record only if it was evicted, so the consumer frees evicted cells without
+  /// waiting for a destination slot. Returns kShed with its sequence, or kEmpty/kPending.
+  [[nodiscard]] ConsumeStatus TrySkipShed(std::uint64_t& shed_sequence) noexcept;
   [[nodiscard]] KernelSnapshot GetSnapshot() const noexcept;
 
  private:

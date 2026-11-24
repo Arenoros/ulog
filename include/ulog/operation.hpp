@@ -46,6 +46,8 @@ struct OperationReport final {
   std::uint64_t delivered_bytes{0};
   std::uint64_t failed_records{0};
   std::uint64_t failed_bytes{0};
+  /// Records below the watermark that drop-oldest evicted before the worker claimed them.
+  std::uint64_t shed_records{0};
   std::uint64_t unfinished_records{0};
   std::uint64_t unfinished_bytes{0};
   OperationDurability durability{OperationDurability::kNotRequested};

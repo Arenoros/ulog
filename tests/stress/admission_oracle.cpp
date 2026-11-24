@@ -158,6 +158,7 @@ struct Scenario final {
          " payload_capacity_bytes=" + std::to_string(config.payload_capacity_bytes) +
          " maximum_record_bytes=" + std::to_string(config.maximum_record_bytes) +
          " priority_reserve_bytes=" + std::to_string(config.priority_reserve_bytes) +
+         " policy=" + (config.drop_oldest ? "drop-oldest" : "drop-newest") +
          " destination_slots=" + std::to_string(config.destination_slots) +
          " control_operations=" + std::to_string(config.control_operations);
 }
@@ -178,6 +179,8 @@ struct Scenario final {
   // A third of the scenarios run without the priority reserve. The choice and the log levels
   // derive from values already drawn, so the random stream and the other events stay unchanged.
   config.priority_reserve_bytes = config.maximum_record_bytes * ((seed + 1U) % 3U);
+  // Seeds alternate between the two policies in groups of three.
+  config.drop_oldest = seed / 3U % 2U == 1U;
   config.source_bytes = kSourcePath.size() + kSourceFunction.size();
   // One extra thread sometimes registers after every slot is taken.
   scenario.threads = config.producer_slots + random.Between(0, 1);
@@ -335,6 +338,7 @@ enum class Covered : std::uint8_t {
   kBudget,
   kPriorityReserveAccepted,
   kPriorityReserveExhausted,
+  kEvicted,
   kConcurrentBurst,
   kImmediateDrain,
   kPendingDrain,
@@ -356,6 +360,7 @@ constexpr std::array<std::string_view, static_cast<std::size_t>(Covered::kCount)
     "rejected-budget",
     "priority-reserve-accepted",
     "rejected-priority-reserve",
+    "evicted-oldest",
     "concurrent-burst",
     "immediate-drain",
     "pending-drain",
@@ -417,6 +422,8 @@ class ScenarioRun final {
             .startup_timeout = 5s,
             .destruction_timeout = 5s,
             .event_clock = ulog::EventClock{nullptr, &FixedNow},
+            .admission_policy = config.drop_oldest ? ulog::AdmissionPolicy::kDropOldest
+                                                   : ulog::AdmissionPolicy::kDropNewest,
             .priority_reserve_bytes = config.priority_reserve_bytes,
         },
         destination_);
@@ -544,8 +551,11 @@ class ScenarioRun final {
       return std::nullopt;  // its lane and credit depend on an unresolved burst order
     }
     std::string message = Pad(fmt::format("m{}:", next_message_++), bytes);
-    const bool priority = level == ulog::Level::kError || level == ulog::Level::kCritical;
-    const model::Admission admission = model_.Log(thread, message, priority);
+    const std::uint64_t evicted_before = model_.counters().shed_records;
+    const model::Admission admission = model_.Log(thread, message, level);
+    if (model_.counters().shed_records != evicted_before) {
+      Cover(Covered::kEvicted);
+    }
     Cover(admission == model::Admission::kAccepted && model_.last_used_reserve()
               ? Covered::kPriorityReserveAccepted
           : admission == model::Admission::kAccepted        ? Covered::kAccepted
@@ -853,7 +863,7 @@ class ScenarioRun final {
   [[nodiscard]] std::optional<std::string> Compare() const {
     const model::Counters expected = model_.counters();
     const ulog::RuntimeSnapshot observed = runtime_->GetSnapshot();
-    const std::array<std::tuple<std::string_view, std::uint64_t, std::uint64_t>, 20> fields{{
+    const std::array<std::tuple<std::string_view, std::uint64_t, std::uint64_t>, 21> fields{{
         {"accepted_records", expected.accepted, observed.accepted_records},
         {"processed_records", expected.processed, observed.processed_records},
         {"processed_bytes", expected.processed_bytes, observed.processed_bytes},
@@ -872,6 +882,7 @@ class ScenarioRun final {
          expected.rejected_no_producer + expected.rejected_lane_full + expected.rejected_budget +
              expected.rejected_priority_reserve,
          observed.dropped_newest_records},
+        {"shed_records", expected.shed_records, observed.shed_records},
         {"retained_records", expected.retained_records, observed.retained_records},
         {"logical_retained_bytes", expected.logical_retained_bytes,
          observed.logical_retained_bytes},

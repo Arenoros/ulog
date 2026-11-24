@@ -164,3 +164,65 @@ before publication or let a non-producer owner reclaim an unclaimed Record, but
 they do not expose the Record representation or add a route scan to producers.
 Producer credits draw only from the payload budget; control and progress
 reserves are independently bounded and remain available at payload saturation.
+
+## Amendment: drop-oldest eviction (#35)
+
+`AdmissionPolicy::kDropOldest` lets a call that the payload budget rejects evict
+older Records instead of being rejected. Because a producer cannot wait, every
+eviction it relies on must complete synchronously and boundedly on the producer
+call itself.
+
+**Eligible Records.** A Record is eligible when it is published, the consumer has
+not claimed it, its level is at most the incoming call's level, and it was not
+admitted through the priority reserve. Records in any producer's lane are
+eligible, so the oldest eligible Record in the whole ingress is chosen, as ADR
+0010 requires. Claimed, encoding, and in-flight Records are never eligible,
+because the consumer claims a Record before it encodes or delivers it.
+
+**Cell tags.** Under drop-oldest each cell carries an atomic tag with the Record's
+admission sequence, level, priority-reserve bit, and a state:
+- published;
+- claimed;
+- evicting;
+- shed.
+
+Publication stores the tag before releasing the lane's published position.
+The consumer claims a Record by moving its tag from published to claimed with a
+CAS. An evicting producer moves it from published to evicting with a CAS. Only
+one of them wins. A consumer that finds the tag evicting reports pending. One
+that finds it shed skips the cell: it resets the Record slot and advances the
+lane without observing the Record. Drop-newest never writes or reads the tags,
+so its publication path is unchanged.
+
+**Credit.** The evicting producer moves the victim's ownership to itself: it
+removes the victim's retained bytes from the victim's producer and adds the
+victim's charge to its own local credit, then stores the shed tag. It then
+retries its worst-case reservation. Credit therefore moves only from a Record
+that no consumer can observe to the producer that evicted it. Records admitted
+through the priority reserve hold reserve bytes that an ordinary reservation
+could not use, so they are never evicted. The victim's cell stays occupied until
+the consumer skips it, so eviction frees bytes but never lane cells: a full lane
+still rejects the call.
+
+**Bound.** The producer scans every lane once, reading only atomic tags, and
+collects at most `ingress_cells` candidates ordered by sequence. It first checks
+that its available credit plus every candidate's charge covers one worst-case
+reservation. If they cannot, it evicts nothing and rejects the call. Otherwise it
+evicts candidates oldest first until the reservation fits. A candidate that the
+consumer claims or another producer evicts in the meantime is skipped. The
+producer work is therefore at most one scan and `ingress_cells` CASes. Because a
+concurrent claim can still remove a candidate after the check, a call may evict
+some Records and still be rejected. Those Records stay shed and are accounted
+exactly.
+
+**Accounting.** An evicted Record keeps its admission sequence. The consumer skips
+it in sequence order, and the Runtime worker retires it as shed in admission
+order. If an earlier delivery is still in flight, the shed sequence waits in a
+fixed FIFO of `kMaximumIngressCells` entries, and the worker stops skipping while
+that FIFO is full. Shed Records are counted separately from delivered, failed,
+and rejected ones in the snapshot and in every Operation report whose watermark
+covers them.
+
+When capacity is available, no call reaches this path, so the ordinary
+accepted path adds no scan. The frontend benchmark's `drop-oldest-evicting` row
+measures one eviction under a saturated budget.

@@ -78,8 +78,8 @@ The current Runtime accepts these bounds:
 - `maximum_record_bytes` is a 64-byte multiple from 128 through 16,384;
 - `payload_capacity_bytes` is a 64-byte multiple large enough for one maximum-sized
   Record;
-- `admission_policy` is `AdmissionPolicy::kDropNewest`, the default and only policy
-  so far;
+- `admission_policy` is `AdmissionPolicy::kDropNewest`, the default, or
+  `AdmissionPolicy::kDropOldest`;
 - `priority_reserve_bytes` is zero, the default, or a 64-byte multiple large enough
   for one maximum-sized Record;
 - `producer_slots` is from 1 through 32, and `ingress_cells` is from
@@ -161,6 +161,33 @@ counted in `RuntimeSnapshot`:
 
 `dropped_newest_records` is their sum. Operation reports count only admitted
 Records, so they are unaffected by rejections.
+
+### Drop-oldest
+
+`AdmissionPolicy::kDropOldest` changes what happens when the payload budget (and,
+for Error and Critical, the priority reserve) rejects a call. The call evicts the
+oldest Records that the worker has not claimed yet, of equal or lower level, from
+any producer's lane, until its worst-case reservation fits. It is rejected as
+`rejected_budget` or `rejected_priority_reserve` only when those Records cannot
+make room. The rules:
+
+- Claimed, encoding, and in-flight Records are never evicted, and neither are
+  Records admitted through the priority reserve.
+- Eviction frees bytes, not ingress cells: a full producer lane still rejects
+  the call as `rejected_lane_full`.
+- An evicted Record is shed. It is never delivered, and the worker skips it in
+  admission order.
+- `RuntimeSnapshot::shed_records` counts evictions, separately from rejections
+  in `dropped_newest_records`.
+- `OperationReport::shed_records` counts the shed Records below the report's
+  watermark, and `unfinished_records` excludes them. Reports therefore satisfy
+  `watermark_records == delivered_records + failed_records + shed_records +
+  unfinished_records`.
+- Surviving Records keep their admission order, and every byte stays accounted.
+- A call that finds free capacity does no scan.
+
+The design and its bounds are recorded in the
+[ADR 0017 amendment](adr/0017-use-producer-credits-contiguous-records-and-producer-lanes.md#amendment-drop-oldest-eviction-35).
 
 ### Priority reserve
 

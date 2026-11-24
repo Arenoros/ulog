@@ -85,6 +85,21 @@ class FrontendHotPathContractTest(unittest.TestCase):
         ):
             contract.validate_sources(sources)
 
+    def test_rejects_a_drop_newest_store_in_lane_publication(self):
+        # Only the drop-oldest `if (eviction_)` branch is exempt; any other publication store fails.
+        sources = self.sources()
+        sources["src/producer/producer_lanes.hpp"] = sources[
+            "src/producer/producer_lanes.hpp"
+        ].replace(
+            "    lane.write_position = claim.write_position_ + 1U;",
+            "    cell.charge_bytes.store(0, std::memory_order_relaxed);\n"
+            "    lane.write_position = claim.write_position_ + 1U;",
+        )
+        with self.assertRaisesRegex(
+            contract.FrontendHotPathContractError, "ProducerLanes::Publish may mutate only"
+        ):
+            contract.validate_sources(sources)
+
     def test_requires_one_atomic_default_target_load_per_getter(self):
         sources = self.sources()
         sources["src/logger.cpp"] = sources["src/logger.cpp"].replace(

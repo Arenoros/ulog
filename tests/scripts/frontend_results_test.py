@@ -86,7 +86,7 @@ class FrontendResultsTest(unittest.TestCase):
             return results.validate_result_file(path)
 
     def test_valid_smoke_paths(self):
-        self.assertEqual(self.validate(make_document()), (6, 1, 1))
+        self.assertEqual(self.validate(make_document()), (7, 1, 1))
 
     def test_rejects_frontend_allocation(self):
         document = make_document()
@@ -150,8 +150,8 @@ class FrontendResultsTest(unittest.TestCase):
 
     def test_controlled_schedule_is_bounded_and_repetition_major(self):
         expected = schedule.expected_listing()
-        self.assertEqual(len(expected), 42)
-        self.assertEqual(schedule.validate_listing(expected), 42)
+        self.assertEqual(len(expected), 49)
+        self.assertEqual(schedule.validate_listing(expected), 49)
         with self.assertRaisesRegex(schedule.FrontendScheduleError, "row 0"):
             schedule.validate_listing(list(reversed(expected)))
 

@@ -24,8 +24,9 @@ PATHS = (
     "admission-rejected",
     "ordinary-accepted",
     "stream-accepted",
+    "drop-oldest-evicting",
 )
-ACCEPTED_PATHS = frozenset({"ordinary-accepted", "stream-accepted"})
+ACCEPTED_PATHS = frozenset({"ordinary-accepted", "stream-accepted", "drop-oldest-evicting"})
 MODE_REPETITIONS = {"smoke": 1, "controlled": 7}
 SMOKE_WARMUP_ATTEMPTS = 1
 SMOKE_MEASURED_ATTEMPTS = 1_024
@@ -35,7 +36,7 @@ MESSAGE_BYTES = 8
 ROW_PATTERN = re.compile(
     r"^(?P<identity>UlogFrontend/producer-frontend/"
     r"path:(?P<path>compile-erased|runtime-filtered|null-logger|"
-    r"admission-rejected|ordinary-accepted|stream-accepted)/"
+    r"admission-rejected|ordinary-accepted|stream-accepted|drop-oldest-evicting)/"
     r"repetition:(?P<repetition>[0-6]))(?:/.+)?$"
 )
 INTEGER_COUNTERS = {

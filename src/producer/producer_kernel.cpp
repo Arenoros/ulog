@@ -292,7 +292,8 @@ struct ProducerKernel::Impl final {
     std::atomic<std::uint64_t> abandoned_builds{0};
     std::atomic<std::uint64_t> invalid_records{0};
     std::atomic<std::uint64_t> truncated_records{0};
-    std::array<std::byte, kAccountingQuantumBytes - 6U * sizeof(std::atomic<std::uint64_t>)>
+    std::atomic<std::uint64_t> evicted_records{0};
+    std::array<std::byte, kAccountingQuantumBytes - 7U * sizeof(std::atomic<std::uint64_t>)>
         padding{};
   };
 
@@ -314,10 +315,59 @@ struct ProducerKernel::Impl final {
     std::size_t cell_index;
     credit::CreditLedger::Reservation reservation;
     record::RecordWriter writer;
+    Level level;
   };
 
+  /// Drop-oldest: evicts the oldest unclaimed Records of at most `level`, moving their credit to
+  /// `slot_index`, until a worst-case reservation fits. It evicts nothing when even every
+  /// candidate could not cover the reservation. One scan bounds the work by the ingress cells.
+  [[nodiscard]] credit::CreditLedger::Reservation EvictFor(std::size_t slot_index,
+                                                           Level level) noexcept {
+    std::array<ingress::EvictionCandidate, kMaximumIngressCells> candidates{};
+    const std::size_t count = lanes.CollectEvictionCandidates(level, candidates);
+    const std::size_t needed = record::AccountingCharge(config.maximum_record_bytes);
+    std::size_t reachable = ledger.EstimateAvailableCredit(slot_index);
+    for (std::size_t index = 0; index < count; ++index) {
+      reachable += candidates[index].charge_bytes;
+    }
+    if (reachable < needed) {
+      return {};
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+      const ingress::EvictionCandidate& candidate = candidates[index];
+      if (!lanes.TryBeginEviction(candidate)) {
+        continue;  // the consumer claimed it, or another producer evicted it first
+      }
+      auto& ownership = ownerships[candidate.cell_index];
+      if (ownership) {
+        ledger.TransferOwnership(*ownership, slot_index);
+        ownership.reset();
+      }
+      lanes.FinishEviction(candidate);
+      counters[slot_index].evicted_records.fetch_add(1, std::memory_order_relaxed);
+      auto reservation = ledger.TryReserve(slot_index, config.maximum_record_bytes);
+      if (reservation) {
+        return reservation;
+      }
+    }
+    return {};
+  }
+
+  /// Releases an evicted Record's cell for the consumer; its credit was moved at eviction.
+  void SkipShed(ingress::ProducerLanes::ConsumptionClaim& consumption) noexcept {
+    const std::size_t cell_index = consumption.envelope().record.slot_index;
+    if (cell_index < config.ingress_cells) {
+      records[cell_index] = {};
+      record_slots[cell_index].Reset();
+    }
+    consumed_records.fetch_add(1, std::memory_order_relaxed);
+    const std::size_t producer_index = consumption.producer_index();
+    consumption.Acknowledge();
+    TryFinishRetirement(producer_index);
+  }
+
   Impl(ProducerKernel& owner, KernelConfig kernel_config, EventClock event_clock)
-      : lanes(kernel_config.producer_slots, kernel_config.ingress_cells),
+      : lanes(kernel_config.producer_slots, kernel_config.ingress_cells, kernel_config.drop_oldest),
         record_slots(std::make_unique<record::RecordSlot[]>(kernel_config.ingress_cells)),
         clock(event_clock),
         logger_state{
@@ -571,17 +621,26 @@ PublishOutcome ProducerKernel::BeginSlot(std::size_t slot_index, std::uint64_t g
   }
   auto reservation = impl_->ledger.TryReserve(slot_index, impl_->config.maximum_record_bytes);
   if (!reservation) {
-    // Only Error and Critical Records fall back to the priority reserve, after the ordinary budget
-    // rejected them; an ordinary accepted call never touches the reserve.
-    if (impl_->config.priority_reserve_bytes == 0U ||
-        static_cast<std::uint8_t>(level) < static_cast<std::uint8_t>(Level::kError)) {
+    // After the ordinary budget rejects a call, Error and Critical Records first use the priority
+    // reserve, and drop-oldest then evicts older Records. An ordinary accepted call reaches none
+    // of these.
+    const bool reserve_applies =
+        impl_->config.priority_reserve_bytes != 0U &&
+        static_cast<std::uint8_t>(level) >= static_cast<std::uint8_t>(Level::kError);
+    if (reserve_applies) {
+      reservation =
+          impl_->ledger.TryReservePriority(slot_index, impl_->config.maximum_record_bytes);
+    }
+    if (!reservation && impl_->config.drop_oldest) {
+      reservation = impl_->EvictFor(slot_index, level);
+    }
+    if (!reservation) {
+      if (reserve_applies) {
+        counters.rejected_priority_reserve.fetch_add(1, std::memory_order_relaxed);
+        return PublishOutcome::kPriorityReserveExhausted;
+      }
       counters.rejected_budget.fetch_add(1, std::memory_order_relaxed);
       return PublishOutcome::kBudgetExhausted;
-    }
-    reservation = impl_->ledger.TryReservePriority(slot_index, impl_->config.maximum_record_bytes);
-    if (!reservation) {
-      counters.rejected_priority_reserve.fetch_add(1, std::memory_order_relaxed);
-      return PublishOutcome::kPriorityReserveExhausted;
     }
   }
 
@@ -600,6 +659,7 @@ PublishOutcome ProducerKernel::BeginSlot(std::size_t slot_index, std::uint64_t g
       .cell_index = *cell_index,
       .reservation = std::move(reservation),
       .writer = std::move(writer),
+      .level = level,
   });
   notify_consumer.notification = {};
   return PublishOutcome::kAccepted;
@@ -625,6 +685,9 @@ PublishResult ProducerKernel::FinishSlot(std::size_t slot_index,
   }
 
   const std::size_t cell_index = open->cell_index;
+  // Recorded before Commit; Publish tags the cell with them under drop-oldest.
+  const bool priority = open->reservation.priority();
+  const Level level = open->level;
   const record::StoredRecord record = std::move(open->writer).Publish();
   if (!record || record.serialized_bytes > impl_->config.maximum_record_bytes ||
       record.accounting_charge_bytes > impl_->config.maximum_record_bytes) {
@@ -642,14 +705,14 @@ PublishResult ProducerKernel::FinishSlot(std::size_t slot_index,
   const std::uint64_t record_generation = ++impl_->record_generations[cell_index];
   impl_->records[cell_index] = record;
   impl_->ownerships[cell_index].emplace(std::move(ownership));
-  const auto sequence = impl_->lanes.Publish(
-      std::move(open->publication), ingress::RecordHandle{
-                                        .slot_index = static_cast<std::uint32_t>(cell_index),
-                                        .producer_index = static_cast<std::uint32_t>(slot_index),
-                                        .generation = record_generation,
-                                        .serialized_bytes = record.serialized_bytes,
-                                        .accounting_charge_bytes = record.accounting_charge_bytes,
-                                    });
+  const ingress::RecordHandle handle{
+      .slot_index = static_cast<std::uint32_t>(cell_index),
+      .producer_index = static_cast<std::uint32_t>(slot_index),
+      .generation = record_generation,
+      .serialized_bytes = record.serialized_bytes,
+      .accounting_charge_bytes = record.accounting_charge_bytes,
+  };
+  const auto sequence = impl_->lanes.Publish(std::move(open->publication), handle, level, priority);
   if (!sequence) {
     impl_->ownerships[cell_index].reset();
     impl_->records[cell_index] = {};
@@ -666,11 +729,30 @@ PublishResult ProducerKernel::FinishSlot(std::size_t slot_index,
           .truncated = record.truncated};
 }
 
-ConsumeStatus ProducerKernel::TryConsume(void* context, RecordConsumer consumer) noexcept {
+ConsumeStatus ProducerKernel::TrySkipShed(std::uint64_t& shed_sequence) noexcept {
+  auto consumption = impl_->lanes.TryClaimConsumption(true);
+  if (!consumption) {
+    return consumption.status() == ingress::ConsumptionStatus::kPending ? ConsumeStatus::kPending
+                                                                        : ConsumeStatus::kEmpty;
+  }
+  shed_sequence = consumption.envelope().admission_sequence;
+  impl_->SkipShed(consumption);
+  return ConsumeStatus::kShed;
+}
+
+ConsumeStatus ProducerKernel::TryConsume(void* context, RecordConsumer consumer,
+                                         std::uint64_t* shed_sequence) noexcept {
   auto consumption = impl_->lanes.TryClaimConsumption();
   if (!consumption) {
     return consumption.status() == ingress::ConsumptionStatus::kPending ? ConsumeStatus::kPending
                                                                         : ConsumeStatus::kEmpty;
+  }
+  if (consumption.shed()) {
+    if (shed_sequence != nullptr) {
+      *shed_sequence = consumption.envelope().admission_sequence;
+    }
+    impl_->SkipShed(consumption);
+    return ConsumeStatus::kShed;
   }
 
   const auto envelope = consumption.envelope();
@@ -729,6 +811,7 @@ KernelSnapshot ProducerKernel::GetSnapshot() const noexcept {
     snapshot.abandoned_builds += counters.abandoned_builds.load(std::memory_order_relaxed);
     producer_invalid_records += counters.invalid_records.load(std::memory_order_relaxed);
     snapshot.truncated_records += counters.truncated_records.load(std::memory_order_relaxed);
+    snapshot.evicted_records += counters.evicted_records.load(std::memory_order_relaxed);
     switch (impl_->controls[index].state.load(std::memory_order_relaxed)) {
       case ProducerSlotState::kActive:
         ++snapshot.active_producer_slots;

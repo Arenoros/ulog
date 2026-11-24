@@ -362,6 +362,18 @@ if(ULOG_BUILD_STRESS_TESTS)
     ulog.producer-kernel-stress PROPERTIES LABELS "stress;producer;concurrency" TIMEOUT 10
   )
 
+  add_executable(ulog-drop-oldest-stress stress/drop_oldest_stress.cpp)
+  target_compile_features(ulog-drop-oldest-stress PRIVATE cxx_std_20)
+  target_include_directories(ulog-drop-oldest-stress PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_link_libraries(
+    ulog-drop-oldest-stress PRIVATE ${_ulog_private_test_library} Threads::Threads
+  )
+  ulog_configure_target(ulog-drop-oldest-stress)
+  add_test(NAME ulog.drop-oldest-stress COMMAND ulog-drop-oldest-stress)
+  set_tests_properties(
+    ulog.drop-oldest-stress PROPERTIES LABELS "stress;producer;concurrency" TIMEOUT 30
+  )
+
   add_executable(ulog-runtime-stress stress/runtime_stress.cpp)
   target_compile_features(ulog-runtime-stress PRIVATE cxx_std_20)
   target_link_libraries(ulog-runtime-stress PRIVATE ulog::ulog Threads::Threads)

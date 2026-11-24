@@ -113,6 +113,12 @@ class CreditLedger final {
   [[nodiscard]] Reservation TryReservePriority(std::size_t producer_index,
                                                std::size_t worst_case_bytes) noexcept;
   [[nodiscard]] bool TryReconcileProducer(std::size_t producer_index) noexcept;
+  /// Ends an evicted Record's ownership and gives its charge to `producer_index` as local credit.
+  /// Only that producer's own thread may call it; the Record must not hold priority bytes.
+  void TransferOwnership(Ownership& ownership, std::size_t producer_index) noexcept;
+  /// Credit `producer_index` could reserve now: its local and returned credit plus the shared
+  /// pool. Other producers change the pool concurrently, so it is an estimate.
+  [[nodiscard]] std::size_t EstimateAvailableCredit(std::size_t producer_index) const noexcept;
   [[nodiscard]] Snapshot GetSnapshot() const noexcept;
 
  private:

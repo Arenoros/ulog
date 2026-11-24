@@ -74,7 +74,8 @@ constexpr auto kNoShutdownDeadline =
       config.payload_capacity_bytes % detail::producer::kAccountingQuantumBytes != 0U) {
     return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidPayloadCapacity};
   }
-  if (config.admission_policy != AdmissionPolicy::kDropNewest) {
+  if (config.admission_policy != AdmissionPolicy::kDropNewest &&
+      config.admission_policy != AdmissionPolicy::kDropOldest) {
     return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidAdmissionPolicy};
   }
   if (config.priority_reserve_bytes % detail::producer::kAccountingQuantumBytes != 0U ||
@@ -219,7 +220,8 @@ template <typename Destination>
       return "Set the route format to a ulog::Format value, such as Format::kTskv or "
              "Format::kJson.";
     case RuntimeCreateErrorCode::kInvalidAdmissionPolicy:
-      return "Set admission_policy to AdmissionPolicy::kDropNewest.";
+      return "Set admission_policy to AdmissionPolicy::kDropNewest or "
+             "AdmissionPolicy::kDropOldest.";
     case RuntimeCreateErrorCode::kInvalidPriorityReserve:
       return "Set priority_reserve_bytes to zero to disable the reserve, or to a 64-byte-aligned "
              "value of at least maximum_record_bytes.";
@@ -312,7 +314,28 @@ struct RouteLedger final {
   std::uint64_t failed_bytes{0};
   std::uint64_t encoding_failed_records{0};
   std::optional<std::uint64_t> encoding_failed_sequence{};
+  /// Retired sequences that drop-oldest evicted; processed and retired counts include them.
+  std::uint64_t shed_records{0};
+  /// Evicted sequences the worker skipped while an earlier delivery was still unretired, in
+  /// admission order. The worker stops skipping while it is full.
+  std::array<std::uint64_t, detail::producer::kMaximumIngressCells> pending_shed{};
+  std::size_t pending_shed_head{0};
+  std::size_t pending_shed_count{0};
   bool settled{false};
+
+  [[nodiscard]] bool PendingShedFull() const noexcept {
+    return pending_shed_count == pending_shed.size();
+  }
+  [[nodiscard]] std::uint64_t PendingShedAt(std::size_t offset) const noexcept {
+    return pending_shed[(pending_shed_head + offset) % pending_shed.size()];
+  }
+  [[nodiscard]] std::uint64_t PendingShedBelow(std::uint64_t watermark) const noexcept {
+    std::uint64_t count = 0;
+    for (std::size_t offset = 0; offset < pending_shed_count; ++offset) {
+      count += PendingShedAt(offset) < watermark ? 1U : 0U;
+    }
+    return count;
+  }
 };
 
 class RuntimeRoute final {
@@ -379,9 +402,14 @@ class RuntimeRoute final {
       if (!claim) {
         return {};
       }
-      const ConsumeStatus consumed = producer.TryConsume(&claim, &StoreStructuredRecord);
+      std::uint64_t shed_sequence = 0;
+      const ConsumeStatus consumed =
+          producer.TryConsume(&claim, &StoreStructuredRecord, &shed_sequence);
       const bool stored = consumed == ConsumeStatus::kRecord;
-      return {.consumed = consumed, .submitted = stored, .retired = stored};
+      return {.consumed = consumed,
+              .admission_sequence = shed_sequence,
+              .submitted = stored,
+              .retired = stored};
     }
     if (auto* destination = std::get_if<testing::InMemoryEncodedDestination>(&destination_)) {
       return DeliverRaw(producer, InMemoryEncodedDestinationAccess::TryClaimWrite(*destination));
@@ -505,9 +533,12 @@ class RuntimeRoute final {
       return {};
     }
     RawStoreContext<Claim> context{.claim = &claim};
-    const ConsumeStatus consumed = producer.TryConsume(&context, &StoreRawRecord<Claim>);
+    std::uint64_t shed_sequence = 0;
+    const ConsumeStatus consumed =
+        producer.TryConsume(&context, &StoreRawRecord<Claim>, &shed_sequence);
     return {.consumed = consumed,
-            .admission_sequence = context.admission_sequence,
+            .admission_sequence =
+                consumed == ConsumeStatus::kShed ? shed_sequence : context.admission_sequence,
             .encoded_bytes = context.result.encoded_bytes,
             .submitted = context.result.submitted};
   }
@@ -549,6 +580,7 @@ class RuntimeDomain final {
                 .ingress_cells = config_.ingress_cells,
                 .consumer_notification = {this, &RuntimeDomain::NotifyConsumer},
                 .priority_reserve_bytes = config_.priority_reserve_bytes,
+                .drop_oldest = config_.admission_policy == AdmissionPolicy::kDropOldest,
             },
             SelectEventClock(config_.event_clock)),
         control_reserve_(config_.control_operations),
@@ -622,6 +654,7 @@ class RuntimeDomain final {
         .rejected_budget = producer.rejected_budget,
         .rejected_priority_reserve = producer.rejected_priority_reserve,
         .dropped_newest_records = rejected,
+        .shed_records = producer.evicted_records,
         .retained_records = producer.retained_records,
         .logical_retained_bytes = producer.logical_retained_bytes,
         .physical_retained_bytes = producer.physical_retained_bytes,
@@ -776,9 +809,17 @@ class RuntimeDomain final {
         break;
       }
 
+      // Evicted Records need no destination slot, so their cells are freed for producers first.
+      if (SkipShedRecords()) {
+        continue;
+      }
       const KernelSnapshot snapshot = producer_.GetSnapshot();
-      if (snapshot.retained_records != 0U) {
+      if (snapshot.retained_records != 0U && !ledger_.PendingShedFull()) {
         const RouteDeliveryResult delivery = route_.Deliver(producer_, kWorkerRecheckInterval);
+        if (delivery.consumed == ConsumeStatus::kShed) {
+          RecordShed(delivery.admission_sequence);
+          continue;
+        }
         if (delivery.consumed == ConsumeStatus::kRecord) {
           if (!delivery.submitted) {
             RecordEncodingFailure(delivery.admission_sequence);
@@ -918,6 +959,7 @@ class RuntimeDomain final {
       report.delivered_bytes = ledger_.delivered_bytes;
       report.failed_records = ledger_.failed_records + ledger_.encoding_failed_records;
       report.failed_bytes = ledger_.failed_bytes;
+      report.shed_records = ledger_.shed_records + ledger_.pending_shed_count;
     } else {
       const InFlightSummary in_flight = ledger_.retired_records < watermark
                                             ? route_.SummarizeInFlight(watermark)
@@ -925,14 +967,18 @@ class RuntimeDomain final {
       const std::uint64_t encoding_failed =
           ledger_.encoding_failed_sequence && *ledger_.encoding_failed_sequence < watermark ? 1U
                                                                                             : 0U;
-      report.processed_records = ledger_.retired_records + in_flight.records + encoding_failed;
+      const std::uint64_t pending_shed = ledger_.PendingShedBelow(watermark);
+      report.processed_records =
+          ledger_.retired_records + in_flight.records + encoding_failed + pending_shed;
+      report.shed_records = ledger_.shed_records + pending_shed;
       report.processed_bytes = ledger_.delivered_bytes + ledger_.failed_bytes + in_flight.bytes;
       report.delivered_records = ledger_.delivered_records + in_flight.delivered_records;
       report.delivered_bytes = ledger_.delivered_bytes + in_flight.delivered_bytes;
       report.failed_records = ledger_.failed_records + in_flight.failed_records + encoding_failed;
       report.failed_bytes = ledger_.failed_bytes + in_flight.failed_bytes;
     }
-    report.unfinished_records = watermark - report.delivered_records - report.failed_records;
+    report.unfinished_records =
+        watermark - report.delivered_records - report.failed_records - report.shed_records;
     report.unfinished_bytes = report.processed_bytes - report.delivered_bytes - report.failed_bytes;
     return report;
   }
@@ -953,6 +999,43 @@ class RuntimeDomain final {
     }
   }
 
+  /// Skips every evicted Record at the head of ingress; returns whether it skipped any.
+  [[nodiscard]] bool SkipShedRecords() noexcept {
+    if (config_.admission_policy != AdmissionPolicy::kDropOldest) {
+      return false;
+    }
+    bool skipped = false;
+    std::uint64_t sequence = 0;
+    while (!ledger_.PendingShedFull() && producer_.TrySkipShed(sequence) == ConsumeStatus::kShed) {
+      RecordShed(sequence);
+      skipped = true;
+    }
+    return skipped;
+  }
+
+  /// Accounts one evicted sequence. It retires at once when nothing earlier is unretired;
+  /// otherwise it waits in admission order for the deliveries before it.
+  void RecordShed(std::uint64_t admission_sequence) noexcept {
+    bool retired = false;
+    {
+      std::lock_guard lock{state_mutex_};
+      ++ledger_.processed_records;
+      if (ledger_.retired_records + 1U == ledger_.processed_records &&
+          ledger_.pending_shed_count == 0U) {
+        ++ledger_.retired_records;
+        ++ledger_.shed_records;
+        retired = true;
+      } else {
+        ledger_.pending_shed[(ledger_.pending_shed_head + ledger_.pending_shed_count) %
+                             ledger_.pending_shed.size()] = admission_sequence;
+        ++ledger_.pending_shed_count;
+      }
+    }
+    if (retired) {
+      CompleteReadyDrains();
+    }
+  }
+
   void RecordEncodingFailure(std::uint64_t admission_sequence) noexcept {
     std::lock_guard lock{state_mutex_};
     ++ledger_.processed_records;
@@ -965,6 +1048,18 @@ class RuntimeDomain final {
   void RetireCompletedDeliveries() noexcept {
     // Only this worker writes the ledger, so it may read its own values without the lock.
     while (ledger_.retired_records < ledger_.processed_records) {
+      if (ledger_.pending_shed_count != 0U && ledger_.PendingShedAt(0) == ledger_.retired_records) {
+        {
+          std::lock_guard lock{state_mutex_};
+          ledger_.pending_shed_head =
+              (ledger_.pending_shed_head + 1U) % ledger_.pending_shed.size();
+          --ledger_.pending_shed_count;
+          ++ledger_.retired_records;
+          ++ledger_.shed_records;
+        }
+        CompleteReadyDrains();
+        continue;
+      }
       const auto retirement = route_.TryRetire(ledger_.retired_records);
       if (!retirement) {
         return;
@@ -1157,7 +1252,7 @@ class RuntimeDomain final {
   void DrainDiscardedRecords() noexcept {
     while (!producer_.IsQuiescent()) {
       const ConsumeStatus consumed = producer_.TryConsume(nullptr, &DiscardRecord);
-      if (consumed == ConsumeStatus::kRecord) {
+      if (consumed == ConsumeStatus::kRecord || consumed == ConsumeStatus::kShed) {
         continue;
       }
       const std::uint64_t observed = wake_epoch_.load(std::memory_order_acquire);

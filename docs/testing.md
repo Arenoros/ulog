@@ -40,6 +40,7 @@ The repository establishes seven independent test categories:
   linearizable Default Logger exchange, concurrent threshold changes, queries,
   and logging, stale-target dispatch, producer-lane
   saturation, FIFO publication and Raw delivery, byte conservation, retirement,
+  concurrent drop-oldest eviction against the consumer with exact conservation,
   bounded destruction, concurrent split file appends, Runtime destruction during
   active appends, Shutdown deadlines raced against producers and held-delivery
   completions, and race-free weak snapshots, plus completion/callback
@@ -52,7 +53,7 @@ The repository establishes seven independent test categories:
   without an external checkout;
 - `benchmark`: run the complete short workload matrix, emit versioned Google
   Benchmark JSON, validate its deterministic counters without a timing gate,
-  and run the six-row frontend allocation/evaluation/accounting gate.
+  and run the seven-row frontend allocation/evaluation/accounting gate.
 
 Hosted CI benchmark timing is advisory. It confirms that benchmark executables
 compile, run, and emit machine-readable output. Hard regression thresholds are
@@ -144,6 +145,10 @@ single-route pipeline:
 - the priority reserve: Error and Critical attempts that the payload budget
   rejects reserve from it, its bytes return when the worker takes the Record,
   and a full reserve rejects them as `rejected_priority_reserve`;
+- drop-oldest: a rejected attempt evicts the oldest unclaimed ingress Records of
+  equal or lower level that did not use the reserve, moving their credit to
+  itself; the worker skips shed Records without a destination slot and retires
+  them in order, and reports count them as `shed_records`;
 - worker progress through the encoded destination's slots;
 - in-order retirement of held, completed, failed, and abandoned deliveries;
 - the control reserve, with exact Drain and Shutdown reports.
@@ -152,7 +157,7 @@ single-route pipeline:
 seeded event trace and applies it to the model and to a real Runtime with an
 `InMemoryEncodedDestination`. Events log at Info, Error, or Critical from
 registered and unregistered producer threads, in scenarios with and without a
-priority reserve, change the delivery mode, complete, fail, or abandon held
+priority reserve and under both admission policies, change the delivery mode, complete, fail, or abandon held
 deliveries, take and release frames, start Drains and Shutdowns, and release
 Operation handles. A burst makes every producer thread log at once. It runs
 concurrently only while the route has no free slot and the shared pool covers

@@ -14,6 +14,7 @@ EXPECTED_PRODUCER_COUNTERS = {
     "abandoned_builds",
     "invalid_records",
     "truncated_records",
+    "evicted_records",
 }
 EXPECTED_ATOMIC_INVENTORY = Counter(
     {
@@ -37,6 +38,7 @@ EXPECTED_ATOMIC_INVENTORY = Counter(
         ("src/producer/producer_kernel.cpp", "abandoned_builds"): 1,
         ("src/producer/producer_kernel.cpp", "invalid_records"): 1,
         ("src/producer/producer_kernel.cpp", "truncated_records"): 1,
+        ("src/producer/producer_kernel.cpp", "evicted_records"): 1,
         ("src/producer/producer_kernel.cpp", "rejections"): 1,
         ("src/producer/producer_kernel.cpp", "consumed_records"): 1,
         ("src/producer/producer_kernel.cpp", "consumer_validation_errors"): 1,
@@ -45,6 +47,9 @@ EXPECTED_ATOMIC_INVENTORY = Counter(
         ("src/producer/producer_lanes.hpp", "published_position"): 1,
         ("src/producer/producer_lanes.hpp", "publishing"): 1,
         ("src/producer/producer_lanes.hpp", "value"): 1,
+        # Drop-oldest cell tag and estimated charge; drop-newest never writes or reads them.
+        ("src/producer/producer_lanes.hpp", "tag"): 1,
+        ("src/producer/producer_lanes.hpp", "charge_bytes"): 1,
     }
 )
 EXPECTED_PUBLISH_COUNTER_MUTATIONS = Counter(
@@ -242,7 +247,11 @@ def validate_sources(sources: dict[str, str]) -> None:
         r"(?P<body>.*?)\n  \}",
         "ProducerLanes::Publish",
     )
-    publish_body = publish_match.group("body")
+    # The drop-oldest cell-tag stores run only when the eviction policy is configured; the
+    # drop-newest publication path stays exactly as constrained below.
+    publish_body = re.sub(
+        r"if \(eviction_\) \{.*?\n    \}", "", publish_match.group("body"), flags=re.DOTALL
+    )
     forbidden_publish_mutations = (
         ".fetch_sub(",
         ".exchange(",

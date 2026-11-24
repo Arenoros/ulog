@@ -29,6 +29,10 @@ struct RuntimeFactoryAccess;
 enum class AdmissionPolicy : std::uint8_t {
   /// Rejects the incoming call before its message is built; nothing already admitted is evicted.
   kDropNewest,
+  /// When the payload budget rejects a call, evicts the oldest Records of equal or lower level
+  /// that the worker has not claimed until the call fits, and rejects it only if they cannot make
+  /// room. Records admitted through the priority reserve are never evicted.
+  kDropOldest,
 };
 
 struct RuntimeConfig final {
@@ -116,6 +120,8 @@ struct RuntimeSnapshot final {
   std::uint64_t rejected_priority_reserve{0};
   /// Every rejected call: the sum of the four rejection reasons above.
   std::uint64_t dropped_newest_records{0};
+  /// Admitted Records that drop-oldest evicted; they are never delivered or counted as rejected.
+  std::uint64_t shed_records{0};
   std::uint64_t retained_records{0};
   std::size_t logical_retained_bytes{0};
   std::size_t physical_retained_bytes{0};

@@ -86,7 +86,13 @@ all payload pools, and the independent control and progress reserves.
   reserve.
 - The configured non-blocking shedding algorithm is drop-newest, ingress-only
   drop-oldest, or deterministic occupancy-adaptive sampling.
-- Drop-newest is the default. Priority-aware drop-oldest evicts only equal- or
+- Drop-newest is the default. `AdmissionPolicy::kDropOldest` is available: a call
+  reaches eviction only after the budget rejected it. It then makes one bounded
+  scan of at most `ingress_cells` atomic cell tags and at most that many CASes,
+  and the frontend benchmark's `drop-oldest-evicting` row measures it. The cell
+  tags are written only under drop-oldest, so the drop-newest publication path
+  is unchanged; the frontend hot-path contract check exempts only that branch.
+- Priority-aware drop-oldest evicts only equal- or
   lower-priority eligible Records, and adaptive sampling uses stateless hashing
   rather than dynamic per-site state.
 - The initial producer kernel does not steal credit or cells from another

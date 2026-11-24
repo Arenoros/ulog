@@ -385,6 +385,164 @@ TEST(ProducerKernel, PriorityReserveMustHoldOneAlignedRecord) {
   }
 }
 
+[[nodiscard]] KernelConfig DropOldestConfig(std::size_t priority_reserve_bytes = 0) {
+  // Four cells, and a budget of two worst-case Records: each small Record is charged 128 bytes,
+  // so the fourth one no longer fits without eviction.
+  return KernelConfig{
+      .threshold = Level::kTrace,
+      .payload_capacity_bytes = 512,
+      .maximum_record_bytes = 256,
+      .producer_slots = 1,
+      .ingress_cells = 4,
+      .priority_reserve_bytes = priority_reserve_bytes,
+      .drop_oldest = true,
+  };
+}
+
+/// Consumes the next Record; returns its sequence and whether it was skipped as shed.
+[[nodiscard]] std::pair<std::uint64_t, bool> ConsumeNext(ProducerKernel& kernel) {
+  ObservedRecord observed;
+  std::uint64_t shed_sequence = 0;
+  const ConsumeStatus status = kernel.TryConsume(&observed, &ObserveRecord, &shed_sequence);
+  EXPECT_TRUE(status == ConsumeStatus::kRecord || status == ConsumeStatus::kShed);
+  return status == ConsumeStatus::kShed ? std::pair{shed_sequence, true}
+                                        : std::pair{observed.sequence, false};
+}
+
+TEST(ProducerKernel, DropOldestEvictsTheOldestUnclaimedRecordWhenTheBudgetIsFull) {
+  FakeClock clock;
+  ProducerKernel kernel{DropOldestConfig(), clock.Source()};
+  auto producer = kernel.TryRegisterProducer();
+  ASSERT_TRUE(producer);
+  std::size_t evaluations = 0;
+  std::size_t three_records_bytes = 0;
+  for (int index = 0; index < 4; ++index) {
+    EXPECT_EQ(kernel
+                  .TryPublish(producer, Level::kInfo, TestSource(),
+                              BuildOperation{&evaluations, &CountBuild})
+                  .outcome,
+              PublishOutcome::kAccepted)
+        << index;
+    if (index == 2) {
+      three_records_bytes = kernel.GetSnapshot().logical_retained_bytes;
+    }
+  }
+  EXPECT_EQ(evaluations, 4U);
+  auto snapshot = kernel.GetSnapshot();
+  EXPECT_EQ(snapshot.accepted_records, 4U);
+  EXPECT_EQ(snapshot.evicted_records, 1U);
+  EXPECT_EQ(snapshot.rejected_budget, 0U);
+  // The evicted Record keeps its cell but releases exactly its own bytes, so three Records'
+  // bytes remain retained.
+  EXPECT_EQ(snapshot.retained_records, 4U);
+  EXPECT_EQ(snapshot.logical_retained_bytes, three_records_bytes);
+
+  // The worker skips the evicted Record, then sees the survivors in admission order.
+  EXPECT_EQ(ConsumeNext(kernel), (std::pair<std::uint64_t, bool>{0, true}));
+  EXPECT_EQ(ConsumeNext(kernel), (std::pair<std::uint64_t, bool>{1, false}));
+  EXPECT_EQ(ConsumeNext(kernel), (std::pair<std::uint64_t, bool>{2, false}));
+  EXPECT_EQ(ConsumeNext(kernel), (std::pair<std::uint64_t, bool>{3, false}));
+  EXPECT_EQ(kernel.TryConsume(nullptr, nullptr), ConsumeStatus::kEmpty);
+  snapshot = kernel.GetSnapshot();
+  EXPECT_EQ(snapshot.retained_records, 0U);
+  EXPECT_EQ(snapshot.logical_retained_bytes, 0U);
+  EXPECT_TRUE(snapshot.accounting_sample_consistent);
+}
+
+TEST(ProducerKernel, DropOldestNeverEvictsAHigherLevelAndRejectsWhenNothingFits) {
+  FakeClock clock;
+  ProducerKernel kernel{DropOldestConfig(), clock.Source()};
+  auto producer = kernel.TryRegisterProducer();
+  ASSERT_TRUE(producer);
+  std::size_t evaluations = 0;
+  const auto publish = [&](Level level) {
+    return kernel
+        .TryPublish(producer, level, TestSource(), BuildOperation{&evaluations, &CountBuild})
+        .outcome;
+  };
+  for (int index = 0; index < 3; ++index) {
+    ASSERT_EQ(publish(Level::kError), PublishOutcome::kAccepted);
+  }
+  // Only Error Records are retained, so Warning finds no eligible Record and evicts nothing.
+  EXPECT_EQ(publish(Level::kWarning), PublishOutcome::kBudgetExhausted);
+  EXPECT_EQ(kernel.GetSnapshot().evicted_records, 0U);
+  EXPECT_EQ(evaluations, 3U);
+  // Critical may evict the oldest Error Record.
+  EXPECT_EQ(publish(Level::kCritical), PublishOutcome::kAccepted);
+  EXPECT_EQ(kernel.GetSnapshot().evicted_records, 1U);
+  EXPECT_EQ(ConsumeNext(kernel), (std::pair<std::uint64_t, bool>{0, true}));
+}
+
+struct EvictDuringConsumption final {
+  ProducerKernel* kernel{nullptr};
+  ProducerKernel::ProducerRegistration* producer{nullptr};
+  PublishOutcome outcome{PublishOutcome::kInvalidRecord};
+  std::size_t evaluations{0};
+};
+
+void PublishWhileClaimed(void* context, std::uint64_t, const RecordView&) noexcept {
+  auto& state = *static_cast<EvictDuringConsumption*>(context);
+  state.outcome = state.kernel
+                      ->TryPublish(*state.producer, Level::kInfo, TestSource(),
+                                   BuildOperation{&state.evaluations, &CountBuild})
+                      .outcome;
+}
+
+TEST(ProducerKernel, DropOldestSkipsTheRecordTheConsumerHasClaimed) {
+  FakeClock clock;
+  ProducerKernel kernel{DropOldestConfig(), clock.Source()};
+  auto producer = kernel.TryRegisterProducer();
+  ASSERT_TRUE(producer);
+  std::size_t evaluations = 0;
+  for (int index = 0; index < 3; ++index) {
+    ASSERT_EQ(kernel
+                  .TryPublish(producer, Level::kInfo, TestSource(),
+                              BuildOperation{&evaluations, &CountBuild})
+                  .outcome,
+              PublishOutcome::kAccepted);
+  }
+  // While the consumer holds Record 0, a new Record must evict Record 1 instead.
+  EvictDuringConsumption state{.kernel = &kernel, .producer = &producer};
+  ASSERT_EQ(kernel.TryConsume(&state, &PublishWhileClaimed), ConsumeStatus::kRecord);
+  EXPECT_EQ(state.outcome, PublishOutcome::kAccepted);
+  EXPECT_EQ(kernel.GetSnapshot().evicted_records, 1U);
+  EXPECT_EQ(ConsumeNext(kernel), (std::pair<std::uint64_t, bool>{1, true}));
+  EXPECT_EQ(ConsumeNext(kernel), (std::pair<std::uint64_t, bool>{2, false}));
+  EXPECT_EQ(ConsumeNext(kernel), (std::pair<std::uint64_t, bool>{3, false}));
+}
+
+TEST(ProducerKernel, DropOldestNeverEvictsARecordAdmittedThroughThePriorityReserve) {
+  FakeClock clock;
+  KernelConfig config = DropOldestConfig(256);
+  config.ingress_cells = 8;  // room for five Records, so only the byte budget decides
+  ProducerKernel kernel{config, clock.Source()};
+  auto producer = kernel.TryRegisterProducer();
+  ASSERT_TRUE(producer);
+  std::size_t evaluations = 0;
+  const auto publish = [&](Level level) {
+    return kernel
+        .TryPublish(producer, level, TestSource(), BuildOperation{&evaluations, &CountBuild})
+        .outcome;
+  };
+  for (int index = 0; index < 3; ++index) {
+    ASSERT_EQ(publish(Level::kError), PublishOutcome::kAccepted);
+  }
+  // The fourth Error uses the reserve without evicting anything.
+  ASSERT_EQ(publish(Level::kError), PublishOutcome::kAccepted);
+  EXPECT_EQ(kernel.GetSnapshot().evicted_records, 0U);
+  std::uint64_t shed_sequence = 0;
+  EXPECT_EQ(kernel.TrySkipShed(shed_sequence), ConsumeStatus::kEmpty);
+  // With budget and reserve full, Critical evicts the oldest ordinary Error (0), never the
+  // reserve Record (3).
+  ASSERT_EQ(publish(Level::kCritical), PublishOutcome::kAccepted);
+  EXPECT_EQ(kernel.GetSnapshot().evicted_records, 1U);
+  EXPECT_EQ(kernel.GetSnapshot().rejected_priority_reserve, 0U);
+  EXPECT_EQ(ConsumeNext(kernel), (std::pair<std::uint64_t, bool>{0, true}));
+  for (std::uint64_t sequence = 1; sequence <= 4; ++sequence) {
+    EXPECT_EQ(ConsumeNext(kernel), (std::pair<std::uint64_t, bool>{sequence, false}));
+  }
+}
+
 TEST(ProducerKernel, ThrowingFactoryAbandonsAllCapacityAndConsumesNoSequence) {
   FakeClock clock;
   ProducerKernel kernel{SmallConfig(256, 1, 1), clock.Source()};
