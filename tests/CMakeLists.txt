@@ -102,6 +102,7 @@ if(ULOG_BUILD_UNIT_TESTS)
     level_test.cpp
     log_macro_test.cpp
     log_writer_test.cpp
+    log_writer_values_test.cpp
     memory_resource_test.cpp
     operation_test.cpp
     producer_kernel_test.cpp

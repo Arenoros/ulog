@@ -17,8 +17,10 @@ The repository establishes seven independent test categories:
   Logger level rejection, the Default Logger level scope, typed fields with their collision, reserved-key,
   ownership, laziness, and truncation policy, the scope writer and stream form for
   every macro family with lazy operands, baseline text forms, fmt continuation,
-  abandonment on formatting failures and exceptions, and UTF-8-boundary
-  truncation of every writing form, the field-rich Raw corpus cases,
+  abandonment on formatting failures and exceptions, UTF-8-boundary truncation
+  of every writing form and of nested ranges, pointer, hex, quoted, atomic,
+  optional, error-code, chrono, range, map, tuple, ostream, fmt, native-overload,
+  lazy-writer, and exception-type forms, the field-rich Raw corpus cases,
   multi-translation-unit source path prefix trimming, injected event clocks, UTC and process-local
   timestamp formatting across calendar boundaries and concurrent calls, and test
   memory resources;
@@ -27,7 +29,8 @@ The repository establishes seven independent test categories:
   a Raw file route writing a temporary file, and every committed `tskv-*` and
   `ltsv-*` corpus case with an injected clock, the UTC time zone, and a normalized
   source path, and every `json-v1.json` case through the encoded destination and a
-  file route against golden lines, through installed public headers;
+  file route against golden lines, and a native writer overload with a lazy
+  writer, through installed public headers;
   `tests/scripts/json_corpus_frames_test.py` (in `ulog.script-tools`) checks that
   those golden lines parse to the committed corpus members under the DEF-004
   policy;

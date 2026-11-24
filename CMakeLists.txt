@@ -65,6 +65,7 @@ set(ULOG_LIBRARY_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/testing/in_memory_encoded_destination.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/testing/in_memory_destination.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/timestamp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/type_name.cpp"
     ${ULOG_PRODUCER_SOURCES}
     ${ULOG_CONTROL_PRIVATE_SOURCES}
     ${ULOG_IO_PRIVATE_SOURCES}

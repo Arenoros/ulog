@@ -786,9 +786,9 @@ bool ProducerKernel::BeginRecord(void* context, Level level, const SourceLocatio
   return true;
 }
 
-void ProducerKernel::AppendOpenText(void* context, std::string_view text) noexcept {
+bool ProducerKernel::AppendOpenText(void* context, std::string_view text) noexcept {
   RecordAppender appender{&static_cast<Impl::OpenRecordState*>(context)->writer};
-  static_cast<void>(appender.Append(text));
+  return !appender.Append(text).truncated;
 }
 
 FieldStatus ProducerKernel::PutOpenField(void* context, std::string_view key,

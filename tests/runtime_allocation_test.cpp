@@ -5,8 +5,12 @@
 #include <cstdio>
 #include <exception>
 #include <limits>
+#include <map>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <tuple>
+#include <typeinfo>
 #include <ulog/fields.hpp>
 #include <ulog/level.hpp>
 #include <ulog/log.hpp>
@@ -16,6 +20,8 @@
 #include <ulog/source_location.hpp>
 #include <ulog/testing/in_memory_destination.hpp>
 #include <ulog/timestamp.hpp>
+#include <utility>
+#include <vector>
 
 #include "support/allocation_interposer.hpp"
 
@@ -105,9 +111,8 @@ struct StreamFailure final : std::exception {
 [[nodiscard]] bool RunStreamCycle(ulog::Runtime& runtime, const ulog::Logger& logger,
                                   ulog::testing::InMemoryDestination& destination,
                                   const std::uint64_t expected_sequence,
-                                  const std::exception& exception) noexcept {
-  constexpr std::string_view kStreamed =
-      "allocation-free-runtime: -1 18446744073709551615 0.5 true x view stream failure";
+                                  const std::exception& exception,
+                                  std::string_view expected_message) noexcept {
   LOG_INFO_TO(logger, "{}:", kMessage)
       << ' ' << -1 << ' ' << std::numeric_limits<std::uint64_t>::max() << ' ' << 0.5 << ' ' << true
       << ' ' << 'x' << ' ' << std::string_view{"view"} << ' ' << exception
@@ -118,7 +123,42 @@ struct StreamFailure final : std::exception {
   }
   std::optional<ulog::testing::ObservedRecord> record = destination.TryTake();
   return record && record->AdmissionSequence() == expected_sequence &&
-         record->Message() == kStreamed && record->FieldCount() == 1U;
+         record->Message() == expected_message && record->FieldCount() == 1U;
+}
+
+/// Values for the advanced native forms, built before the measured cycles.
+struct AdvancedValues final {
+  std::atomic<int> counter{3};
+  std::optional<int> empty;
+  std::vector<int> numbers{1, 2};
+  std::map<std::string, int> map{{"k", 1}};
+  std::tuple<int, char> tuple{4, 't'};
+  std::chrono::system_clock::time_point time =
+      std::chrono::sys_days{std::chrono::year{2000} / std::chrono::January / 2} +
+      std::chrono::seconds{1};
+};
+
+/// Writes one Record through the allocation-free advanced forms.
+[[nodiscard]] bool RunAdvancedCycle(ulog::Runtime& runtime, const ulog::Logger& logger,
+                                    ulog::testing::InMemoryDestination& destination,
+                                    const std::uint64_t expected_sequence,
+                                    const AdvancedValues& values) noexcept {
+  constexpr std::string_view kAdvanced =
+      "(null) 0x000000000000002A 2A \"q\\\"\" 3 (none) [1, 2] [\"k\": 1] (4, t) (5, x) 7ms "
+      "2000-01-02T00:00:01+0000 lazy";
+  const auto lazy = [](ulog::LogWriter& writer) { writer << "lazy"; };
+  LOG_INFO_TO(logger) << static_cast<const int*>(nullptr) << ' ' << ulog::Hex{42U} << ' '
+                      << ulog::HexShort{42U} << ' ' << ulog::Quoted{"q\""} << ' ' << values.counter
+                      << ' ' << values.empty << ' ' << values.numbers << ' ' << values.map << ' '
+                      << values.tuple << ' ' << std::pair<int, char>{5, 'x'} << ' '
+                      << std::chrono::milliseconds{7} << ' ' << values.time << ' ' << lazy;
+  auto drain = runtime.Drain();
+  if (!WaitSucceeded(drain)) {
+    return false;
+  }
+  std::optional<ulog::testing::ObservedRecord> record = destination.TryTake();
+  return record && record->AdmissionSequence() == expected_sequence &&
+         record->Message() == kAdvanced;
 }
 
 [[nodiscard]] bool Run() {
@@ -138,8 +178,14 @@ struct StreamFailure final : std::exception {
   ulog::Runtime& runtime = *created.runtime;
   const ulog::Logger logger = runtime.GetLogger();
   const StreamFailure exception;
+  // An exception writes its message and dynamic type, whose spelling depends on the compiler.
+  const std::string streamed =
+      "allocation-free-runtime: -1 18446744073709551615 0.5 true x view stream failure (" +
+      std::string{ulog::detail::TypeName(typeid(StreamFailure))} + ")";
+  const AdvancedValues advanced;
   if (!RunCycle(runtime, logger, destination, 0) ||
-      !RunStreamCycle(runtime, logger, destination, 1, exception)) {
+      !RunStreamCycle(runtime, logger, destination, 1, exception, streamed) ||
+      !RunAdvancedCycle(runtime, logger, destination, 2, advanced)) {
     std::fputs("runtime allocation test: warm-up failed\n", stderr);
     return false;
   }
@@ -148,9 +194,10 @@ struct StreamFailure final : std::exception {
       allocation_tracking::allocation_count.load(std::memory_order_relaxed);
   bool valid = true;
   for (std::uint64_t cycle = 0; cycle < kCycles; ++cycle) {
-    const std::uint64_t sequence = 2U + 2U * cycle;
+    const std::uint64_t sequence = 3U + 3U * cycle;
     if (!RunCycle(runtime, logger, destination, sequence) ||
-        !RunStreamCycle(runtime, logger, destination, sequence + 1U, exception)) {
+        !RunStreamCycle(runtime, logger, destination, sequence + 1U, exception, streamed) ||
+        !RunAdvancedCycle(runtime, logger, destination, sequence + 2U, advanced)) {
       valid = false;
       break;
     }
@@ -160,13 +207,13 @@ struct StreamFailure final : std::exception {
   auto shutdown = runtime.Shutdown();
   valid = WaitSucceeded(shutdown) && valid;
   std::optional<ulog::testing::ObservedRecord> final_record = destination.TryTake();
-  valid = final_record && final_record->AdmissionSequence() == 2U * kCycles + 2U &&
+  valid = final_record && final_record->AdmissionSequence() == 3U * kCycles + 3U &&
           final_record->Message() == kMessage && valid;
 
   const std::uint64_t allocations_after =
       allocation_tracking::allocation_count.load(std::memory_order_relaxed);
   const auto snapshot = runtime.GetSnapshot();
-  const std::uint64_t expected_records = 2U * kCycles + 3U;
+  const std::uint64_t expected_records = 3U * kCycles + 4U;
   valid = allocations_after == allocations_before &&
           snapshot.accepted_records == expected_records &&
           snapshot.delivered_records == expected_records && snapshot.dropped_newest_records == 0U &&

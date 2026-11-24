@@ -200,29 +200,86 @@ otherwise. A writer that was filtered or rejected, whose formatting failed, or
 that is destroyed while an exception unwinds publishes nothing. Writing through
 it never throws and never allocates.
 
-Streamed values use these text forms (`VAL-001`), which do not depend on the
-locale:
+Streamed values use these text forms (`VAL-001`, `VAL-003`, `VAL-004`). The
+native forms do not depend on the locale:
 
 | Value | Text |
 | --- | --- |
 | `char` | the character |
-| strings, `std::string_view`, C strings | the text; a null C string writes `(null)` |
+| strings, `std::string_view`, C strings | the text |
+| null pointers, `nullptr`, null C strings | `(null)` |
+| other pointers | the address as `ulog::Hex` |
 | signed and unsigned integers, including `signed char` and `unsigned char` | decimal |
 | `float`, `double`, `long double` | fmt's shortest round-trip form, such as `1.5`, `1e+300`, `1e-07`, `nan`, `-inf` |
 | `bool` | `true` or `false` |
-| `std::exception` | `what()` |
+| `std::exception` | `what()` and the dynamic type, as in `boom (std::runtime_error)` |
+| `ulog::Hex{v}` | `0x` and 16 uppercase hexadecimal digits |
+| `ulog::HexShort{v}` | shortest uppercase hexadecimal without a prefix, such as `1F` |
+| `ulog::Quoted{text}` | the text in double quotes, with `"` and `\` escaped by a backslash |
+| `std::atomic<T>` | one `load()` of the value |
+| `std::optional<T>` | the value, or `(none)` |
+| `std::error_code` | `category:value (message)` |
+| `nanoseconds` through `hours` | the count and `ns`, `us`, `ms`, `s`, `min`, or `h` |
+| `system_clock` time points | UTC, as `2000-01-02T03:04:05.123456+0000`; trailing fractional zeros are dropped |
+| tuples and pairs | `(a, b)` |
+| ranges | `[a, b]`, maps as `[k: v]`; string elements are quoted and ranges nest |
 | `ulog::Fields`, `ulog::FieldSet` | added as typed fields, not text |
 
+Any other value is written by the first form that applies:
+1. a native overload `ulog::LogWriter& operator<<(ulog::LogWriter&, const T&)`, found
+   by argument-dependent lookup;
+2. text usable as `std::string_view`;
+3. an integer;
+4. an exception;
+5. an ostream `operator<<`;
+6. a range;
+7. an `fmt::formatter`.
+
+A type that is both ostream-writable and a range uses its stream operator, as in
+the baseline. A range of `char` does not compile; convert it to
+`std::string_view` or give it a native overload.
+
+An invocable that takes `ulog::LogWriter&` is a lazy writer (`VAL-005`):
+
+```cpp
+LOG_DEBUG() << [&](ulog::LogWriter& writer) { writer << ExpensiveSummary(); };
+```
+
+It runs only while the writer holds an admitted Record, so a filtered or
+rejected statement never calls it. Its exceptions propagate and abandon the
+Record.
+
 `wchar_t`, `char8_t`, `char16_t`, and `char32_t` do not compile; convert them to
-UTF-8 text or cast them to an integer. Pointers, optionals, ranges, chrono values,
-custom types, and the exception's dynamic type belong to the advanced value
-writers. `writer(format, args...)` and `writer.Format(format, args...)` append
-compile-time-checked fmt text that later `<<` operands continue (`VAL-002`).
-Formatting writes the result into the Record; no argument is retained.
+UTF-8 text or cast them to an integer. Function pointers and stream manipulators
+such as `std::endl` do not compile either. `writer(format, args...)` and
+`writer.Format(format, args...)` append compile-time-checked fmt text that later
+`<<` operands continue (`VAL-002`). Formatting writes the result into the
+Record; no argument is retained.
+
+These native forms make no heap allocation once warmed up:
+- text, characters, integers, floating point, and booleans;
+- pointers, `Hex`, `HexShort`, `Quoted`, atomics, and optionals;
+- durations, time points, tuples, pairs, and ranges of these;
+- exceptions;
+- fmt text;
+- typed fields and lazy writers that themselves do not allocate.
+
+On GCC and Clang an exception's type is demangled into a per-thread buffer. The
+buffer grows to the longest type name the thread has logged, is reused after
+that, and is freed when the thread exits. It is not Record payload memory.
+These forms may allocate:
+- `std::error_code`, whose `message()` returns a `std::string`;
+- ostream-writable values: Ulog writes them through a bounded `std::ostream`
+  adapter, and the stream itself may allocate (MSVC does);
+- user `fmt::formatter` and ostream operators that allocate.
+
+The adapter's output is still cut at the Record bound like every other form.
 
 Text past the Record bound is cut at a valid UTF-8 boundary, and the Record gets
 exactly one `ulog.truncated=true` field; the Record never grows past its
-reservation (`DEF-015`). See [Record bounds](#record-bounds).
+reservation (`DEF-015`). A range stops at the bound instead of writing the
+baseline's `...N more` suffix, which could not fit there. See
+[Record bounds](#record-bounds).
 
 ## Compile-time cutoff
 

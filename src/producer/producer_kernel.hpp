@@ -284,7 +284,7 @@ class ProducerKernel final {
                          void* builder_context, MessageBuilder build_message);
   static bool BeginRecord(void* context, Level level, const SourceLocation& source,
                           OpenRecord& record) noexcept;
-  static void AppendOpenText(void* context, std::string_view text) noexcept;
+  static bool AppendOpenText(void* context, std::string_view text) noexcept;
   static FieldStatus PutOpenField(void* context, std::string_view key, const FieldValue& value,
                                   FieldMode mode) noexcept;
   static void FinishOpenRecord(void* context, bool publish) noexcept;

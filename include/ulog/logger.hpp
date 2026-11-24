@@ -112,7 +112,8 @@ using MessageBuilder = bool (*)(void*, MessageSink&);
 /// abandons it; an empty handle (null `finish`) means nothing was admitted.
 struct OpenRecord final {
   void* context{nullptr};
-  void (*append_text)(void*, std::string_view) noexcept {nullptr};
+  /// Appends text; false once the Record bound cut the text, after which nothing more fits.
+  bool (*append_text)(void*, std::string_view) noexcept {nullptr};
   FieldConsumer put_field{nullptr};
   void (*finish)(void*, bool publish) noexcept {nullptr};
 };

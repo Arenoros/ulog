@@ -311,7 +311,7 @@ TEST(LogWriter, PrimitiveValuesUseBaselineTextForms) {
   };
   constexpr std::string_view kExpected =
       "c|literal|string|view|array|(null)|-9223372036854775808|18446744073709551615|-5|200|-7|0|"
-      "1.5|0.1|-2.25|1e+300|1e-07|100|nan|inf|-inf|0.5|true|false|boom|a\0b\n\t"sv;
+      "1.5|0.1|-2.25|1e+300|1e-07|100|nan|inf|-inf|0.5|true|false|boom (std::runtime_error)|a\0b\n\t"sv;
 
   log_all();
   EXPECT_EQ(TakeMessage(kernel), kExpected);
