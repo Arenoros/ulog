@@ -67,51 +67,74 @@ void ExerciseNamedMacros() {
 #if ULOG_EXPECTED_MIN_LEVEL > 0
   LOG_TRACE_TO(CountTarget(ulog::Level::kTrace), erased_message::Trace());
   LOG_TRACE(erased_message::Trace());
+  LOG_TRACE_TO(CountTarget(ulog::Level::kTrace)) << erased_message::Trace();
+  LOG_TRACE() << erased_message::Trace();
 #else
   LOG_TRACE_TO(CountTarget(ulog::Level::kTrace), CountMessage(ulog::Level::kTrace));
   LOG_TRACE(CountMessage(ulog::Level::kTrace));
+  LOG_TRACE_TO(CountTarget(ulog::Level::kTrace)) << CountMessage(ulog::Level::kTrace);
+  LOG_TRACE() << CountMessage(ulog::Level::kTrace);
 #endif
 
 #if ULOG_EXPECTED_MIN_LEVEL > 1
   LOG_DEBUG_TO(CountTarget(ulog::Level::kDebug), erased_message::Debug());
   LOG_DEBUG(erased_message::Debug());
+  LOG_DEBUG_TO(CountTarget(ulog::Level::kDebug)) << erased_message::Debug();
+  LOG_DEBUG() << erased_message::Debug();
 #else
   LOG_DEBUG_TO(CountTarget(ulog::Level::kDebug), CountMessage(ulog::Level::kDebug));
   LOG_DEBUG(CountMessage(ulog::Level::kDebug));
+  LOG_DEBUG_TO(CountTarget(ulog::Level::kDebug)) << CountMessage(ulog::Level::kDebug);
+  LOG_DEBUG() << CountMessage(ulog::Level::kDebug);
 #endif
 
 #if ULOG_EXPECTED_MIN_LEVEL > 2
   LOG_INFO_TO(CountTarget(ulog::Level::kInfo), erased_message::Info());
   LOG_INFO(erased_message::Info());
+  LOG_INFO_TO(CountTarget(ulog::Level::kInfo)) << erased_message::Info();
+  LOG_INFO() << erased_message::Info();
 #else
   LOG_INFO_TO(CountTarget(ulog::Level::kInfo), CountMessage(ulog::Level::kInfo));
   LOG_INFO(CountMessage(ulog::Level::kInfo));
+  LOG_INFO_TO(CountTarget(ulog::Level::kInfo)) << CountMessage(ulog::Level::kInfo);
+  LOG_INFO() << CountMessage(ulog::Level::kInfo);
 #endif
 
 #if ULOG_EXPECTED_MIN_LEVEL > 3
   LOG_WARNING_TO(CountTarget(ulog::Level::kWarning), erased_message::Warning());
   LOG_WARNING(erased_message::Warning());
+  LOG_WARNING_TO(CountTarget(ulog::Level::kWarning)) << erased_message::Warning();
+  LOG_WARNING() << erased_message::Warning();
 #else
   LOG_WARNING_TO(CountTarget(ulog::Level::kWarning), CountMessage(ulog::Level::kWarning));
   LOG_WARNING(CountMessage(ulog::Level::kWarning));
+  LOG_WARNING_TO(CountTarget(ulog::Level::kWarning)) << CountMessage(ulog::Level::kWarning);
+  LOG_WARNING() << CountMessage(ulog::Level::kWarning);
 #endif
 
 #if ULOG_EXPECTED_MIN_LEVEL > 4
   LOG_ERROR_TO(CountTarget(ulog::Level::kError), erased_message::Error());
   LOG_ERROR(erased_message::Error());
+  LOG_ERROR_TO(CountTarget(ulog::Level::kError)) << erased_message::Error();
+  LOG_ERROR() << erased_message::Error();
 #else
   LOG_ERROR_TO(CountTarget(ulog::Level::kError), CountMessage(ulog::Level::kError));
   LOG_ERROR(CountMessage(ulog::Level::kError));
+  LOG_ERROR_TO(CountTarget(ulog::Level::kError)) << CountMessage(ulog::Level::kError);
+  LOG_ERROR() << CountMessage(ulog::Level::kError);
 #endif
 
   LOG_CRITICAL_TO(CountTarget(ulog::Level::kCritical), CountMessage(ulog::Level::kCritical));
   LOG_CRITICAL(CountMessage(ulog::Level::kCritical));
+  LOG_CRITICAL_TO(CountTarget(ulog::Level::kCritical)) << CountMessage(ulog::Level::kCritical);
+  LOG_CRITICAL() << CountMessage(ulog::Level::kCritical);
 }
 
 [[nodiscard]] int CheckNamedMacros() noexcept {
   for (std::size_t index = 0; index < kLevelCount; ++index) {
+    // Each level has one call and one stream statement with an explicit target.
     const int expected_target_evaluations =
-        static_cast<int>(index) >= ULOG_EXPECTED_MIN_LEVEL ? 1 : 0;
+        static_cast<int>(index) >= ULOG_EXPECTED_MIN_LEVEL ? 2 : 0;
     if (target_evaluations[index] != expected_target_evaluations) {
       return 10 + static_cast<int>(index);
     }
@@ -123,10 +146,10 @@ void ExerciseNamedMacros() {
 }
 
 [[nodiscard]] int CheckGenericMacro() noexcept {
-  if (generic_level_evaluations != 1) {
+  if (generic_level_evaluations != 2) {
     return 30;
   }
-  if (generic_target_evaluations != 1) {
+  if (generic_target_evaluations != 2) {
     return 31;
   }
   if (generic_message_evaluations != 0) {
@@ -145,5 +168,6 @@ int main() {
   }
 
   LOG_TO(CountGenericTarget(), CountGenericLevel(), CountGenericMessage());
+  LOG_TO(CountGenericTarget(), CountGenericLevel()) << CountGenericMessage();
   return CheckGenericMacro();
 }

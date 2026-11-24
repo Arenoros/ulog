@@ -1,82 +1,8 @@
 #pragma once
 
-#include <fmt/format.h>
-
-#include <concepts>
-#include <cstdint>
-#include <memory>
-#include <string_view>
-#include <type_traits>
 #include <ulog/fields.hpp>
+#include <ulog/log_writer.hpp>
 #include <ulog/logger.hpp>
-#include <utility>
-
-namespace ulog::detail {
-
-inline void WriteMessage(MessageSink&) = delete;
-
-template <typename Text>
-[[nodiscard]] bool WriteMessage(MessageSink& sink, Text&& text) {
-  static_assert(
-      requires { std::string_view{std::forward<Text>(text)}; },
-      "A one-operand Ulog macro message must be usable as std::string_view.");
-  try {
-    sink.Append(std::string_view{std::forward<Text>(text)});
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
-template <typename... Args>
-  requires(sizeof...(Args) > 0)
-[[nodiscard]] bool WriteMessage(MessageSink& sink, fmt::format_string<Args...> format,
-                                Args&&... args) {
-  try {
-    fmt::format_to(sink.FormatOutput(), format, std::forward<Args>(args)...);
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
-template <typename FieldList>
-concept MacroFieldList = std::same_as<std::remove_cvref_t<FieldList>, Fields> ||
-                         std::same_as<std::remove_cvref_t<FieldList>, FieldSet>;
-
-// Fields come first; the format string stays a constant expression at the call site.
-template <MacroFieldList FieldList, typename Text>
-[[nodiscard]] bool WriteMessage(MessageSink& sink, const FieldList& fields, Text&& text) {
-  sink.Fields().Add(fields);
-  return WriteMessage(sink, std::forward<Text>(text));
-}
-
-template <MacroFieldList FieldList, typename... Args>
-  requires(sizeof...(Args) > 0)
-[[nodiscard]] bool WriteMessage(MessageSink& sink, const FieldList& fields,
-                                fmt::format_string<Args...> format, Args&&... args) {
-  sink.Fields().Add(fields);
-  return WriteMessage(sink, format, std::forward<Args>(args)...);
-}
-
-struct MacroAccess final {
-  template <typename Builder>
-  static void Log(Logger logger, Level level, const SourceLocation& source, Builder&& builder) {
-    using BuilderType = std::remove_reference_t<Builder>;
-    static_assert(std::is_invocable_r_v<bool, BuilderType&, MessageSink&>,
-                  "A Ulog macro message builder must return bool and accept "
-                  "ulog::detail::MessageSink&.");
-    logger.LogMessage(level, source, std::addressof(builder), &BuildMessage<BuilderType>);
-  }
-
- private:
-  template <typename Builder>
-  static bool BuildMessage(void* context, MessageSink& sink) {
-    return (*static_cast<Builder*>(context))(sink);
-  }
-};
-
-}  // namespace ulog::detail
 
 #if defined(LOG) || defined(LOG_TO) || defined(LOG_TRACE) || defined(LOG_DEBUG) ||              \
     defined(LOG_INFO) || defined(LOG_WARNING) || defined(LOG_ERROR) || defined(LOG_CRITICAL) || \
@@ -88,41 +14,30 @@ struct MacroAccess final {
 
 #define ULOG_DETAIL_CONCAT_IMPL(left, right) left##right
 #define ULOG_DETAIL_CONCAT(left, right) ULOG_DETAIL_CONCAT_IMPL(left, right)
-#define ULOG_DETAIL_SINK_NAME(counter) ULOG_DETAIL_CONCAT(ulog_detail_generated_sink_, counter)
+#define ULOG_DETAIL_WRITER_NAME(counter) ULOG_DETAIL_CONCAT(ulog_detail_generated_writer_, counter)
 
-#define ULOG_DETAIL_MESSAGE_BUILDER_IMPL(counter, ...)                                \
-  [&](::ulog::detail::MessageSink& ULOG_DETAIL_SINK_NAME(counter)) {                  \
-    return ::ulog::detail::WriteMessage(ULOG_DETAIL_SINK_NAME(counter), __VA_ARGS__); \
-  }
-
-#define ULOG_DETAIL_MESSAGE_BUILDER(...) ULOG_DETAIL_MESSAGE_BUILDER_IMPL(__COUNTER__, __VA_ARGS__)
-
-#define ULOG_DETAIL_SOURCE_NAME(counter) ULOG_DETAIL_CONCAT(ulog_detail_generated_source_, counter)
-
-// The call-site SourceLocation is a constant, so path trimming adds no per-call work.
-#define ULOG_DETAIL_LOG_TO_IMPL(counter, target, level, ...)                            \
-  static constexpr ::ulog::SourceLocation ULOG_DETAIL_SOURCE_NAME(counter) =            \
-      ULOG_SOURCE_LOCATION();                                                           \
-  ::ulog::detail::MacroAccess::Log((target), (level), ULOG_DETAIL_SOURCE_NAME(counter), \
-                                   ULOG_DETAIL_MESSAGE_BUILDER(__VA_ARGS__))
+// One statement: a scope writer that reserves the Record before the message operands, any
+// trailing `<<` operands, and the Record's publication are evaluated. A filtered or rejected call
+// leaves the loop without evaluating them; an exception abandons the Record.
+#define ULOG_DETAIL_LOG_TO_IMPL(counter, target, level, ...)                                   \
+  for (::ulog::LogWriter ULOG_DETAIL_WRITER_NAME(counter){                                     \
+           (target), (level), ::ulog::detail::CallSite(ULOG_SOURCE_LOCATION())};               \
+       ULOG_DETAIL_WRITER_NAME(counter).IsActive(); ULOG_DETAIL_WRITER_NAME(counter).Submit()) \
+  ULOG_DETAIL_WRITER_NAME(counter)(__VA_ARGS__)
 
 #define ULOG_DETAIL_LOG_TO(target, level, ...) \
   ULOG_DETAIL_LOG_TO_IMPL(__COUNTER__, target, level, __VA_ARGS__)
 
-#define ULOG_DETAIL_NAMED_LOG_TO(target, level, ...) \
-  do {                                               \
-    ULOG_DETAIL_LOG_TO(target, level, __VA_ARGS__);  \
-  } while (false)
+#define ULOG_DETAIL_NAMED_LOG_TO(target, level, ...) ULOG_DETAIL_LOG_TO(target, level, __VA_ARGS__)
 
 #define ULOG_DETAIL_NAMED_LOG(level, ...) \
   ULOG_DETAIL_NAMED_LOG_TO(::ulog::GetDefaultLogger(), level, __VA_ARGS__)
 
+// Erased statements still type-check, but evaluate neither the target nor any operand.
 #define ULOG_DETAIL_ERASED_NAMED_LOG_TO(target, level, ...) \
-  do {                                                      \
-    if constexpr (false) {                                  \
-      ULOG_DETAIL_LOG_TO(target, level, __VA_ARGS__);       \
-    }                                                       \
-  } while (false)
+  if constexpr (true) {                                     \
+  } else                                                    \
+    ULOG_DETAIL_LOG_TO(target, level, __VA_ARGS__)
 
 #define ULOG_DETAIL_ERASED_NAMED_LOG(level, ...) \
   ULOG_DETAIL_ERASED_NAMED_LOG_TO(::ulog::GetDefaultLogger(), level, __VA_ARGS__)

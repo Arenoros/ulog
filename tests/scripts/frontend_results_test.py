@@ -15,7 +15,7 @@ import check_frontend_schedule as schedule  # noqa: E402
 
 def make_row(path: str, repetition: int = 0) -> dict[str, object]:
     attempts = results.SMOKE_MEASURED_ATTEMPTS
-    accepted = attempts if path == "ordinary-accepted" else 0
+    accepted = attempts if path in results.ACCEPTED_PATHS else 0
     rejected = attempts - accepted
     wall_time_ns = attempts * 1_000
     row = {
@@ -86,7 +86,7 @@ class FrontendResultsTest(unittest.TestCase):
             return results.validate_result_file(path)
 
     def test_valid_smoke_paths(self):
-        self.assertEqual(self.validate(make_document()), (5, 1, 1))
+        self.assertEqual(self.validate(make_document()), (6, 1, 1))
 
     def test_rejects_frontend_allocation(self):
         document = make_document()
@@ -150,8 +150,8 @@ class FrontendResultsTest(unittest.TestCase):
 
     def test_controlled_schedule_is_bounded_and_repetition_major(self):
         expected = schedule.expected_listing()
-        self.assertEqual(len(expected), 35)
-        self.assertEqual(schedule.validate_listing(expected), 35)
+        self.assertEqual(len(expected), 42)
+        self.assertEqual(schedule.validate_listing(expected), 42)
         with self.assertRaisesRegex(schedule.FrontendScheduleError, "row 0"):
             schedule.validate_listing(list(reversed(expected)))
 

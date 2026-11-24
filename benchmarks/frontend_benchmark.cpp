@@ -62,11 +62,18 @@ enum class FrontendPath : std::uint8_t {
   kNullLogger,
   kAdmissionRejected,
   kOrdinaryAccepted,
+  kStreamAccepted,
 };
 
+/// The accepted paths: the fmt call form and the same Record written by a stream statement.
+[[nodiscard]] constexpr bool IsAccepted(FrontendPath path) noexcept {
+  return path == FrontendPath::kOrdinaryAccepted || path == FrontendPath::kStreamAccepted;
+}
+
 constexpr FrontendPath kPaths[]{
-    FrontendPath::kCompileErased,     FrontendPath::kRuntimeFiltered,  FrontendPath::kNullLogger,
-    FrontendPath::kAdmissionRejected, FrontendPath::kOrdinaryAccepted,
+    FrontendPath::kCompileErased,    FrontendPath::kRuntimeFiltered,
+    FrontendPath::kNullLogger,       FrontendPath::kAdmissionRejected,
+    FrontendPath::kOrdinaryAccepted, FrontendPath::kStreamAccepted,
 };
 
 std::atomic<bool> deterministic_failure{false};
@@ -83,6 +90,8 @@ std::atomic<bool> deterministic_failure{false};
       return "admission-rejected";
     case FrontendPath::kOrdinaryAccepted:
       return "ordinary-accepted";
+    case FrontendPath::kStreamAccepted:
+      return "stream-accepted";
   }
   return "invalid";
 }
@@ -176,6 +185,9 @@ void Attempt(FrontendPath path, std::uint64_t& evaluations) {
     case FrontendPath::kOrdinaryAccepted:
       LOG_CRITICAL("{}", CountMessage(evaluations));
       return;
+    case FrontendPath::kStreamAccepted:
+      LOG_CRITICAL() << CountMessage(evaluations);
+      return;
   }
 }
 
@@ -260,7 +272,7 @@ struct KernelOutcomeDelta final {
 [[nodiscard]] KernelOutcomeDelta ExpectedOutcomeDelta(FrontendPath path,
                                                       std::uint64_t attempts) noexcept {
   KernelOutcomeDelta expected;
-  if (path == FrontendPath::kOrdinaryAccepted) {
+  if (IsAccepted(path)) {
     expected.attempted_records = attempts;
     expected.accepted_records = attempts;
     expected.consumed_records = attempts;
@@ -311,7 +323,7 @@ void PrintOutcomeMismatch(FrontendPath path, const KernelOutcomeDelta& actual,
   Observation warmup_observation;
   for (std::uint64_t attempt = 0; attempt < warmup_attempts; ++attempt) {
     Attempt(path, warmup_evaluations);
-    if (path == FrontendPath::kOrdinaryAccepted) {
+    if (IsAccepted(path)) {
       if (active.kernel.TryConsume(&warmup_observation, &ObserveRecord) !=
           producer::ConsumeStatus::kRecord) {
         ++warmup_observation.invalid_records;
@@ -338,9 +350,8 @@ void PrintOutcomeMismatch(FrontendPath path, const KernelOutcomeDelta& actual,
         std::chrono::duration_cast<std::chrono::nanoseconds>(producer_finished - producer_started);
     latency_nanoseconds[attempt] =
         static_cast<std::uint64_t>(std::max<std::chrono::nanoseconds::rep>(latency.count(), 0));
-    if (path == FrontendPath::kOrdinaryAccepted &&
-        active.kernel.TryConsume(&observation, &ObserveRecord) !=
-            producer::ConsumeStatus::kRecord) {
+    if (IsAccepted(path) && active.kernel.TryConsume(&observation, &ObserveRecord) !=
+                                producer::ConsumeStatus::kRecord) {
       ++observation.invalid_records;
     }
   }
@@ -370,13 +381,11 @@ void PrintOutcomeMismatch(FrontendPath path, const KernelOutcomeDelta& actual,
       CheckedCounterDelta(allocations_after, allocations_before, accounting_errors);
   const std::uint64_t allocation_failures =
       CheckedCounterDelta(allocation_failures_after, allocation_failures_before, accounting_errors);
-  const std::uint64_t expected_accepted =
-      path == FrontendPath::kOrdinaryAccepted ? measured_attempts : 0;
+  const std::uint64_t expected_accepted = IsAccepted(path) ? measured_attempts : 0;
   const std::uint64_t expected_evaluations = expected_accepted;
   const std::uint64_t expected_default_loads =
       path == FrontendPath::kCompileErased ? 0 : measured_attempts;
-  const std::uint64_t expected_warmup_evaluations =
-      path == FrontendPath::kOrdinaryAccepted ? warmup_attempts : 0;
+  const std::uint64_t expected_warmup_evaluations = IsAccepted(path) ? warmup_attempts : 0;
   if (outcome_delta != expected_outcome) {
     PrintOutcomeMismatch(path, outcome_delta, expected_outcome);
   }
@@ -398,10 +407,8 @@ void PrintOutcomeMismatch(FrontendPath path, const KernelOutcomeDelta& actual,
   const double rate_scale = 1'000'000'000.0 / static_cast<double>(safe_wall_nanoseconds);
   const LatencySummary latency =
       ulog::benchmark_support::ComputeLatencySummary(latency_nanoseconds);
-  const LatencySummary accepted_latency =
-      path == FrontendPath::kOrdinaryAccepted ? latency : LatencySummary{};
-  const LatencySummary rejected_latency =
-      path == FrontendPath::kOrdinaryAccepted ? LatencySummary{} : latency;
+  const LatencySummary accepted_latency = IsAccepted(path) ? latency : LatencySummary{};
+  const LatencySummary rejected_latency = IsAccepted(path) ? LatencySummary{} : latency;
   const std::uint64_t retained_bound_errors =
       final_snapshot.logical_retained_bytes != 0U || final_snapshot.physical_retained_bytes != 0U ||
               final_snapshot.retained_records != 0U || !final_snapshot.accounting_sample_consistent
@@ -548,7 +555,8 @@ void RegisterWorkloads(Mode mode) {
   benchmark::AddCustomContext("ulog_candidate_schedule", "repetition-major");
   benchmark::AddCustomContext(
       "ulog_frontend_paths",
-      "compile-erased,runtime-filtered,null-logger,admission-rejected,ordinary-accepted");
+      "compile-erased,runtime-filtered,null-logger,admission-rejected,ordinary-accepted,"
+      "stream-accepted");
   benchmark::AddCustomContext("ulog_mode", std::string{ulog::benchmark_support::ToString(mode)});
   benchmark::AddCustomContext("ulog_timing_policy", "advisory");
   benchmark::AddCustomContext("ulog_repetitions", std::to_string(repetitions));

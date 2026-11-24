@@ -23,7 +23,9 @@ PATHS = (
     "null-logger",
     "admission-rejected",
     "ordinary-accepted",
+    "stream-accepted",
 )
+ACCEPTED_PATHS = frozenset({"ordinary-accepted", "stream-accepted"})
 MODE_REPETITIONS = {"smoke": 1, "controlled": 7}
 SMOKE_WARMUP_ATTEMPTS = 1
 SMOKE_MEASURED_ATTEMPTS = 1_024
@@ -33,7 +35,7 @@ MESSAGE_BYTES = 8
 ROW_PATTERN = re.compile(
     r"^(?P<identity>UlogFrontend/producer-frontend/"
     r"path:(?P<path>compile-erased|runtime-filtered|null-logger|"
-    r"admission-rejected|ordinary-accepted)/"
+    r"admission-rejected|ordinary-accepted|stream-accepted)/"
     r"repetition:(?P<repetition>[0-6]))(?:/.+)?$"
 )
 INTEGER_COUNTERS = {
@@ -176,8 +178,8 @@ def validate_row(row: object, row_index: int, mode: str, repetitions: int) -> st
         "measured_attempts": measured_attempts,
         "sample_count": measured_attempts,
         "attempted_records": measured_attempts,
-        "accepted_records": measured_attempts if path == "ordinary-accepted" else 0,
-        "rejected_records": 0 if path == "ordinary-accepted" else measured_attempts,
+        "accepted_records": measured_attempts if path in ACCEPTED_PATHS else 0,
+        "rejected_records": 0 if path in ACCEPTED_PATHS else measured_attempts,
         "compile_erased_records": measured_attempts if path == "compile-erased" else 0,
         "runtime_filtered_records": measured_attempts if path == "runtime-filtered" else 0,
         "null_logger_records": measured_attempts if path == "null-logger" else 0,
@@ -185,11 +187,11 @@ def validate_row(row: object, row_index: int, mode: str, repetitions: int) -> st
             measured_attempts if path == "admission-rejected" else 0
         ),
         "message_evaluation_count": (
-            measured_attempts if path == "ordinary-accepted" else 0
+            measured_attempts if path in ACCEPTED_PATHS else 0
         ),
         "default_logger_load_count": 0 if path == "compile-erased" else measured_attempts,
         "accepted_bytes": (
-            measured_attempts * MESSAGE_BYTES if path == "ordinary-accepted" else 0
+            measured_attempts * MESSAGE_BYTES if path in ACCEPTED_PATHS else 0
         ),
         "allocation_count": 0,
         "allocation_failure_count": 0,

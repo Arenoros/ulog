@@ -282,9 +282,20 @@ class ProducerKernel final {
 
   static void LogMessage(void* context, Level level, const SourceLocation& source,
                          void* builder_context, MessageBuilder build_message);
+  static bool BeginRecord(void* context, Level level, const SourceLocation& source,
+                          OpenRecord& record) noexcept;
+  static void AppendOpenText(void* context, std::string_view text) noexcept;
+  static FieldStatus PutOpenField(void* context, std::string_view key, const FieldValue& value,
+                                  FieldMode mode) noexcept;
+  static void FinishOpenRecord(void* context, bool publish) noexcept;
   [[nodiscard]] PublishResult TryPublishSlot(std::size_t slot_index, std::uint64_t generation,
                                              Level level, const SourceLocation& source,
                                              BuildOperation operation);
+  /// Claims, reserves, and starts the slot's Record; it stays open until FinishSlot.
+  [[nodiscard]] PublishOutcome BeginSlot(std::size_t slot_index, std::uint64_t generation,
+                                         Level level, const SourceLocation& source) noexcept;
+  /// Publishes the slot's open Record after a complete build, or abandons it.
+  PublishResult FinishSlot(std::size_t slot_index, BuildStatus build_status) noexcept;
   void RetireProducer(ProducerRegistration& producer) noexcept;
 
   std::uint64_t identity_{0};

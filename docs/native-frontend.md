@@ -148,21 +148,81 @@ the Record; see [Typed fields](#typed-fields). A call with one message operand
 treats it as native text usable as
 `std::string_view`; braces in that operand are literal. A call with a format
 string and one or more values uses fmt's compile-time-checked format strings
-and writes directly into the bounded Record. Message operands stay inside the
-admission callback. Compile-erased, runtime-filtered, Null Logger,
-unregistered-producer, and admission-rejected calls therefore do not evaluate
-them. A failure raised after native conversion or fmt formatting begins,
-including an invalid dynamic width or a custom formatter exception, abandons
-the reserved Record without publishing it or emitting an exception. Exceptions
-raised while evaluating caller operands before the formatter is entered remain
-outside Ulog's guarantee.
+and writes directly into the bounded Record. Message operands are evaluated
+only after the Record is reserved. Compile-erased, runtime-filtered, Null
+Logger, unregistered-producer, and admission-rejected calls therefore do not
+evaluate them. A failure raised after native conversion or fmt formatting
+begins, including an invalid dynamic width or a custom formatter exception,
+abandons the reserved Record without publishing it or emitting an exception. An
+exception raised while evaluating a caller operand abandons the Record and
+propagates.
 
 Each macro expands as one statement and is safe in unbraced nested `if`/`else`
-and loop bodies. The stream expression `LOG_INFO() << value` is not part of the
-basic frontend. It is assigned to the later **Scope writer and streamed
-values** capability (`API-004`, `VAL-001` through `VAL-005`), which must provide
-a reservation-backed writer before evaluating streamed operands. Advanced
-range, map, chrono, and exception writers belong to that capability as well.
+and loop bodies.
+
+## Stream form and scope writer
+
+Every named, `_TO`, and generic macro also accepts `<<` operands after its
+call, with or without message operands (`API-002`, `API-003`):
+
+```cpp
+LOG_INFO() << "loaded " << count << " items in " << elapsed_ms << "ms";
+LOG_WARNING_TO(logger) << error;               // a std::exception writes what()
+LOG_ERROR("retry {} of {}", retry, maximum) << ", last error: " << code;
+LOG_INFO(ulog::Fields{{"user", id}}) << "signed in";
+LOG(level) << value;
+```
+
+A macro is a scope writer that lives for its statement. It loads its target,
+filters the level, and reserves the Record before any message or `<<` operand
+is evaluated, so compile-erased, runtime-filtered, Null Logger,
+unregistered-producer, and admission-rejected statements evaluate none of them.
+The Record is published when the statement ends. An exception thrown by an
+operand abandons it and propagates. A logging statement inside an operand of
+another one on the same thread is rejected as `rejected_lane_full`, because the
+outer statement still holds its producer's publication slot.
+
+`ulog::LogWriter` from `<ulog/log_writer.hpp>` is the same writer as an object
+(`API-004`):
+
+```cpp
+{
+  ulog::LogWriter writer{logger, ulog::Level::kInfo, ULOG_SOURCE_LOCATION()};
+  writer("batch {}", batch_id);
+  for (const Item& item : items) writer << ' ' << item.name;
+  writer.AddField("count", items.size());
+}  // publishes one Record here
+```
+
+It is neither copyable nor movable. `IsActive()` reports whether it holds an
+admitted Record. `Submit()` publishes early, and the destructor publishes
+otherwise. A writer that was filtered or rejected, whose formatting failed, or
+that is destroyed while an exception unwinds publishes nothing. Writing through
+it never throws and never allocates.
+
+Streamed values use these text forms (`VAL-001`), which do not depend on the
+locale:
+
+| Value | Text |
+| --- | --- |
+| `char` | the character |
+| strings, `std::string_view`, C strings | the text; a null C string writes `(null)` |
+| signed and unsigned integers, including `signed char` and `unsigned char` | decimal |
+| `float`, `double`, `long double` | fmt's shortest round-trip form, such as `1.5`, `1e+300`, `1e-07`, `nan`, `-inf` |
+| `bool` | `true` or `false` |
+| `std::exception` | `what()` |
+| `ulog::Fields`, `ulog::FieldSet` | added as typed fields, not text |
+
+`wchar_t`, `char8_t`, `char16_t`, and `char32_t` do not compile; convert them to
+UTF-8 text or cast them to an integer. Pointers, optionals, ranges, chrono values,
+custom types, and the exception's dynamic type belong to the advanced value
+writers. `writer(format, args...)` and `writer.Format(format, args...)` append
+compile-time-checked fmt text that later `<<` operands continue (`VAL-002`).
+Formatting writes the result into the Record; no argument is retained.
+
+Text past the Record bound is cut at a valid UTF-8 boundary, and the Record gets
+exactly one `ulog.truncated=true` field; the Record never grows past its
+reservation (`DEF-015`). See [Record bounds](#record-bounds).
 
 ## Compile-time cutoff
 
@@ -198,10 +258,9 @@ into `net/io.cpp` but leaves `/src/application/main.cpp` unchanged. A path equal
 to the prefix is not trimmed. On Windows, `/` and `\` match each other, and
 CMake writes prefixes with `/`.
 
-Every `LOG*` macro stores its trimmed `SourceLocation` as a function-local
-`static constexpr` call-site identity, so trimming happens at compile time and
-the logging path does no per-call work. The Record's source path is that
-identity's path. `ULOG_SOURCE_LOCATION()` yields the same constant for code that
+Every `LOG*` macro evaluates its trimmed `SourceLocation` as a constant
+expression, so trimming happens at compile time and the logging path does no
+per-call work. The Record's source path is that constant's path. `ULOG_SOURCE_LOCATION()` yields the same constant for code that
 calls `Logger::Log` directly; `SourceLocation::Current()` always keeps the
 compiler path. Use the same prefixes in every translation unit that shares
 inline code containing Ulog macros. The prefix list cannot change at run time.
@@ -228,7 +287,7 @@ LOG_ERROR_TO(logger, extra, "failed");
 ```
 
 `Fields` borrows its elements, so build it inside the macro call. Field operands
-are evaluated inside the admission callback, exactly like message operands:
+are evaluated after the Record is reserved, exactly like message operands:
 compile-erased, runtime-filtered, Null Logger, unregistered-producer, and
 admission-rejected calls evaluate none of them.
 

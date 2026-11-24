@@ -296,6 +296,17 @@ struct ProducerKernel::Impl final {
 
   static_assert(sizeof(MissingProducerCounter) == kAccountingQuantumBytes);
 
+  /// The Record a producer slot is writing between BeginSlot and FinishSlot. A slot holds at most
+  /// one, because its publication claim is exclusive until it is published or released.
+  struct OpenRecordState final {
+    ProducerKernel* owner;
+    std::size_t slot_index;
+    ingress::ProducerLanes::PublicationClaim publication;
+    std::size_t cell_index;
+    credit::CreditLedger::Reservation reservation;
+    record::RecordWriter writer;
+  };
+
   Impl(ProducerKernel& owner, KernelConfig kernel_config, EventClock event_clock)
       : lanes(kernel_config.producer_slots, kernel_config.ingress_cells),
         record_slots(std::make_unique<record::RecordSlot[]>(kernel_config.ingress_cells)),
@@ -354,6 +365,7 @@ struct ProducerKernel::Impl final {
   std::array<std::uint64_t, kMaximumIngressCells> record_generations{};
   std::array<record::StoredRecord, kMaximumIngressCells> records{};
   std::array<std::optional<credit::CreditLedger::Ownership>, kMaximumIngressCells> ownerships{};
+  std::array<std::optional<OpenRecordState>, kMaximumProducerSlots> open_records{};
 };
 
 EventClock SystemEventClock() noexcept { return EventClock{nullptr, &ReadSystemClock}; }
@@ -386,7 +398,8 @@ ProducerKernel::ProducerKernel(KernelConfig config, EventClock clock)
     : identity_(next_kernel_identity.fetch_add(1, std::memory_order_relaxed)) {
   ValidateConfiguration(config, clock);
   impl_ = std::make_unique<Impl>(*this, config, clock);
-  static const ProducerOperations operations{&ProducerKernel::LogMessage, &ChangeLoggerLevel};
+  static const ProducerOperations operations{&ProducerKernel::LogMessage, &ChangeLoggerLevel,
+                                             &ProducerKernel::BeginRecord};
   impl_->logger_state.producer_operations = &operations;
 }
 
@@ -495,9 +508,32 @@ PublishResult ProducerKernel::TryPublish(ProducerRegistration& producer, Level l
 PublishResult ProducerKernel::TryPublishSlot(std::size_t slot_index, std::uint64_t generation,
                                              Level level, const SourceLocation& source,
                                              BuildOperation operation) {
+  const PublishOutcome begun = BeginSlot(slot_index, generation, level, source);
+  if (begun != PublishOutcome::kAccepted) {
+    return {.outcome = begun};
+  }
+  auto& open = impl_->open_records[slot_index];
+  if (!open.has_value()) {
+    return {.outcome = PublishOutcome::kInvalidRecord};
+  }
+  RecordAppender appender{&open->writer};
+  BuildStatus build_status = BuildStatus::kInvalid;
+  if (operation.invoke != nullptr) {
+    try {
+      build_status = operation.invoke(operation.context, appender);
+    } catch (...) {
+      static_cast<void>(FinishSlot(slot_index, BuildStatus::kInvalid));
+      throw;
+    }
+  }
+  return FinishSlot(slot_index, build_status);
+}
+
+PublishOutcome ProducerKernel::BeginSlot(std::size_t slot_index, std::uint64_t generation,
+                                         Level level, const SourceLocation& source) noexcept {
   if (!impl_->IsActive(slot_index, generation)) {
     impl_->CountMissingProducer();
-    return {.outcome = PublishOutcome::kNoProducerSlot};
+    return PublishOutcome::kNoProducerSlot;
   }
 
   auto& counters = impl_->counters[slot_index];
@@ -506,78 +542,98 @@ PublishResult ProducerKernel::TryPublishSlot(std::size_t slot_index, std::uint64
     if (publication.status() == ingress::ClaimStatus::kFull ||
         publication.status() == ingress::ClaimStatus::kContended) {
       counters.rejected_lane_full.fetch_add(1, std::memory_order_relaxed);
-      return {.outcome = PublishOutcome::kLaneFull};
+      return PublishOutcome::kLaneFull;
     }
     counters.invalid_records.fetch_add(1, std::memory_order_relaxed);
-    return {.outcome = PublishOutcome::kInvalidRecord};
+    return PublishOutcome::kInvalidRecord;
   }
-  const NotifyConsumerOnExit notify_consumer{impl_->config.consumer_notification};
+  // A released claim may let the consumer make progress, so every failure below notifies it.
+  NotifyConsumerOnExit notify_consumer{impl_->config.consumer_notification};
   if (!impl_->lifetime.IsAdmissionOpen() || !impl_->IsActive(slot_index, generation)) {
     impl_->CountMissingProducer();
-    return {.outcome = PublishOutcome::kNoProducerSlot};
+    return PublishOutcome::kNoProducerSlot;
   }
 
   const auto cell_index = publication.cell_index();
   if (!cell_index || *cell_index >= impl_->config.ingress_cells) {
     counters.invalid_records.fetch_add(1, std::memory_order_relaxed);
-    return {.outcome = PublishOutcome::kInvalidRecord};
+    return PublishOutcome::kInvalidRecord;
   }
   auto reservation = impl_->ledger.TryReserve(slot_index, impl_->config.maximum_record_bytes);
   if (!reservation) {
     counters.rejected_budget.fetch_add(1, std::memory_order_relaxed);
-    return {.outcome = PublishOutcome::kBudgetExhausted};
+    return PublishOutcome::kBudgetExhausted;
   }
 
   const EventTimestamp timestamp = impl_->clock.now(impl_->clock.context);
   auto writer = impl_->record_slots[*cell_index].Begin(impl_->config.maximum_record_bytes, level,
                                                        source, timestamp);
-  if (!writer || operation.invoke == nullptr) {
+  if (!writer) {
     counters.invalid_records.fetch_add(1, std::memory_order_relaxed);
-    return {.outcome = PublishOutcome::kInvalidRecord};
+    return PublishOutcome::kInvalidRecord;
   }
 
-  RecordAppender appender{&writer};
-  BuildStatus build_status = BuildStatus::kInvalid;
-  try {
-    build_status = operation.invoke(operation.context, appender);
-  } catch (...) {
-    counters.abandoned_builds.fetch_add(1, std::memory_order_relaxed);
-    throw;
+  impl_->open_records[slot_index].emplace(Impl::OpenRecordState{
+      .owner = this,
+      .slot_index = slot_index,
+      .publication = std::move(publication),
+      .cell_index = *cell_index,
+      .reservation = std::move(reservation),
+      .writer = std::move(writer),
+  });
+  notify_consumer.notification = {};
+  return PublishOutcome::kAccepted;
+}
+
+PublishResult ProducerKernel::FinishSlot(std::size_t slot_index,
+                                         BuildStatus build_status) noexcept {
+  auto& open = impl_->open_records[slot_index];
+  if (!open.has_value()) {
+    return {.outcome = PublishOutcome::kInvalidRecord};
   }
+  const NotifyConsumerOnExit notify_consumer{impl_->config.consumer_notification};
+  // Releases whatever the Record still holds once it is published or abandoned.
+  struct CloseOnExit final {
+    std::optional<Impl::OpenRecordState>& open;
+    ~CloseOnExit() { open.reset(); }
+  } const close_on_exit{open};
+
+  auto& counters = impl_->counters[slot_index];
   if (build_status != BuildStatus::kComplete) {
     counters.abandoned_builds.fetch_add(1, std::memory_order_relaxed);
     return {.outcome = PublishOutcome::kInvalidRecord};
   }
 
-  const record::StoredRecord record = std::move(writer).Publish();
+  const std::size_t cell_index = open->cell_index;
+  const record::StoredRecord record = std::move(open->writer).Publish();
   if (!record || record.serialized_bytes > impl_->config.maximum_record_bytes ||
       record.accounting_charge_bytes > impl_->config.maximum_record_bytes) {
     counters.invalid_records.fetch_add(1, std::memory_order_relaxed);
     return {.outcome = PublishOutcome::kInvalidRecord};
   }
-  auto ownership = std::move(reservation).Commit(record.serialized_bytes);
+  auto ownership = std::move(open->reservation).Commit(record.serialized_bytes);
   if (!ownership || ownership.retained_bytes() != record.serialized_bytes ||
       ownership.charge_bytes() != record.accounting_charge_bytes) {
-    impl_->record_slots[*cell_index].Reset();
+    impl_->record_slots[cell_index].Reset();
     counters.invalid_records.fetch_add(1, std::memory_order_relaxed);
     return {.outcome = PublishOutcome::kInvalidRecord};
   }
 
-  const std::uint64_t record_generation = ++impl_->record_generations[*cell_index];
-  impl_->records[*cell_index] = record;
-  impl_->ownerships[*cell_index].emplace(std::move(ownership));
+  const std::uint64_t record_generation = ++impl_->record_generations[cell_index];
+  impl_->records[cell_index] = record;
+  impl_->ownerships[cell_index].emplace(std::move(ownership));
   const auto sequence = impl_->lanes.Publish(
-      std::move(publication), ingress::RecordHandle{
-                                  .slot_index = static_cast<std::uint32_t>(*cell_index),
-                                  .producer_index = static_cast<std::uint32_t>(slot_index),
-                                  .generation = record_generation,
-                                  .serialized_bytes = record.serialized_bytes,
-                                  .accounting_charge_bytes = record.accounting_charge_bytes,
-                              });
+      std::move(open->publication), ingress::RecordHandle{
+                                        .slot_index = static_cast<std::uint32_t>(cell_index),
+                                        .producer_index = static_cast<std::uint32_t>(slot_index),
+                                        .generation = record_generation,
+                                        .serialized_bytes = record.serialized_bytes,
+                                        .accounting_charge_bytes = record.accounting_charge_bytes,
+                                    });
   if (!sequence) {
-    impl_->ownerships[*cell_index].reset();
-    impl_->records[*cell_index] = {};
-    impl_->record_slots[*cell_index].Reset();
+    impl_->ownerships[cell_index].reset();
+    impl_->records[cell_index] = {};
+    impl_->record_slots[cell_index].Reset();
     counters.invalid_records.fetch_add(1, std::memory_order_relaxed);
     return {.outcome = PublishOutcome::kInvalidRecord};
   }
@@ -695,6 +751,56 @@ void ProducerKernel::LogMessage(void* context, Level level, const SourceLocation
   MessageCall call{builder_context, build_message};
   static_cast<void>(kernel.TryPublishSlot(registration->slot_index, registration->generation, level,
                                           source, BuildOperation{&call, &BuildMessage}));
+}
+
+bool ProducerKernel::BeginRecord(void* context, Level level, const SourceLocation& source,
+                                 OpenRecord& record) noexcept {
+  auto& kernel = *static_cast<ProducerKernel*>(context);
+  ThreadRegistration* const registration = FindThreadRegistration(kernel, kernel.identity_);
+  if (registration == nullptr) {
+    kernel.impl_->CountMissingProducer();
+    return false;
+  }
+  if (!kernel.impl_->IsActive(registration->slot_index, registration->generation)) {
+    const auto slot_index = registration->slot_index;
+    const auto generation = registration->generation;
+    RemoveThreadRegistration(kernel, kernel.identity_, slot_index, generation);
+    kernel.impl_->CountMissingProducer();
+    return false;
+  }
+  const std::size_t slot_index = registration->slot_index;
+  if (kernel.BeginSlot(slot_index, registration->generation, level, source) !=
+      PublishOutcome::kAccepted) {
+    return false;
+  }
+  auto& open = kernel.impl_->open_records[slot_index];
+  if (!open.has_value()) {
+    return false;
+  }
+  record = OpenRecord{
+      .context = &*open,
+      .append_text = &ProducerKernel::AppendOpenText,
+      .put_field = &ProducerKernel::PutOpenField,
+      .finish = &ProducerKernel::FinishOpenRecord,
+  };
+  return true;
+}
+
+void ProducerKernel::AppendOpenText(void* context, std::string_view text) noexcept {
+  RecordAppender appender{&static_cast<Impl::OpenRecordState*>(context)->writer};
+  static_cast<void>(appender.Append(text));
+}
+
+FieldStatus ProducerKernel::PutOpenField(void* context, std::string_view key,
+                                         const FieldValue& value, FieldMode mode) noexcept {
+  RecordAppender appender{&static_cast<Impl::OpenRecordState*>(context)->writer};
+  return appender.PutField(key, value, mode);
+}
+
+void ProducerKernel::FinishOpenRecord(void* context, bool publish) noexcept {
+  const auto& state = *static_cast<Impl::OpenRecordState*>(context);
+  static_cast<void>(state.owner->FinishSlot(
+      state.slot_index, publish ? BuildStatus::kComplete : BuildStatus::kInvalid));
 }
 
 void ProducerKernel::RetireProducer(ProducerRegistration& producer) noexcept {

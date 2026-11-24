@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <limits>
 #include <optional>
 #include <string_view>
 #include <ulog/fields.hpp>
@@ -95,6 +96,31 @@ constexpr ulog::SourceLocation kSource =
          ulog::FormatLocalTimestamp(record->EventTimestamp()).size == ulog::kTimestampTextBytes;
 }
 
+struct StreamFailure final : std::exception {
+  [[nodiscard]] const char* what() const noexcept override { return "stream failure"; }
+};
+
+/// Writes one Record through every native stream form: continued fmt text, characters, strings,
+/// integers, floating point, booleans, an exception, and inserted fields.
+[[nodiscard]] bool RunStreamCycle(ulog::Runtime& runtime, const ulog::Logger& logger,
+                                  ulog::testing::InMemoryDestination& destination,
+                                  const std::uint64_t expected_sequence,
+                                  const std::exception& exception) noexcept {
+  constexpr std::string_view kStreamed =
+      "allocation-free-runtime: -1 18446744073709551615 0.5 true x view stream failure";
+  LOG_INFO_TO(logger, "{}:", kMessage)
+      << ' ' << -1 << ' ' << std::numeric_limits<std::uint64_t>::max() << ' ' << 0.5 << ' ' << true
+      << ' ' << 'x' << ' ' << std::string_view{"view"} << ' ' << exception
+      << ulog::Fields{{"sequence", expected_sequence}};
+  auto drain = runtime.Drain();
+  if (!WaitSucceeded(drain)) {
+    return false;
+  }
+  std::optional<ulog::testing::ObservedRecord> record = destination.TryTake();
+  return record && record->AdmissionSequence() == expected_sequence &&
+         record->Message() == kStreamed && record->FieldCount() == 1U;
+}
+
 [[nodiscard]] bool Run() {
   ulog::testing::InMemoryDestination destination{{
       .capacity_records = 1,
@@ -111,7 +137,9 @@ constexpr ulog::SourceLocation kSource =
 
   ulog::Runtime& runtime = *created.runtime;
   const ulog::Logger logger = runtime.GetLogger();
-  if (!RunCycle(runtime, logger, destination, 0)) {
+  const StreamFailure exception;
+  if (!RunCycle(runtime, logger, destination, 0) ||
+      !RunStreamCycle(runtime, logger, destination, 1, exception)) {
     std::fputs("runtime allocation test: warm-up failed\n", stderr);
     return false;
   }
@@ -120,7 +148,9 @@ constexpr ulog::SourceLocation kSource =
       allocation_tracking::allocation_count.load(std::memory_order_relaxed);
   bool valid = true;
   for (std::uint64_t cycle = 0; cycle < kCycles; ++cycle) {
-    if (!RunCycle(runtime, logger, destination, cycle + 1U)) {
+    const std::uint64_t sequence = 2U + 2U * cycle;
+    if (!RunCycle(runtime, logger, destination, sequence) ||
+        !RunStreamCycle(runtime, logger, destination, sequence + 1U, exception)) {
       valid = false;
       break;
     }
@@ -130,13 +160,13 @@ constexpr ulog::SourceLocation kSource =
   auto shutdown = runtime.Shutdown();
   valid = WaitSucceeded(shutdown) && valid;
   std::optional<ulog::testing::ObservedRecord> final_record = destination.TryTake();
-  valid = final_record && final_record->AdmissionSequence() == kCycles + 1U &&
+  valid = final_record && final_record->AdmissionSequence() == 2U * kCycles + 2U &&
           final_record->Message() == kMessage && valid;
 
   const std::uint64_t allocations_after =
       allocation_tracking::allocation_count.load(std::memory_order_relaxed);
   const auto snapshot = runtime.GetSnapshot();
-  const std::uint64_t expected_records = kCycles + 2U;
+  const std::uint64_t expected_records = 2U * kCycles + 3U;
   valid = allocations_after == allocations_before &&
           snapshot.accepted_records == expected_records &&
           snapshot.delivered_records == expected_records && snapshot.dropped_newest_records == 0U &&

@@ -22,6 +22,7 @@
 namespace ulog {
 
 class Logger;
+class LogWriter;
 
 [[nodiscard]] ULOG_API Logger GetDefaultLogger() noexcept;
 [[nodiscard]] ULOG_API Logger GetNullLogger() noexcept;
@@ -50,7 +51,6 @@ namespace detail {
 
 struct LoggerState;
 struct LoggerAccess;
-struct MacroAccess;
 using TextConsumer = void (*)(void*, std::string_view);
 
 class MessageSink final {
@@ -107,6 +107,15 @@ inline FieldWriter MessageSink::Fields() noexcept {
 }
 
 using MessageBuilder = bool (*)(void*, MessageSink&);
+
+/// A Record admitted for a scope writer. It stays reserved until `finish` publishes it or
+/// abandons it; an empty handle (null `finish`) means nothing was admitted.
+struct OpenRecord final {
+  void* context{nullptr};
+  void (*append_text)(void*, std::string_view) noexcept {nullptr};
+  FieldConsumer put_field{nullptr};
+  void (*finish)(void*, bool publish) noexcept {nullptr};
+};
 
 }  // namespace detail
 
@@ -201,9 +210,12 @@ class Logger final {
 
   ULOG_API void LogMessage(Level level, const SourceLocation& source, void* builder_context,
                            detail::MessageBuilder build_message) const;
+  /// Filters `level`, then admits and opens one Record; empty when nothing was admitted.
+  [[nodiscard]] ULOG_API detail::OpenRecord BeginRecord(
+      Level level, const SourceLocation& source) const noexcept;
 
   friend struct detail::LoggerAccess;
-  friend struct detail::MacroAccess;
+  friend class LogWriter;
 
   const detail::LoggerState* state_;
 };

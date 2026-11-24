@@ -12,9 +12,13 @@ using LogMessage = void (*)(void*, Level, const SourceLocation&, void*, MessageB
 
 using SetLoggerLevel = LevelChangeStatus (*)(void*, Level) noexcept;
 
+/// Admits one Record for a scope writer and opens it for writing; false when nothing was admitted.
+using BeginRecord = bool (*)(void*, Level, const SourceLocation&, OpenRecord&) noexcept;
+
 struct ProducerOperations final {
   LogMessage log_message;
   SetLoggerLevel set_level;
+  BeginRecord begin_record;
 };
 
 struct LoggerState final {

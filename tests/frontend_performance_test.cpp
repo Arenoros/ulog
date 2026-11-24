@@ -312,6 +312,9 @@ void TestWarmAcceptedNativeAndFmtPaths() {
   LOG_CRITICAL("warm={}", 1);
   Check(fixture.kernel.TryConsume(nullptr, &DiscardRecord) == producer::ConsumeStatus::kRecord,
         "failed to warm the accepted fmt path");
+  LOG_CRITICAL() << kNativeMessage;
+  Check(fixture.kernel.TryConsume(nullptr, &DiscardRecord) == producer::ConsumeStatus::kRecord,
+        "failed to warm the accepted stream path");
 
   std::uint64_t evaluations = 0;
   Observation native_observation;
@@ -326,10 +329,14 @@ void TestWarmAcceptedNativeAndFmtPaths() {
     Check(fixture.kernel.TryConsume(&fmt_observation, &ObserveRecord) ==
               producer::ConsumeStatus::kRecord,
           "failed to consume an accepted fmt Record");
+    LOG_CRITICAL() << CountMessage(evaluations);
+    Check(fixture.kernel.TryConsume(&native_observation, &ObserveRecord) ==
+              producer::ConsumeStatus::kRecord,
+          "failed to consume an accepted stream Record");
   }
   const auto snapshot = fixture.kernel.GetSnapshot();
-  constexpr std::uint64_t kExpectedAccepted = 2 * kCycles;
-  CheckNoAllocations(baseline, "a warmed accepted native or fmt path allocated");
+  constexpr std::uint64_t kExpectedAccepted = 3 * kCycles;
+  CheckNoAllocations(baseline, "a warmed accepted native, fmt, or stream path allocated");
   Check(evaluations == kExpectedAccepted,
         "a warmed accepted path did not evaluate each message operand exactly once");
   Check(default_logger_load_count - baseline.default_loads == kExpectedAccepted,
@@ -339,8 +346,8 @@ void TestWarmAcceptedNativeAndFmtPaths() {
                      .accepted_records = kExpectedAccepted,
                      .consumed_records = kExpectedAccepted},
                     "ordinary accepted calls did not report exact outcome accounting");
-  Check(native_observation.records == kCycles && native_observation.invalid_records == 0,
-        "accepted native Records were invalid");
+  Check(native_observation.records == 2 * kCycles && native_observation.invalid_records == 0,
+        "accepted native or stream Records were invalid");
   Check(fmt_observation.records == kCycles && fmt_observation.invalid_records == 0,
         "accepted fmt Records were invalid");
   Check(snapshot.retained_records == 0 && snapshot.logical_retained_bytes == 0 &&

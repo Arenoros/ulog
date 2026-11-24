@@ -15,7 +15,10 @@ The repository establishes seven independent test categories:
   creation, Unicode paths, validation and open errors, injected partial writes and
   open/directory/write/close failures, level names, the runtime threshold matrix, Null
   Logger level rejection, the Default Logger level scope, typed fields with their collision, reserved-key,
-  ownership, laziness, and truncation policy, the field-rich Raw corpus cases,
+  ownership, laziness, and truncation policy, the scope writer and stream form for
+  every macro family with lazy operands, baseline text forms, fmt continuation,
+  abandonment on formatting failures and exceptions, and UTF-8-boundary
+  truncation of every writing form, the field-rich Raw corpus cases,
   multi-translation-unit source path prefix trimming, injected event clocks, UTC and process-local
   timestamp formatting across calendar boundaries and concurrent calls, and test
   memory resources;
@@ -46,7 +49,7 @@ The repository establishes seven independent test categories:
   without an external checkout;
 - `benchmark`: run the complete short workload matrix, emit versioned Google
   Benchmark JSON, validate its deterministic counters without a timing gate,
-  and run the five-row frontend allocation/evaluation/accounting gate.
+  and run the six-row frontend allocation/evaluation/accounting gate.
 
 Hosted CI benchmark timing is advisory. It confirms that benchmark executables
 compile, run, and emit machine-readable output. Hard regression thresholds are

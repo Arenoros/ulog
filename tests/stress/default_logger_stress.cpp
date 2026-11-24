@@ -98,7 +98,7 @@ class StableTarget final {
   }
 
   inline static constexpr ulog::detail::ProducerOperations kOperations{&LogMessage,
-                                                                       &RejectLevelChange};
+                                                                       &RejectLevelChange, nullptr};
 
   std::atomic<std::size_t> calls_{0};
   ulog::detail::LoggerState state_;

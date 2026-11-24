@@ -53,6 +53,7 @@ The native frontend is available from public package headers:
 LOG_INFO("startup reached");
 LOG_WARNING("retry {} of {}", retry, maximum_retries);
 LOG_ERROR_TO(logger, "request failed: {}", error_text);
+LOG_INFO() << "loaded " << count << " items";
 ```
 
 A Runtime writes to a file through its file route, here in TSKV:

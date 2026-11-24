@@ -145,6 +145,7 @@ install(
         include/ulog/format.hpp
         include/ulog/level.hpp
         include/ulog/log.hpp
+        include/ulog/log_writer.hpp
         include/ulog/logger.hpp
         include/ulog/operation.hpp
         include/ulog/runtime.hpp

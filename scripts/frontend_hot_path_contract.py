@@ -46,7 +46,7 @@ EXPECTED_PUBLISH_COUNTER_MUTATIONS = Counter(
     {
         "counters.rejected_lane_full": 1,
         "counters.rejected_budget": 1,
-        "counters.abandoned_builds": 2,
+        "counters.abandoned_builds": 1,
         "counters.invalid_records": 6,
         "counters.truncated_records": 1,
     }
@@ -257,13 +257,26 @@ def validate_sources(sources: dict[str, str]) -> None:
             "publication synchronization. Do not add shared accepted-statistics traffic."
         )
 
-    try_publish_match = require_match(
-        producer_kernel,
-        r"PublishResult ProducerKernel::TryPublishSlot\(.*?BuildOperation operation\) \{"
-        r"(?P<body>.*?)\n\}",
-        "ProducerKernel::TryPublishSlot",
+    # A publication runs through TryPublishSlot (callback builds) or BeginRecord (scope writers),
+    # and both share BeginSlot and FinishSlot; together they are the accepted path.
+    try_publish_body = "\n".join(
+        require_match(producer_kernel, pattern, description).group("body")
+        for pattern, description in (
+            (
+                r"PublishResult ProducerKernel::TryPublishSlot\(.*?BuildOperation operation\) \{"
+                r"(?P<body>.*?)\n\}",
+                "ProducerKernel::TryPublishSlot",
+            ),
+            (
+                r"PublishOutcome ProducerKernel::BeginSlot\(.*?\) noexcept \{(?P<body>.*?)\n\}",
+                "ProducerKernel::BeginSlot",
+            ),
+            (
+                r"PublishResult ProducerKernel::FinishSlot\(.*?\) noexcept \{(?P<body>.*?)\n\}",
+                "ProducerKernel::FinishSlot",
+            ),
+        )
     )
-    try_publish_body = try_publish_match.group("body")
     observed_counter_mutations = Counter(
         re.findall(r"\b(counters\.[a-z0-9_]+)\.fetch_add\(", try_publish_body)
     )
@@ -283,7 +296,8 @@ def validate_sources(sources: dict[str, str]) -> None:
         )
     ):
         raise FrontendHotPathContractError(
-            "ProducerKernel::TryPublishSlot may update only isolated exceptional outcome "
+            "ProducerKernel::TryPublishSlot, BeginSlot, and FinishSlot may update only isolated "
+            "exceptional outcome "
             "counters directly. Accepted statistics must remain derived from the admission "
             "sequence."
         )
@@ -317,6 +331,7 @@ def read_source(path: Path) -> str:
 def read_project_sources(project_root: Path) -> dict[str, str]:
     source_paths = [
         project_root / "include" / "ulog" / "log.hpp",
+        project_root / "include" / "ulog" / "log_writer.hpp",
         project_root / "include" / "ulog" / "logger.hpp",
         project_root / "src" / "logger.cpp",
         project_root / "src" / "logger_state.hpp",

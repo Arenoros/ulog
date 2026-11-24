@@ -14,8 +14,12 @@ LevelChangeStatus RejectLevelChange(void*, Level) noexcept {
   return LevelChangeStatus::kNullLogger;
 }
 
-constinit const detail::ProducerOperations kNullProducerOperations{&DiscardMessage,
-                                                                   &RejectLevelChange};
+bool AdmitNothing(void*, Level, const SourceLocation&, detail::OpenRecord&) noexcept {
+  return false;
+}
+
+constinit const detail::ProducerOperations kNullProducerOperations{
+    &DiscardMessage, &RejectLevelChange, &AdmitNothing};
 constinit detail::LoggerState kNullLoggerState{
     std::atomic<std::uint8_t>{static_cast<std::uint8_t>(Level::kNone)},
     &kNullProducerOperations,
@@ -50,6 +54,17 @@ void Logger::LogMessage(Level level, const SourceLocation& source, void* builder
   }
   state.producer_operations->log_message(state.producer_context, level, source, builder_context,
                                          build_message);
+}
+
+detail::OpenRecord Logger::BeginRecord(Level level, const SourceLocation& source) const noexcept {
+  const detail::LoggerState& state = *state_;
+  detail::OpenRecord record;
+  if (IsLevelEnabled(level, LoadLevel(state)) &&
+      state.producer_operations->begin_record != nullptr &&
+      state.producer_operations->begin_record(state.producer_context, level, source, record)) {
+    return record;
+  }
+  return {};
 }
 
 LevelChangeStatus Logger::SetLevel(Level threshold) const noexcept {

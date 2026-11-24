@@ -47,7 +47,7 @@ class StableTarget final {
   }
 
   inline static constexpr detail::ProducerOperations kOperations{&DiscardMessage,
-                                                                 &RejectLevelChange};
+                                                                 &RejectLevelChange, nullptr};
 
   detail::LoggerState state_;
 };
