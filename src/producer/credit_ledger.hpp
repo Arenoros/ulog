@@ -119,6 +119,12 @@ class CreditLedger final {
   /// Credit `producer_index` could reserve now: its local and returned credit plus the shared
   /// pool. Other producers change the pool concurrently, so it is an estimate.
   [[nodiscard]] std::size_t EstimateAvailableCredit(std::size_t producer_index) const noexcept;
+  /// Bytes taken from the shared payload pool, including credit producers cached locally; one
+  /// relaxed load, so other producers may change it at once.
+  [[nodiscard]] std::size_t SharedOccupancy() const noexcept {
+    const std::size_t available = central_available_bytes_.load(std::memory_order_relaxed);
+    return available < capacity_bytes_ ? capacity_bytes_ - available : 0U;
+  }
   [[nodiscard]] Snapshot GetSnapshot() const noexcept;
 
  private:

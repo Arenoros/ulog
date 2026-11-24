@@ -75,13 +75,17 @@ constexpr auto kNoShutdownDeadline =
     return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidPayloadCapacity};
   }
   if (config.admission_policy != AdmissionPolicy::kDropNewest &&
-      config.admission_policy != AdmissionPolicy::kDropOldest) {
+      config.admission_policy != AdmissionPolicy::kDropOldest &&
+      config.admission_policy != AdmissionPolicy::kAdaptiveThinning) {
     return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidAdmissionPolicy};
   }
   if (config.priority_reserve_bytes % detail::producer::kAccountingQuantumBytes != 0U ||
       (config.priority_reserve_bytes != 0U &&
        config.priority_reserve_bytes < config.maximum_record_bytes)) {
     return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidPriorityReserve};
+  }
+  if (config.thinning_low_watermark_percent > 99U) {
+    return RuntimeCreateFailure{RuntimeCreateErrorCode::kInvalidThinningWatermark};
   }
   if (config.producer_slots == 0U ||
       config.producer_slots > detail::producer::kMaximumProducerSlots) {
@@ -166,6 +170,8 @@ template <typename Destination>
     case RuntimeCreateErrorCode::kInvalidPriorityReserve:
       return "Runtime priority_reserve_bytes cannot hold one maximum-sized Record or is not "
              "64-byte aligned.";
+    case RuntimeCreateErrorCode::kInvalidThinningWatermark:
+      return "Runtime thinning_low_watermark_percent is above 99.";
   }
   return "Runtime creation failed.";
 }
@@ -220,11 +226,13 @@ template <typename Destination>
       return "Set the route format to a ulog::Format value, such as Format::kTskv or "
              "Format::kJson.";
     case RuntimeCreateErrorCode::kInvalidAdmissionPolicy:
-      return "Set admission_policy to AdmissionPolicy::kDropNewest or "
-             "AdmissionPolicy::kDropOldest.";
+      return "Set admission_policy to AdmissionPolicy::kDropNewest, "
+             "AdmissionPolicy::kDropOldest, or AdmissionPolicy::kAdaptiveThinning.";
     case RuntimeCreateErrorCode::kInvalidPriorityReserve:
       return "Set priority_reserve_bytes to zero to disable the reserve, or to a 64-byte-aligned "
              "value of at least maximum_record_bytes.";
+    case RuntimeCreateErrorCode::kInvalidThinningWatermark:
+      return "Set thinning_low_watermark_percent to a value from 0 through 99.";
   }
   return "Correct the Runtime configuration and retry.";
 }
@@ -581,6 +589,9 @@ class RuntimeDomain final {
                 .consumer_notification = {this, &RuntimeDomain::NotifyConsumer},
                 .priority_reserve_bytes = config_.priority_reserve_bytes,
                 .drop_oldest = config_.admission_policy == AdmissionPolicy::kDropOldest,
+                .adaptive_thinning = config_.admission_policy == AdmissionPolicy::kAdaptiveThinning,
+                .thinning_low_watermark_bytes =
+                    config_.payload_capacity_bytes * config_.thinning_low_watermark_percent / 100U,
             },
             SelectEventClock(config_.event_clock)),
         control_reserve_(config_.control_operations),
@@ -637,7 +648,8 @@ class RuntimeDomain final {
       route_io_error = route_io_error_;
     }
     const std::uint64_t rejected = producer.rejected_no_producer + producer.rejected_lane_full +
-                                   producer.rejected_budget + producer.rejected_priority_reserve;
+                                   producer.rejected_budget + producer.rejected_priority_reserve +
+                                   producer.rejected_thinned;
     return RuntimeSnapshot{
         .accepted_records = producer.accepted_records,
         .processed_records = ledger.processed_records,
@@ -653,6 +665,7 @@ class RuntimeDomain final {
         .rejected_lane_full = producer.rejected_lane_full,
         .rejected_budget = producer.rejected_budget,
         .rejected_priority_reserve = producer.rejected_priority_reserve,
+        .rejected_thinned = producer.rejected_thinned,
         .dropped_newest_records = rejected,
         .shed_records = producer.evicted_records,
         .retained_records = producer.retained_records,

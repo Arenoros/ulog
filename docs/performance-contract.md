@@ -92,6 +92,11 @@ all payload pools, and the independent control and progress reserves.
   and the frontend benchmark's `drop-oldest-evicting` row measures it. The cell
   tags are written only under drop-oldest, so the drop-newest publication path
   is unchanged; the frontend hot-path contract check exempts only that branch.
+- `AdmissionPolicy::kAdaptiveThinning` adds one relaxed load of the shared budget
+  to each call. Below the low watermark that load is all it adds, as the
+  frontend benchmark's `thinning-below-watermark` row shows next to
+  `ordinary-accepted`. Above the watermark it hashes the call site and the
+  producer-local nonce; it never touches shared state beyond that load.
 - Priority-aware drop-oldest evicts only equal- or
   lower-priority eligible Records, and adaptive sampling uses stateless hashing
   rather than dynamic per-site state.

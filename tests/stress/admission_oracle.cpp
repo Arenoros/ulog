@@ -40,6 +40,7 @@
 
 #include "model/admission_model.hpp"
 #include "producer/record_storage.hpp"
+#include "producer/thinning.hpp"
 
 namespace {
 
@@ -52,6 +53,7 @@ static_assert(model::kRecordMetadataBytes ==
 
 constexpr std::string_view kSourcePath = "oracle.cpp";
 constexpr std::string_view kSourceFunction = "Produce";
+constexpr std::uint8_t kThinningPercent = 25;
 constexpr ulog::SourceLocation kSource =
     ulog::SourceLocation::Custom(kSourcePath, kSourceFunction, 1);
 constexpr std::size_t kMinimumMessageBytes = 16;
@@ -157,8 +159,10 @@ struct Scenario final {
          " ingress_cells=" + std::to_string(config.ingress_cells) +
          " payload_capacity_bytes=" + std::to_string(config.payload_capacity_bytes) +
          " maximum_record_bytes=" + std::to_string(config.maximum_record_bytes) +
-         " priority_reserve_bytes=" + std::to_string(config.priority_reserve_bytes) +
-         " policy=" + (config.drop_oldest ? "drop-oldest" : "drop-newest") +
+         " priority_reserve_bytes=" + std::to_string(config.priority_reserve_bytes) + " policy=" +
+         (config.drop_oldest         ? "drop-oldest"
+          : config.adaptive_thinning ? "adaptive-thinning"
+                                     : "drop-newest") +
          " destination_slots=" + std::to_string(config.destination_slots) +
          " control_operations=" + std::to_string(config.control_operations);
 }
@@ -179,8 +183,11 @@ struct Scenario final {
   // A third of the scenarios run without the priority reserve. The choice and the log levels
   // derive from values already drawn, so the random stream and the other events stay unchanged.
   config.priority_reserve_bytes = config.maximum_record_bytes * ((seed + 1U) % 3U);
-  // Seeds alternate between the two policies in groups of three.
-  config.drop_oldest = seed / 3U % 2U == 1U;
+  // Seeds rotate through the three policies in pairs.
+  config.drop_oldest = seed / 2U % 3U == 1U;
+  config.adaptive_thinning = seed / 2U % 3U == 2U;
+  config.thinning_low_watermark_bytes = config.payload_capacity_bytes * kThinningPercent / 100U;
+  config.site_hash = ulog::detail::producer::CallSiteHash(kSourcePath, 1);
   config.source_bytes = kSourcePath.size() + kSourceFunction.size();
   // One extra thread sometimes registers after every slot is taken.
   scenario.threads = config.producer_slots + random.Between(0, 1);
@@ -339,6 +346,7 @@ enum class Covered : std::uint8_t {
   kPriorityReserveAccepted,
   kPriorityReserveExhausted,
   kEvicted,
+  kThinned,
   kConcurrentBurst,
   kImmediateDrain,
   kPendingDrain,
@@ -361,6 +369,7 @@ constexpr std::array<std::string_view, static_cast<std::size_t>(Covered::kCount)
     "priority-reserve-accepted",
     "rejected-priority-reserve",
     "evicted-oldest",
+    "rejected-thinned",
     "concurrent-burst",
     "immediate-drain",
     "pending-drain",
@@ -423,8 +432,11 @@ class ScenarioRun final {
             .destruction_timeout = 5s,
             .event_clock = ulog::EventClock{nullptr, &FixedNow},
             .admission_policy = config.drop_oldest ? ulog::AdmissionPolicy::kDropOldest
-                                                   : ulog::AdmissionPolicy::kDropNewest,
+                                : config.adaptive_thinning
+                                    ? ulog::AdmissionPolicy::kAdaptiveThinning
+                                    : ulog::AdmissionPolicy::kDropNewest,
             .priority_reserve_bytes = config.priority_reserve_bytes,
+            .thinning_low_watermark_percent = kThinningPercent,
         },
         destination_);
     if (!created) {
@@ -563,6 +575,7 @@ class ScenarioRun final {
           : admission == model::Admission::kNoProducer      ? Covered::kNoProducer
           : admission == model::Admission::kLaneFull        ? Covered::kLaneFull
           : admission == model::Admission::kPriorityReserve ? Covered::kPriorityReserveExhausted
+          : admission == model::Admission::kThinned         ? Covered::kThinned
                                                             : Covered::kBudget);
     std::size_t evaluations = 0;
     threads_[thread]->Execute(
@@ -863,7 +876,7 @@ class ScenarioRun final {
   [[nodiscard]] std::optional<std::string> Compare() const {
     const model::Counters expected = model_.counters();
     const ulog::RuntimeSnapshot observed = runtime_->GetSnapshot();
-    const std::array<std::tuple<std::string_view, std::uint64_t, std::uint64_t>, 21> fields{{
+    const std::array<std::tuple<std::string_view, std::uint64_t, std::uint64_t>, 22> fields{{
         {"accepted_records", expected.accepted, observed.accepted_records},
         {"processed_records", expected.processed, observed.processed_records},
         {"processed_bytes", expected.processed_bytes, observed.processed_bytes},
@@ -878,9 +891,10 @@ class ScenarioRun final {
         {"rejected_budget", expected.rejected_budget, observed.rejected_budget},
         {"rejected_priority_reserve", expected.rejected_priority_reserve,
          observed.rejected_priority_reserve},
+        {"rejected_thinned", expected.rejected_thinned, observed.rejected_thinned},
         {"dropped_newest_records",
          expected.rejected_no_producer + expected.rejected_lane_full + expected.rejected_budget +
-             expected.rejected_priority_reserve,
+             expected.rejected_priority_reserve + expected.rejected_thinned,
          observed.dropped_newest_records},
         {"shed_records", expected.shed_records, observed.shed_records},
         {"retained_records", expected.retained_records, observed.retained_records},

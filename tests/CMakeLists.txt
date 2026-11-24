@@ -107,6 +107,7 @@ if(ULOG_BUILD_UNIT_TESTS)
     operation_test.cpp
     producer_kernel_test.cpp
     text_encoder_test.cpp
+    thinning_test.cpp
     version_test.cpp
   )
   target_compile_features(ulog-unit-tests PRIVATE cxx_std_20)

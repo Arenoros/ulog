@@ -49,6 +49,10 @@ struct KernelConfig final {
   /// Drop-oldest: a Record the payload budget rejects may evict the oldest unclaimed Records of
   /// equal or lower level instead of being rejected.
   bool drop_oldest{false};
+  /// Adaptive thinning: above `thinning_low_watermark_bytes` of shared-budget occupancy, calls are
+  /// kept with a deterministic, falling probability before anything is reserved.
+  bool adaptive_thinning{false};
+  std::size_t thinning_low_watermark_bytes{0};
 };
 
 struct WriteResult final {
@@ -133,6 +137,8 @@ enum class PublishOutcome : std::uint8_t {
   kBudgetExhausted,
   /// An Error or Critical Record found both the payload budget and the priority reserve full.
   kPriorityReserveExhausted,
+  /// Adaptive thinning dropped the call before it reserved anything.
+  kThinned,
   kInvalidRecord,
 };
 
@@ -226,6 +232,7 @@ struct KernelSnapshot final {
   std::uint64_t rejected_lane_full{0};
   std::uint64_t rejected_budget{0};
   std::uint64_t rejected_priority_reserve{0};
+  std::uint64_t rejected_thinned{0};
   std::uint64_t abandoned_builds{0};
   std::uint64_t invalid_records{0};
   std::uint64_t truncated_records{0};

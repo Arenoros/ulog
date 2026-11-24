@@ -65,19 +65,21 @@ enum class FrontendPath : std::uint8_t {
   kStreamAccepted,
   /// Drop-oldest under a saturated budget: every call evicts the previous Record to fit.
   kDropOldestEvicting,
+  /// Adaptive thinning below its low watermark: the accepted path plus one occupancy read.
+  kThinningBelowWatermark,
 };
 
 /// The accepted paths: the fmt call form and the same Record written by a stream statement.
 [[nodiscard]] constexpr bool IsAccepted(FrontendPath path) noexcept {
   return path == FrontendPath::kOrdinaryAccepted || path == FrontendPath::kStreamAccepted ||
-         path == FrontendPath::kDropOldestEvicting;
+         path == FrontendPath::kDropOldestEvicting || path == FrontendPath::kThinningBelowWatermark;
 }
 
 constexpr FrontendPath kPaths[]{
     FrontendPath::kCompileErased,      FrontendPath::kRuntimeFiltered,
     FrontendPath::kNullLogger,         FrontendPath::kAdmissionRejected,
     FrontendPath::kOrdinaryAccepted,   FrontendPath::kStreamAccepted,
-    FrontendPath::kDropOldestEvicting,
+    FrontendPath::kDropOldestEvicting, FrontendPath::kThinningBelowWatermark,
 };
 
 std::atomic<bool> deterministic_failure{false};
@@ -98,6 +100,8 @@ std::atomic<bool> deterministic_failure{false};
       return "stream-accepted";
     case FrontendPath::kDropOldestEvicting:
       return "drop-oldest-evicting";
+    case FrontendPath::kThinningBelowWatermark:
+      return "thinning-below-watermark";
   }
   return "invalid";
 }
@@ -105,7 +109,7 @@ std::atomic<bool> deterministic_failure{false};
 class KernelFixture final {
  public:
   KernelFixture(std::size_t payload_capacity_bytes, std::size_t ingress_cells,
-                bool drop_oldest = false)
+                bool drop_oldest = false, std::size_t thinning_low_watermark_bytes = 0)
       : kernel(producer::KernelConfig{
             .threshold = ulog::Level::kTrace,
             .payload_capacity_bytes = payload_capacity_bytes,
@@ -113,6 +117,8 @@ class KernelFixture final {
             .producer_slots = 1,
             .ingress_cells = ingress_cells,
             .drop_oldest = drop_oldest,
+            .adaptive_thinning = thinning_low_watermark_bytes != 0U,
+            .thinning_low_watermark_bytes = thinning_low_watermark_bytes,
         }),
         registration(kernel.TryRegisterProducer()) {
     if (!registration) {
@@ -149,6 +155,13 @@ KernelFixture& RejectedFixture() {
 /// A budget of one worst-case Record, so each call must evict the Record before it.
 KernelFixture& EvictingFixture() {
   static KernelFixture fixture{kMaximumRecordBytes, 2, true};
+  return fixture;
+}
+
+/// Adaptive thinning whose low watermark (three quarters) stays above the one-Record occupancy.
+KernelFixture& ThinningFixture() {
+  static KernelFixture fixture{kTwoRecordCapacityBytes, 2, false,
+                               kTwoRecordCapacityBytes * 3U / 4U};
   return fixture;
 }
 
@@ -203,6 +216,7 @@ void Attempt(FrontendPath path, std::uint64_t& evaluations) {
       LOG_CRITICAL() << CountMessage(evaluations);
       return;
     case FrontendPath::kDropOldestEvicting:
+    case FrontendPath::kThinningBelowWatermark:
       LOG_CRITICAL("{}", CountMessage(evaluations));
       return;
   }
@@ -322,10 +336,12 @@ void PrintOutcomeMismatch(FrontendPath path, const KernelOutcomeDelta& actual,
   auto& active = ActiveFixture();
   auto& rejected = RejectedFixture();
   auto& evicting = EvictingFixture();
+  auto& thinning = ThinningFixture();
   const bool evicts = path == FrontendPath::kDropOldestEvicting;
-  KernelFixture& observed_fixture = path == FrontendPath::kAdmissionRejected ? rejected
-                                    : evicts                                 ? evicting
-                                                                             : active;
+  KernelFixture& observed_fixture = path == FrontendPath::kAdmissionRejected        ? rejected
+                                    : evicts                                        ? evicting
+                                    : path == FrontendPath::kThinningBelowWatermark ? thinning
+                                                                                    : active;
   producer::ProducerKernel& observed_kernel = observed_fixture.kernel;
   active.kernel.SetLevel(path == FrontendPath::kRuntimeFiltered ? ulog::Level::kWarning
                                                                 : ulog::Level::kTrace);
@@ -349,7 +365,7 @@ void PrintOutcomeMismatch(FrontendPath path, const KernelOutcomeDelta& actual,
       } else {
         ++taken.invalid_records;
       }
-    } else if (active.kernel.TryConsume(&taken, &ObserveRecord) !=
+    } else if (observed_kernel.TryConsume(&taken, &ObserveRecord) !=
                producer::ConsumeStatus::kRecord) {
       ++taken.invalid_records;
     }
@@ -586,7 +602,7 @@ void RegisterWorkloads(Mode mode) {
   benchmark::AddCustomContext(
       "ulog_frontend_paths",
       "compile-erased,runtime-filtered,null-logger,admission-rejected,ordinary-accepted,"
-      "stream-accepted,drop-oldest-evicting");
+      "stream-accepted,drop-oldest-evicting,thinning-below-watermark");
   benchmark::AddCustomContext("ulog_mode", std::string{ulog::benchmark_support::ToString(mode)});
   benchmark::AddCustomContext("ulog_timing_policy", "advisory");
   benchmark::AddCustomContext("ulog_repetitions", std::to_string(repetitions));

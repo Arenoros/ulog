@@ -78,8 +78,9 @@ The current Runtime accepts these bounds:
 - `maximum_record_bytes` is a 64-byte multiple from 128 through 16,384;
 - `payload_capacity_bytes` is a 64-byte multiple large enough for one maximum-sized
   Record;
-- `admission_policy` is `AdmissionPolicy::kDropNewest`, the default, or
-  `AdmissionPolicy::kDropOldest`;
+- `admission_policy` is `AdmissionPolicy::kDropNewest`, the default,
+  `AdmissionPolicy::kDropOldest`, or `AdmissionPolicy::kAdaptiveThinning`;
+- `thinning_low_watermark_percent` is 0 through 99 and defaults to 50;
 - `priority_reserve_bytes` is zero, the default, or a 64-byte multiple large enough
   for one maximum-sized Record;
 - `producer_slots` is from 1 through 32, and `ingress_cells` is from
@@ -149,7 +150,7 @@ destination in that sequence order.
 `RuntimeConfig::admission_policy` selects how a full Runtime sheds calls.
 `AdmissionPolicy::kDropNewest`, the default, rejects the incoming call: it
 increments one rejection count, consumes no admission sequence, and evaluates
-no caller message expression. Every rejection has exactly one of four reasons,
+no caller message expression. Every rejection has exactly one of five reasons,
 counted in `RuntimeSnapshot`:
 
 | Reason | Snapshot count |
@@ -158,6 +159,7 @@ counted in `RuntimeSnapshot`:
 | The producer's ingress lane is full | `rejected_lane_full` |
 | The payload budget cannot hold one worst-case Record | `rejected_budget` |
 | An Error or Critical call found the budget and the priority reserve full | `rejected_priority_reserve` |
+| Adaptive thinning dropped the call | `rejected_thinned` |
 
 `dropped_newest_records` is their sum. Operation reports count only admitted
 Records, so they are unaffected by rejections.
@@ -188,6 +190,34 @@ make room. The rules:
 
 The design and its bounds are recorded in the
 [ADR 0017 amendment](adr/0017-use-producer-credits-contiguous-records-and-producer-lanes.md#amendment-drop-oldest-eviction-35).
+
+### Adaptive thinning
+
+`AdmissionPolicy::kAdaptiveThinning` keeps every call while the shared payload
+budget is lightly used, and drops a growing share of calls as it fills (ADR
+0010).
+
+Occupancy is the number of bytes producers have taken from the shared budget,
+including credit they cached locally, read with one relaxed load. While it is at
+most `thinning_low_watermark_percent` of `payload_capacity_bytes`, every call is
+kept. Above that, a call is kept with probability:
+
+```text
+keep = (capacity - occupancy) / (capacity - low_watermark)
+```
+
+The probability falls linearly from 1 at the watermark to 0 at a full budget.
+
+Each decision is a deterministic hash of the call site (its source path and line)
+and a per-producer reservation-attempt nonce. The nonce advances only on calls
+decided above the watermark. The hash never uses the admission sequence, and
+Ulog keeps no per-site table, so the decision needs no state or allocation.
+
+The same site, nonce, and occupancy always give the same decision, and over many
+calls every site is kept at about the same ratio. A thinned call is dropped
+before it claims a lane cell or reserves bytes: it evaluates no message operand,
+consumes no admission sequence, and is counted as `rejected_thinned`. Calls that
+thinning keeps then go through the ordinary drop-newest checks.
 
 ### Priority reserve
 

@@ -33,6 +33,10 @@ enum class AdmissionPolicy : std::uint8_t {
   /// that the worker has not claimed until the call fits, and rejects it only if they cannot make
   /// room. Records admitted through the priority reserve are never evicted.
   kDropOldest,
+  /// Keeps every call while the payload budget is below `thinning_low_watermark_percent`, then
+  /// keeps calls with a probability that falls linearly to zero as the budget fills. Each keep
+  /// decision is a stateless hash of the call site and a per-producer attempt nonce.
+  kAdaptiveThinning,
 };
 
 struct RuntimeConfig final {
@@ -53,6 +57,9 @@ struct RuntimeConfig final {
   /// at least `maximum_record_bytes`. The maximum Ulog-owned payload memory is
   /// `payload_capacity_bytes + priority_reserve_bytes`.
   std::size_t priority_reserve_bytes{0};
+  /// Adaptive thinning keeps every call while at most this percentage (0 through 99) of
+  /// `payload_capacity_bytes` is taken from the shared budget. Other policies ignore it.
+  std::uint8_t thinning_low_watermark_percent{50};
 };
 
 /// One immutable route that appends encoded frames to a file through Ulog's private I/O loop.
@@ -91,6 +98,7 @@ enum class RuntimeCreateErrorCode : std::uint8_t {
   kUnsupportedFormat,
   kInvalidAdmissionPolicy,
   kInvalidPriorityReserve,
+  kInvalidThinningWatermark,
 };
 
 struct RuntimeCreateFailure final {
@@ -118,7 +126,9 @@ struct RuntimeSnapshot final {
   std::uint64_t rejected_budget{0};
   /// Error and Critical calls rejected after both the payload budget and the reserve were full.
   std::uint64_t rejected_priority_reserve{0};
-  /// Every rejected call: the sum of the four rejection reasons above.
+  /// Calls that adaptive thinning dropped before reserving anything.
+  std::uint64_t rejected_thinned{0};
+  /// Every rejected call: the sum of the five rejection reasons above.
   std::uint64_t dropped_newest_records{0};
   /// Admitted Records that drop-oldest evicted; they are never delivered or counted as rejected.
   std::uint64_t shed_records{0};

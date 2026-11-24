@@ -32,3 +32,12 @@ default or available on Ulog-owned threads. A Record exceeding
 `max_record_bytes` is truncated at a valid UTF-8 boundary, receives the
 `ulog.truncated=true` technical field, and increments a dedicated counter; Ulog
 does not allocate outside the budget.
+
+## Amendment: adaptive thinning nonce (#36)
+
+The thinning hash uses a per-producer reservation-attempt nonce instead of the
+admission sequence. A thinned call never reaches publication, so it has no
+sequence. Hashing the global sequence would also make one producer's decisions
+depend on every other producer's admissions. The decision stays stateless and
+deterministic: given the call site, the producer's nonce, and the occupancy,
+the outcome is fixed.

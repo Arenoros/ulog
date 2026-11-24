@@ -16,6 +16,7 @@
 #include "producer/credit_ledger.hpp"
 #include "producer/producer_lanes.hpp"
 #include "producer/record_storage.hpp"
+#include "producer/thinning.hpp"
 
 namespace ulog::detail::producer {
 namespace {
@@ -222,6 +223,12 @@ void ValidateConfiguration(const KernelConfig& config, EventClock clock) {
         "must be zero or 64-byte aligned and at least maximum_record_bytes;",
         "to zero to disable the reserve, or to room for at least one complete Record");
   }
+  if (config.adaptive_thinning &&
+      config.thinning_low_watermark_bytes >= config.payload_capacity_bytes) {
+    ThrowInvalidConfiguration("thinning_low_watermark_bytes",
+                              "must be below payload_capacity_bytes;",
+                              "to the occupancy below which every call is kept");
+  }
   if (config.producer_slots == 0U || config.producer_slots > kMaximumProducerSlots) {
     ThrowInvalidConfiguration("producer_slots", "must be between 1 and 32;",
                               "to the number of concurrently active application producers");
@@ -289,12 +296,11 @@ struct ProducerKernel::Impl final {
     std::atomic<std::uint64_t> rejected_lane_full{0};
     std::atomic<std::uint64_t> rejected_budget{0};
     std::atomic<std::uint64_t> rejected_priority_reserve{0};
+    std::atomic<std::uint64_t> rejected_thinned{0};
     std::atomic<std::uint64_t> abandoned_builds{0};
     std::atomic<std::uint64_t> invalid_records{0};
     std::atomic<std::uint64_t> truncated_records{0};
     std::atomic<std::uint64_t> evicted_records{0};
-    std::array<std::byte, kAccountingQuantumBytes - 7U * sizeof(std::atomic<std::uint64_t>)>
-        padding{};
   };
 
   static_assert(sizeof(ProducerCounters) == kAccountingQuantumBytes);
@@ -305,6 +311,27 @@ struct ProducerKernel::Impl final {
   };
 
   static_assert(sizeof(MissingProducerCounter) == kAccountingQuantumBytes);
+
+  /// Reservation-attempt nonce of one producer slot for adaptive thinning; only its producer
+  /// thread touches it.
+  struct alignas(kAccountingQuantumBytes) ProducerThinning final {
+    std::uint64_t nonce{0};
+    std::array<std::byte, kAccountingQuantumBytes - sizeof(std::uint64_t)> padding{};
+  };
+
+  /// Adaptive thinning: below the low watermark every call is kept after one occupancy read;
+  /// above it the call's site and the producer's next nonce decide deterministically.
+  [[nodiscard]] bool KeepUnderThinning(std::size_t slot_index,
+                                       const SourceLocation& source) noexcept {
+    const std::size_t occupied = ledger.SharedOccupancy();
+    if (occupied <= config.thinning_low_watermark_bytes) {
+      return true;
+    }
+    const std::uint64_t nonce = thinning[slot_index].nonce++;
+    return ThinningKeeps(CallSiteHash(source.GetFileName(), source.GetLine()), nonce,
+                         ThinningKeepRatio(occupied, config.thinning_low_watermark_bytes,
+                                           config.payload_capacity_bytes));
+  }
 
   /// The Record a producer slot is writing between BeginSlot and FinishSlot. A slot holds at most
   /// one, because its publication claim is exclusive until it is published or released.
@@ -426,6 +453,7 @@ struct ProducerKernel::Impl final {
   std::array<record::StoredRecord, kMaximumIngressCells> records{};
   std::array<std::optional<credit::CreditLedger::Ownership>, kMaximumIngressCells> ownerships{};
   std::array<std::optional<OpenRecordState>, kMaximumProducerSlots> open_records{};
+  std::array<ProducerThinning, kMaximumProducerSlots> thinning{};
 };
 
 EventClock SystemEventClock() noexcept { return EventClock{nullptr, &ReadSystemClock}; }
@@ -597,6 +625,10 @@ PublishOutcome ProducerKernel::BeginSlot(std::size_t slot_index, std::uint64_t g
   }
 
   auto& counters = impl_->counters[slot_index];
+  if (impl_->config.adaptive_thinning && !impl_->KeepUnderThinning(slot_index, source)) {
+    counters.rejected_thinned.fetch_add(1, std::memory_order_relaxed);
+    return PublishOutcome::kThinned;
+  }
   auto publication = impl_->lanes.TryClaimPublication(slot_index);
   if (!publication) {
     if (publication.status() == ingress::ClaimStatus::kFull ||
@@ -808,6 +840,7 @@ KernelSnapshot ProducerKernel::GetSnapshot() const noexcept {
     snapshot.rejected_budget += counters.rejected_budget.load(std::memory_order_relaxed);
     snapshot.rejected_priority_reserve +=
         counters.rejected_priority_reserve.load(std::memory_order_relaxed);
+    snapshot.rejected_thinned += counters.rejected_thinned.load(std::memory_order_relaxed);
     snapshot.abandoned_builds += counters.abandoned_builds.load(std::memory_order_relaxed);
     producer_invalid_records += counters.invalid_records.load(std::memory_order_relaxed);
     snapshot.truncated_records += counters.truncated_records.load(std::memory_order_relaxed);
@@ -826,8 +859,8 @@ KernelSnapshot ProducerKernel::GetSnapshot() const noexcept {
   }
   snapshot.attempted_records = snapshot.accepted_records + snapshot.rejected_no_producer +
                                snapshot.rejected_lane_full + snapshot.rejected_budget +
-                               snapshot.rejected_priority_reserve + snapshot.abandoned_builds +
-                               producer_invalid_records;
+                               snapshot.rejected_priority_reserve + snapshot.rejected_thinned +
+                               snapshot.abandoned_builds + producer_invalid_records;
   snapshot.invalid_records =
       producer_invalid_records + impl_->consumer_validation_errors.load(std::memory_order_relaxed);
   snapshot.retained_records = snapshot.accepted_records >= snapshot.consumed_records

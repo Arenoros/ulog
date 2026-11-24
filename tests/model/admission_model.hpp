@@ -22,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+#include "producer/thinning.hpp"
+
 namespace ulog::test::admission {
 
 inline constexpr std::size_t kQuantumBytes = 64;
@@ -53,6 +55,11 @@ struct Config final {
   std::size_t priority_reserve_bytes{0};
   /// Drop-oldest: a Record the budget rejects evicts the oldest eligible ingress Records instead.
   bool drop_oldest{false};
+  /// Adaptive thinning above `thinning_low_watermark_bytes` of shared-budget occupancy, deciding
+  /// with the hash of the one call site every producer uses.
+  bool adaptive_thinning{false};
+  std::size_t thinning_low_watermark_bytes{0};
+  std::uint64_t site_hash{0};
 };
 
 enum class Admission : std::uint8_t {
@@ -62,6 +69,7 @@ enum class Admission : std::uint8_t {
   kLaneFull,
   kBudget,
   kPriorityReserve,
+  kThinned,
 };
 
 enum class DeliveryMode : std::uint8_t { kCompleteInline, kHold, kFailInline };
@@ -124,6 +132,7 @@ struct Counters final {
   std::uint64_t rejected_lane_full{0};
   std::uint64_t rejected_budget{0};
   std::uint64_t rejected_priority_reserve{0};
+  std::uint64_t rejected_thinned{0};
   std::uint64_t shed_records{0};
   std::uint64_t retained_records{0};
   std::size_t logical_retained_bytes{0};
@@ -202,8 +211,8 @@ class AdmissionModel final {
     if (!admission_open_) {
       return true;
     }
-    if (config_.drop_oldest) {
-      return false;  // an eviction's victim would depend on the interleaving
+    if (config_.drop_oldest || config_.adaptive_thinning) {
+      return false;  // an eviction's victim or a thinning draw would depend on the interleaving
     }
     if (!worker_stopped_ && route_.FreeSlots(records_, config_.destination_slots) != 0U) {
       return false;
@@ -417,6 +426,7 @@ class AdmissionModel final {
     bool retiring{false};
     std::size_t lane_capacity{0};
     std::size_t lane_used{0};
+    std::uint64_t thinning_nonce{0};
     std::size_t local_credit{0};
     std::size_t busy_burst{0};
   };
@@ -482,6 +492,20 @@ class AdmissionModel final {
       return Admission::kNoProducer;
     }
     ProducerState& producer = producers_[thread];
+    if (config_.adaptive_thinning) {
+      // Shared-budget occupancy decides before the lane: the kernel thins before claiming a cell.
+      const std::size_t occupied = config_.payload_capacity_bytes - central_;
+      if (occupied > config_.thinning_low_watermark_bytes) {
+        const std::uint64_t nonce = producer.thinning_nonce++;
+        if (!detail::producer::ThinningKeeps(
+                config_.site_hash, nonce,
+                detail::producer::ThinningKeepRatio(occupied, config_.thinning_low_watermark_bytes,
+                                                    config_.payload_capacity_bytes))) {
+          ++rejections_.rejected_thinned;
+          return Admission::kThinned;
+        }
+      }
+    }
     if (producer.lane_used == producer.lane_capacity) {
       ++rejections_.rejected_lane_full;
       return Admission::kLaneFull;

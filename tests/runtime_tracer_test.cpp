@@ -112,6 +112,11 @@ void SetUnalignedPriorityReserve(RuntimeConfig& config) noexcept {
   config.priority_reserve_bytes = config.maximum_record_bytes + 1U;
 }
 
+void SetInvalidThinningWatermark(RuntimeConfig& config) noexcept {
+  config.admission_policy = AdmissionPolicy::kAdaptiveThinning;
+  config.thinning_low_watermark_percent = 100;
+}
+
 void SetInvalidDestinationBound(RuntimeConfig& config) noexcept {
   config.maximum_record_bytes = 1'024;
   config.payload_capacity_bytes = 1'024;
@@ -154,6 +159,9 @@ constexpr std::array kInvalidRuntimeConfigs{
     InvalidRuntimeConfigCase{"unaligned priority reserve", &SetUnalignedPriorityReserve,
                              RuntimeCreateErrorCode::kInvalidPriorityReserve,
                              "priority_reserve_bytes"},
+    InvalidRuntimeConfigCase{"thinning watermark", &SetInvalidThinningWatermark,
+                             RuntimeCreateErrorCode::kInvalidThinningWatermark,
+                             "thinning_low_watermark_percent"},
 };
 
 void ExpectSucceeded(OperationStartResult& started) {
