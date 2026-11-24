@@ -287,11 +287,10 @@ accepted set. `ToString()` returns the canonical name.
 
 Each encoded route selects its format at construction through
 `RawFileRouteConfig::format` or `InMemoryEncodedDestinationConfig::format`. Both
-default to `Format::kRaw`, so existing configurations keep their output. TSKV,
-LTSV, and Raw are available. Until the JSON encoders land, a file route with a
-JSON format, or a value that is not a `Format` enumerator, fails `Create` as
-`kUnsupportedFormat`; the encoded destination constructor throws
-`std::invalid_argument` for the same values.
+default to `Format::kRaw`, so existing configurations keep their output. Every
+format is available. A value that is not a `Format` enumerator fails `Create` as
+`kUnsupportedFormat` for a file route, and the encoded destination constructor
+throws `std::invalid_argument` for it.
 
 A TSKV frame is one line:
 
@@ -315,6 +314,43 @@ its value with `:` instead of `=`. All three formats share the escaping and valu
 forms described under [Observing Raw bytes](#observing-raw-bytes); `:` is never
 escaped. Raw is TSKV without `timestamp`, `level`, and `module`.
 
+A JSON frame is one compact object followed by LF, with no whitespace outside
+strings:
+
+```text
+{"timestamp":"2000-01-02T03:04:05.123456Z","level":"INFO","module":"Handle ( src/app.cpp:12 )","id":7,"text":"message"}<LF>
+```
+
+- `timestamp` is the event timestamp in UTC with six microsecond digits and a
+  `Z` suffix, formatted as by `FormatUtcTimestamp()`. An instant outside years
+  0000 through 9999 leaves the string empty.
+- `level` and `module` are the same as in TSKV.
+- Fields follow in Record order with their keys unchanged; JSON does not
+  lowercase keys. Integers, finite floating-point values, booleans, and null
+  stay JSON numbers, `true`/`false`, and `null`. NaN and infinities have no JSON
+  form and are written as the strings `"nan"`, `"inf"`, and `"-inf"`.
+- A raw-JSON field (`JsonString`) whose text is exactly one valid RFC 8259 value,
+  nested at most 256 levels deep and with well-formed UTF-8, is inserted as that
+  value with insignificant whitespace removed. Any other text, such as a
+  truncated object, two values, or an invalid escape, is written as a JSON string
+  of that text, so the frame stays valid JSON (`VAL-008`).
+- `text` holds the message and comes last.
+
+`json_yadeploy` writes the same object with `@timestamp`, `levelStr`, and
+`message` in place of `timestamp`, `level`, and `text`.
+
+Strings are escaped per RFC 8259: `"` and `\` get a backslash; backspace, form
+feed, LF, CR, and tab use their short escapes; other bytes below 0x20 become
+`\u00XX`; well-formed UTF-8 is copied unchanged. Each byte that does not start a
+well-formed UTF-8 sequence becomes U+FFFD (`FMT-005`); overlong forms,
+surrogates, and values above U+10FFFF are ill-formed. Messages are already cut at
+their first ill-formed byte when the Record is published, so this rule applies to
+keys, string values, and the source location.
+
+Every Format shares one field-key namespace: the YaDeploy names `@timestamp`,
+`levelStr`, and `message` are reserved like `timestamp`, `level`, and `text`, so
+no user field can shadow a technical member in any format (`DEF-004`).
+
 Encoding runs only on the worker, never allocates once warmed, and keeps
 admission order. It sizes a frame before writing it, so a frame is written whole
 or not at all. Each route buffer holds the worst-case frame of its format:
@@ -324,6 +360,8 @@ or not at all. Each route buffer holds the worst-case frame of its format:
 | Raw | `2 * maximum_record_bytes + 11` |
 | TSKV | `2 * maximum_record_bytes + 87` |
 | LTSV | `2 * maximum_record_bytes + 82` |
+| JSON | `6 * maximum_record_bytes + 101` |
+| YaDeploy JSON | `6 * maximum_record_bytes + 108` |
 
 Every serialized byte of the message, source path, function name, field keys,
 and string values encodes to at most two bytes. Each field carries 24 bytes of
@@ -331,8 +369,18 @@ serialized metadata, which cover its two separators and a number of at most 24
 characters, so the variable part never exceeds twice the serialized Record. The
 constant covers the prefix, the `text` key, the final LF, and for TSKV and LTSV
 the `timestamp`, `level`, and `module` keys, a 26-byte timestamp, an 8-byte level
-name, the module punctuation, and a 10-digit line number. A frame that still did
-not fit would fail encoding with exact accounting and never be written partially.
+name, the module punctuation, and a 10-digit line number.
+
+The JSON formats escape a byte to at most six bytes (`\u00XX`). A field's 24
+metadata bytes cover its comma, key quotes, colon, value quotes, and a number of
+at most 24 characters, and raw JSON is either copied without whitespace or
+escaped as a string, so the variable part never exceeds six times the serialized
+Record. The constant covers the braces, the final LF, the four technical
+members' keys, quotes, colons, and commas, a 27-byte UTC timestamp, an 8-byte
+level name, the module punctuation, and a 10-digit line number.
+
+A frame that still did not fit would fail encoding with exact accounting and
+never be written partially.
 
 ## Raw file route
 
@@ -507,7 +555,6 @@ copy, or the encoded in-memory destination at construction. Its fixed topology f
 [ADR 0015](adr/0015-keep-route-topology-immutable.md). The following remain later
 roadmap work:
 
-- the JSON and YaDeploy JSON encoders;
 - generic Encoder, Sink, and ContextProvider extension seams;
 - Reopen and rotation;
 - network and IPC delivery;

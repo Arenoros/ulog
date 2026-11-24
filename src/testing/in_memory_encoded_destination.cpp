@@ -63,8 +63,8 @@ struct EncodedSlotMetadata final {
         "maximum_record_bytes to the same supported bound used by Runtime");
   }
   if (!encoding::IsEncodable(config.format)) {
-    ThrowInvalidConfiguration("format has no encoder in this build;",
-                              "format to Format::kTskv, Format::kLtsv, or Format::kRaw");
+    ThrowInvalidConfiguration("format is not a ulog::Format value;",
+                              "format to a ulog::Format value, such as Format::kTskv");
   }
   const std::size_t maximum_encoded_record_bytes =
       encoding::MaximumEncodedBytes(config.format, config.maximum_record_bytes);

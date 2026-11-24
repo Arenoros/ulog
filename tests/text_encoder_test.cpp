@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -12,6 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <ulog/fields.hpp>
 #include <ulog/format.hpp>
 #include <ulog/level.hpp>
 #include <ulog/source_location.hpp>
@@ -260,9 +262,12 @@ TEST(TextEncoder, ModuleEscapesTheFunctionAndPathAsAValue) {
                 "\tlevel=ERROR\tmodule=f(\\n) ( dir\\\\x=\\ty.cpp:4294967295 )\ttext=\n");
 }
 
+constexpr std::array kAllFormats{Format::kTskv, Format::kLtsv, Format::kRaw, Format::kJson,
+                                 Format::kJsonYaDeploy};
+
 TEST(TextEncoder, AFrameIsWrittenWhollyOrNotAtAll) {
   const auto source = SourceLocation::Custom("a.cpp", "F", 7);
-  for (const Format format : {Format::kTskv, Format::kLtsv, Format::kRaw}) {
+  for (const Format format : kAllFormats) {
     const std::string frame =
         Encode(format, Level::kInfo, source, &BuildUnicode).value_or(std::string{});
     ASSERT_FALSE(frame.empty()) << ToString(format);
@@ -272,30 +277,33 @@ TEST(TextEncoder, AFrameIsWrittenWhollyOrNotAtAll) {
 }
 
 TEST(TextEncoder, WorstCaseRecordFitsTheDerivedBound) {
-  // Every source, key, and message byte needs escaping, and numbers take their longest form.
-  const std::string path(200, '\t');
-  const std::string function(200, '\\');
-  const auto source = SourceLocation::Custom(path, function, 4'294'967'295U);
-  const auto worst = [](RecordAppender& writer) {
-    for (char suffix = 'a'; suffix < 'i'; ++suffix) {
-      if (!writer.AddField(std::string{'\n', suffix}, -2.2250738585072014e-308)) {
-        return false;
+  for (const Format format : kAllFormats) {
+    const bool json = format == Format::kJson || format == Format::kJsonYaDeploy;
+    // Every source, key, and message byte takes its longest escape: two bytes in the text formats
+    // and `\u00XX` in JSON. Numbers take their longest form.
+    const char text_byte = json ? '\x01' : '\n';
+    const std::string path(200, json ? '\x01' : '\t');
+    const std::string function(200, json ? '\x01' : '\\');
+    const auto source = SourceLocation::Custom(path, function, 4'294'967'295U);
+    const auto worst = [text_byte](RecordAppender& writer) {
+      for (char suffix = 'a'; suffix < 'i'; ++suffix) {
+        if (!writer.AddField(std::string{text_byte, suffix}, -2.2250738585072014e-308)) {
+          return false;
+        }
       }
-    }
-    static_cast<void>(writer.Append(std::string(kRecordBytes, '\n')));
-    return true;
-  };
-  for (const Format format : {Format::kTskv, Format::kLtsv, Format::kRaw}) {
+      static_cast<void>(writer.Append(std::string(kRecordBytes, text_byte)));
+      return true;
+    };
     const std::size_t bound = MaximumEncodedBytes(format, kRecordBytes);
     const std::string frame =
         Encode(format, Level::kCritical, source, worst, bound).value_or(std::string{});
     ASSERT_FALSE(frame.empty()) << ToString(format);
     EXPECT_LE(frame.size(), bound);
     // The truncated message filled the Record, so the bound exceeds the frame only by the
-    // doubled serialized bytes the frame does not print: the 56-byte Record header, the 24-byte
+    // expanded serialized bytes the frame does not print: the 56-byte Record header, the 24-byte
     // metadata of the eight fields and the truncation marker, and for Raw the 400 source bytes.
     const std::size_t unprinted = 56U + 9U * 24U + (format == Format::kRaw ? 400U : 0U);
-    EXPECT_GE(frame.size() + 2U * unprinted, bound) << ToString(format);
+    EXPECT_GE(frame.size() + (json ? 6U : 2U) * unprinted, bound) << ToString(format);
   }
 }
 
@@ -303,17 +311,180 @@ TEST(TextEncoder, BoundsAreDerivedPerFormat) {
   EXPECT_EQ(MaximumEncodedBytes(Format::kRaw, 512U), 11U + 1'024U);
   EXPECT_EQ(MaximumEncodedBytes(Format::kTskv, 512U), 87U + 1'024U);
   EXPECT_EQ(MaximumEncodedBytes(Format::kLtsv, 512U), 82U + 1'024U);
+  EXPECT_EQ(MaximumEncodedBytes(Format::kJson, 512U), 101U + 3'072U);
+  EXPECT_EQ(MaximumEncodedBytes(Format::kJsonYaDeploy, 512U), 108U + 3'072U);
   EXPECT_EQ(MaximumEncodedBytes(Format::kTskv, std::numeric_limits<std::size_t>::max()), 0U);
+  EXPECT_EQ(MaximumEncodedBytes(Format::kJson, std::numeric_limits<std::size_t>::max() / 5U), 0U);
 }
 
-TEST(TextEncoder, FormatsWithoutAnEncoderNeverWrite) {
+TEST(TextEncoder, ValuesOutsideTheFormatEnumerationNeverWrite) {
+  for (const Format format : kAllFormats) {
+    EXPECT_TRUE(IsEncodable(format)) << ToString(format);
+  }
   const auto source = SourceLocation::Custom("a.cpp", "F", 7);
   for (const Format format :
-       {Format::kJson, Format::kJsonYaDeploy, std::bit_cast<Format>(std::uint8_t{9})}) {
+       {std::bit_cast<Format>(std::uint8_t{5}), std::bit_cast<Format>(std::uint8_t{9})}) {
     EXPECT_FALSE(IsEncodable(format));
     EXPECT_EQ(MaximumEncodedBytes(format, 512U), 0U);
     EXPECT_EQ(Encode(format, Level::kInfo, source, &BuildScalars), std::nullopt);
   }
+}
+
+// 2000-01-02T03:04:05.123456Z, the UTC form of kCorpusInstant.
+constexpr std::string_view kJsonTimestamp{"2000-01-02T03:04:05.123456Z"};
+
+[[nodiscard]] std::string JsonPreamble(Format format, std::string_view level,
+                                       std::string_view module) {
+  const bool yadeploy = format == Format::kJsonYaDeploy;
+  return std::string{yadeploy ? "{\"@timestamp\":\"" : "{\"timestamp\":\""} +
+         std::string{kJsonTimestamp} + (yadeploy ? "\",\"levelStr\":\"" : "\",\"level\":\"") +
+         std::string{level} + "\",\"module\":\"" + std::string{module} + "\"";
+}
+
+[[nodiscard]] std::string TextKey(Format format) {
+  return format == Format::kJsonYaDeploy ? ",\"message\":" : ",\"text\":";
+}
+
+TEST(JsonEncoder, WritesTechnicalMembersTypedFieldsAndTextAsOneCompactObject) {
+  const auto source = SourceLocation::Custom("src/probe.cpp", "BaselineJsonProbe", 321);
+  for (const Format format : {Format::kJson, Format::kJsonYaDeploy}) {
+    EXPECT_EQ(Encode(format, Level::kInfo, source, &BuildScalars),
+              JsonPreamble(format, "INFO", "BaselineJsonProbe ( src/probe.cpp:321 )") +
+                  ",\"string\":\"alpha\",\"signed\":-42,\"unsigned\":18446744073709551615"
+                  ",\"float\":1.5,\"double\":-2.25,\"bool_true\":true,\"bool_false\":false"
+                  ",\"optional\":null" +
+                  TextKey(format) + "\"scalars\"}\n");
+  }
+}
+
+TEST(JsonEncoder, YaDeployNeverWritesTheOrdinaryTechnicalNames) {
+  const auto source = SourceLocation::Custom("a.cpp", "F", 7);
+  const std::string frame =
+      Encode(Format::kJsonYaDeploy, Level::kInfo, source, &BuildEmpty).value_or(std::string{});
+  EXPECT_EQ(frame,
+            JsonPreamble(Format::kJsonYaDeploy, "INFO", "F ( a.cpp:7 )") + ",\"message\":\"\"}\n");
+  for (const std::string_view name : {"\"timestamp\"", "\"level\"", "\"text\""}) {
+    EXPECT_EQ(frame.find(name), std::string::npos) << name;
+  }
+}
+
+TEST(JsonEncoder, EveryLevelHasItsUppercaseName) {
+  const auto source = SourceLocation::Custom("a.cpp", "F", 7);
+  constexpr std::array kLevels{Level::kTrace,   Level::kDebug, Level::kInfo,
+                               Level::kWarning, Level::kError, Level::kCritical};
+  constexpr std::array<std::string_view, 6> kNames{"TRACE",   "DEBUG", "INFO",
+                                                   "WARNING", "ERROR", "CRITICAL"};
+  for (std::size_t index = 0; index < kLevels.size(); ++index) {
+    for (const Format format : {Format::kJson, Format::kJsonYaDeploy}) {
+      EXPECT_EQ(Encode(format, kLevels[index], source, &BuildEmpty),
+                JsonPreamble(format, kNames[index], "F ( a.cpp:7 )") + TextKey(format) + "\"\"}\n");
+    }
+  }
+}
+
+TEST(JsonEncoder, EscapesKeysValuesMessageAndModuleWithoutChangingKeyCase) {
+  const auto source = SourceLocation::Custom("dir\\\"x\ty.cpp", "f(\n)", 4'294'967'295U);
+  EXPECT_EQ(Encode(Format::kJson, Level::kError, source, &BuildUnicode),
+            JsonPreamble(Format::kJson, "ERROR", "f(\\n) ( dir\\\\\\\"x\\ty.cpp:4294967295 )") +
+                ",\"A=.\\t\\r\\n\\u0000\\\\\":\"\xC3\xA9=ok:still|\\t\\r\\n\\u0000\\\\\""
+                ",\"text\":\"\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82\xF0\x9F\x8C\x8D|"
+                "\\r\\n\\u0000\\t\\\\|literal:\\\\r\\\\n\\\\0\\\\t\\\\\\\\\"}\n");
+
+  const auto controls = [](RecordAppender& writer) {
+    static_cast<void>(writer.Append("\"\b\f\x01\x1f\x7f/"sv));
+    return true;
+  };
+  EXPECT_EQ(Encode(Format::kJson, Level::kInfo, SourceLocation::Custom("a.cpp", "F", 7), controls),
+            JsonPreamble(Format::kJson, "INFO", "F ( a.cpp:7 )") +
+                ",\"text\":\"\\\"\\b\\f\\u0001\\u001f\x7f/\"}\n");
+}
+
+TEST(JsonEncoder, ReplacesEachByteThatDoesNotStartWellFormedUtf8) {
+  // A truncated sequence, an overlong form, a surrogate, a value above U+10FFFF, a byte that never
+  // starts a sequence, and a stray continuation byte; the four-byte emoji is well formed.
+  constexpr std::string_view kInvalid{
+      "a\xC3|\xC0\xAF|\xED\xA0\x80|\xF4\x90\x80\x80|\xFF|\x80|\xF0\x9F\x8C\x8D"};
+  // Each ill-formed byte (`#` below) becomes U+FFFD.
+  std::string replaced{"a#|##|###|####|#|#|\xF0\x9F\x8C\x8D"};
+  for (std::size_t position = replaced.find('#'); position != std::string::npos;
+       position = replaced.find('#', position)) {
+    replaced.replace(position, 1U, "\xEF\xBF\xBD");
+  }
+  // The message is already cut at its first ill-formed byte when the Record is published, so
+  // only keys, string values, and the source location reach the encoder with such bytes.
+  const auto build = [kInvalid](RecordAppender& writer) {
+    return writer.AddField(kInvalid, kInvalid);
+  };
+  const auto source = SourceLocation::Custom(kInvalid, kInvalid, 7);
+  EXPECT_EQ(Encode(Format::kJson, Level::kInfo, source, build),
+            JsonPreamble(Format::kJson, "INFO", replaced + " ( " + replaced + ":7 )") + ",\"" +
+                replaced + "\":\"" + replaced + "\",\"text\":\"\"}\n");
+}
+
+/// Encodes one raw-JSON field `v` as JSON and returns its written value.
+[[nodiscard]] std::string RawJsonMember(std::string_view json) {
+  const auto build = [json](RecordAppender& writer) {
+    return writer.PutField("v", FieldValue::FromParts(FieldKind::kJson, json, 0U),
+                           FieldMode::kReplaceable) == FieldStatus::kAdded;
+  };
+  const std::string frame =
+      Encode(Format::kJson, Level::kInfo, SourceLocation::Custom("a.cpp", "F", 7), build)
+          .value_or(std::string{});
+  constexpr std::string_view kKey{",\"v\":"};
+  const std::size_t begin = frame.find(kKey);
+  const std::size_t end = frame.rfind(",\"text\":\"\"}\n");
+  if (begin == std::string::npos || end == std::string::npos || end < begin + kKey.size()) {
+    ADD_FAILURE() << frame;
+    return {};
+  }
+  return frame.substr(begin + kKey.size(), end - begin - kKey.size());
+}
+
+TEST(JsonEncoder, InsertsValidRawJsonAsACompactNestedValue) {
+  EXPECT_EQ(RawJsonMember("{ \"z\" : 1 ,\t\"a\":[ \"x y\\\" \", false , null ] ,\r\n\"o\":{}}"),
+            "{\"z\":1,\"a\":[\"x y\\\" \",false,null],\"o\":{}}");
+  EXPECT_EQ(RawJsonMember("  -0.5e+10 "), "-0.5e+10");
+  EXPECT_EQ(RawJsonMember("\"\\u00e9\\/\xC3\xA9\""), "\"\\u00e9\\/\xC3\xA9\"");
+  EXPECT_EQ(RawJsonMember("true"), "true");
+  EXPECT_EQ(RawJsonMember("null"), "null");
+  EXPECT_EQ(RawJsonMember("[]"), "[]");
+  EXPECT_EQ(RawJsonMember(std::string(256, '[') + std::string(256, ']')),
+            std::string(256, '[') + std::string(256, ']'));
+}
+
+TEST(JsonEncoder, WritesRawTextThatIsNotOneJsonValueAsAString) {
+  EXPECT_EQ(RawJsonMember(""), "\"\"");
+  EXPECT_EQ(RawJsonMember("{\"a\":1"), "\"{\\\"a\\\":1\"");
+  EXPECT_EQ(RawJsonMember("{\"a\":1} x"), "\"{\\\"a\\\":1} x\"");
+  EXPECT_EQ(RawJsonMember("1 2"), "\"1 2\"");
+  EXPECT_EQ(RawJsonMember("01"), "\"01\"");
+  EXPECT_EQ(RawJsonMember("1."), "\"1.\"");
+  EXPECT_EQ(RawJsonMember("nan"), "\"nan\"");
+  EXPECT_EQ(RawJsonMember("[1,]"), "\"[1,]\"");
+  EXPECT_EQ(RawJsonMember("{\"a\" 1}"), "\"{\\\"a\\\" 1}\"");
+  EXPECT_EQ(RawJsonMember("{1:2}"), "\"{1:2}\"");
+  EXPECT_EQ(RawJsonMember("[}"), "\"[}\"");
+  EXPECT_EQ(RawJsonMember("\"\\x\""), "\"\\\"\\\\x\\\"\"");
+  EXPECT_EQ(RawJsonMember("\"\\u12\""), "\"\\\"\\\\u12\\\"\"");
+  EXPECT_EQ(RawJsonMember("\"a\tb\""), "\"\\\"a\\tb\\\"\"");
+  EXPECT_EQ(RawJsonMember("\"\xFF\""), "\"\\\"\xEF\xBF\xBD\\\"\"");
+  EXPECT_EQ(RawJsonMember("tru"), "\"tru\"");
+  // Nesting deeper than 256 is not inserted raw.
+  const std::string deep = std::string(257, '[') + std::string(257, ']');
+  EXPECT_EQ(RawJsonMember(deep), "\"" + deep + "\"");
+}
+
+TEST(JsonEncoder, WritesNonFiniteNumbersAsStrings) {
+  const auto build = [](RecordAppender& writer) {
+    return writer.AddField("nan", std::numeric_limits<double>::quiet_NaN()) &&
+           writer.AddField("inf", std::numeric_limits<double>::infinity()) &&
+           writer.AddField("minus_inf", -std::numeric_limits<double>::infinity()) &&
+           writer.AddField("minus_zero", -0.0) && writer.AddField("large", 1e300);
+  };
+  EXPECT_EQ(Encode(Format::kJson, Level::kInfo, SourceLocation::Custom("a.cpp", "F", 7), build),
+            JsonPreamble(Format::kJson, "INFO", "F ( a.cpp:7 )") +
+                ",\"nan\":\"nan\",\"inf\":\"inf\",\"minus_inf\":\"-inf\",\"minus_zero\":-0"
+                ",\"large\":1e+300,\"text\":\"\"}\n");
 }
 
 }  // namespace

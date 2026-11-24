@@ -13,7 +13,7 @@ struct EncodeResult final {
   bool complete{false};
 };
 
-/// True for the formats this build encodes: TSKV, LTSV, and Raw.
+/// True for every Format value; false for a value outside the enumeration.
 [[nodiscard]] bool IsEncodable(Format format) noexcept;
 
 /// Worst-case complete frame for a Record of at most `maximum_record_bytes` serialized bytes;

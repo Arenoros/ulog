@@ -92,8 +92,9 @@ TEST(FieldSet, FrozenFieldsRejectReplacement) {
 
 TEST(FieldSet, RejectsEveryTechnicalKeyAndEmptyKeys) {
   constexpr std::string_view kReserved[] = {
-      "timestamp",      "level", "module",     "task_id", "thread_id", "text",
-      "ulog.truncated", "ulog.", "ulog.other", "TEXT",    "Timestamp", "ULOG.TRUNCATED",
+      "timestamp",      "level",    "module",     "task_id",  "thread_id", "text",
+      "ulog.truncated", "ulog.",    "ulog.other", "TEXT",     "Timestamp", "ULOG.TRUNCATED",
+      "@timestamp",     "levelStr", "message",    "LEVELSTR", "Message",
   };
   FieldSet fields;
   for (const std::string_view key : kReserved) {
@@ -104,7 +105,8 @@ TEST(FieldSet, RejectsEveryTechnicalKeyAndEmptyKeys) {
   EXPECT_EQ(fields.Add("", 1), FieldStatus::kInvalidKey);
   EXPECT_TRUE(fields.Empty());
 
-  for (const std::string_view key : {"texts", "levels", "ulog", "my.ulog.key", "timestamp_ms"}) {
+  for (const std::string_view key :
+       {"texts", "levels", "ulog", "my.ulog.key", "timestamp_ms", "@timestamps", "messages"}) {
     SCOPED_TRACE(key);
     EXPECT_FALSE(IsReservedFieldKey(key));
     EXPECT_EQ(fields.Add(key, 1), FieldStatus::kAdded);

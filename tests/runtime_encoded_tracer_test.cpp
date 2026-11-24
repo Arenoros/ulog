@@ -337,7 +337,7 @@ TEST(RuntimeEncodedTracer, ObservationRemainsValidAfterDestinationAndRuntimeDest
   EXPECT_EQ(RequireValue(observed).Bytes(), "tskv\ttext=survives\n");
 }
 
-TEST(RuntimeEncodedTracer, DestinationEncodesItsConfiguredFormatAndRejectsJson) {
+TEST(RuntimeEncodedTracer, DestinationEncodesItsConfiguredFormatAndRejectsUnknownFormats) {
   ulog::testing::InMemoryEncodedDestination destination{{
       .capacity_records = 2,
       .maximum_record_bytes = 512,
@@ -358,7 +358,7 @@ TEST(RuntimeEncodedTracer, DestinationEncodesItsConfiguredFormatAndRejectsJson) 
   EXPECT_TRUE(bytes.starts_with("timestamp:")) << bytes;
   EXPECT_TRUE(bytes.ends_with("\tlevel:INFO\tmodule:Run ( x.cpp:3 )\ttext:ltsv\n")) << bytes;
 
-  for (const ulog::Format format : {ulog::Format::kJson, ulog::Format::kJsonYaDeploy,
+  for (const ulog::Format format : {std::bit_cast<ulog::Format>(std::uint8_t{5}),
                                     std::bit_cast<ulog::Format>(std::uint8_t{9})}) {
     try {
       ulog::testing::InMemoryEncodedDestination rejected{{.format = format}};

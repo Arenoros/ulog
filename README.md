@@ -4,8 +4,8 @@ Ulog is a standalone, performance-oriented C++20 logging library under active
 development. Its current production interface exposes native levels, source
 locations, a cheap Logger handle, bounded Operation completion primitives, and
 the basic text/fmt `LOG*` macro family. The installed package also exposes a
-bounded single-route Runtime whose production route appends TSKV, LTSV, or Raw
-frames to a file through a private libuv loop, plus structured-record and encoded
+bounded single-route Runtime whose production route appends TSKV, LTSV, Raw,
+JSON, or YaDeploy JSON frames to a file through a private libuv loop, plus structured-record and encoded
 in-memory
 test destinations with deferred delivery completion and exact Drain, Durable
 Flush, and Shutdown reports.

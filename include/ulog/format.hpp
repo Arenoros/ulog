@@ -16,9 +16,9 @@ enum class Format : std::uint8_t {
   kLtsv = 1,
   /// `tskv` prefix, fields, and text, without timestamp, level, or module.
   kRaw = 2,
-  /// Compact JSON object per line; not available until the JSON encoders land.
+  /// Compact JSON object per line with a UTC timestamp.
   kJson = 3,
-  /// JSON with YaDeploy standard names; not available until the JSON encoders land.
+  /// JSON with the YaDeploy names `@timestamp`, `levelStr`, and `message`.
   kJsonYaDeploy = 4,
 };
 

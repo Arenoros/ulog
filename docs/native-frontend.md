@@ -250,8 +250,10 @@ Both callables run synchronously at most once, after filtering and admission.
 `FieldSet` is the owned counterpart of `LogExtra`, built before the call. It
 copies keys and values, so a set may be destroyed or changed after insertion.
 `ulog::JsonString` owns one line of JSON text: CR and LF are removed and empty
-text means `null`. Raw and the text formats write it like an escaped string;
-JSON encoders insert it as a raw nested value.
+text means `null`. Raw and the text formats write it like an escaped string.
+JSON encoders insert one valid JSON value as a raw nested value without its
+insignificant whitespace, and write any other text as a JSON string; see
+[Formats](runtime.md#formats).
 
 ### Collision and reserved-key policy
 
@@ -266,8 +268,9 @@ One policy applies in `FieldSet` and in every Record (`VAL-007`, `DEF-004`):
   and keeps each field's freeze state;
 - keys collide only when byte-for-byte equal, so repeated call-site keys keep
   one field;
-- `timestamp`, `level`, `module`, `task_id`, `thread_id`, `text`, and every key
-  starting with `ulog.` are technical keys. They are compared ignoring ASCII
+- `timestamp`, `level`, `module`, `task_id`, `thread_id`, `text`, the YaDeploy
+  JSON names `@timestamp`, `levelStr`, and `message`, and every key starting
+  with `ulog.` are technical keys. They are compared ignoring ASCII
   case, because text formats lowercase keys, and are rejected with `kReserved`.
   `ulog::IsReservedFieldKey` exposes the check. Empty keys are rejected with
   `kInvalidKey`.

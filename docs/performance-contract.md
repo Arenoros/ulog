@@ -126,7 +126,7 @@ and Sink extension code never executes on producer threads, and Encoder never
 executes on the libuv loop thread.
 
 The current [Runtime](runtime.md) exercises the bounded producer, single FIFO
-worker, control reserve, lifecycle, built-in TSKV, LTSV, and Raw encoding, deferred
+worker, control reserve, lifecycle, built-in TSKV, LTSV, Raw, and JSON encoding, deferred
 single-destination delivery completion, exact barrier reports, and one private
 libuv loop appending to a file through fixed Runtime-owned buffers. The file route
 performs one append at a time, submits bounded filesystem work, and leaves

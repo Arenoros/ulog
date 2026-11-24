@@ -115,7 +115,7 @@ class InMemoryEncodedDestination final {
  public:
   /// Constructs a bounded encoded destination and preallocates all frame storage.
   ///
-  /// Invalid or overflowing bounds and a format without an encoder, such as JSON, throw
+  /// Invalid or overflowing bounds and a value outside the Format enumeration throw
   /// std::invalid_argument before backing allocation.
   explicit ULOG_API InMemoryEncodedDestination(InMemoryEncodedDestinationConfig config);
 

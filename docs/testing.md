@@ -8,7 +8,9 @@ The repository establishes seven independent test categories:
   deadlines, callback dispatch, control-reserve exhaustion, structured and Raw
   in-memory Runtime lifecycle, saturation, exact encoding, format names, TSKV and
   LTSV encoding with every level, module escaping, whole-frame failure, and
-  derived worst-case frame bounds, Raw file-route
+  derived worst-case frame bounds, JSON and YaDeploy JSON escaping, ill-formed
+  UTF-8 replacement, raw-JSON insertion and its string fallback, and non-finite
+  numbers, Raw file-route
   append, truncate-on-start, the non-empty-file separator, parent-directory
   creation, Unicode paths, validation and open errors, injected partial writes and
   open/directory/write/close failures, level names, the runtime threshold matrix, Null
@@ -21,7 +23,11 @@ The repository establishes seven independent test categories:
   link only `ulog::ulog`, and exercise the frontend, in-memory Runtime tracers,
   a Raw file route writing a temporary file, and every committed `tskv-*` and
   `ltsv-*` corpus case with an injected clock, the UTC time zone, and a normalized
-  source path, through installed public headers;
+  source path, and every `json-v1.json` case through the encoded destination and a
+  file route against golden lines, through installed public headers;
+  `tests/scripts/json_corpus_frames_test.py` (in `ulog.script-tools`) checks that
+  those golden lines parse to the committed corpus members under the DEF-004
+  policy;
 - `dependencies`: compile and run the production fmt integration together with
   the private libuv dependency;
 - `stress`: deterministic concurrent checks for allocation instrumentation,

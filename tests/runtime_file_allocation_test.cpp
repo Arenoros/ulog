@@ -41,6 +41,14 @@ constexpr ulog::SourceLocation kSource = ulog::SourceLocation::Custom("src/a.cpp
              "\tlevel=INFO\tmodule=Run ( src/a.cpp:9 )\ttext=" + text;
     case ulog::Format::kLtsv:
       return "timestamp:" + timestamp + "\tlevel:INFO\tmodule:Run ( src/a.cpp:9 )\ttext:" + text;
+    case ulog::Format::kJson:
+      return "{\"timestamp\":\"2000-01-02T03:04:05.123456Z\",\"level\":\"INFO\",\"module\":\"Run "
+             "( src/a.cpp:9 )\",\"text\":\"" +
+             std::string{kMessage} + "\"}\n";
+    case ulog::Format::kJsonYaDeploy:
+      return "{\"@timestamp\":\"2000-01-02T03:04:05.123456Z\",\"levelStr\":\"INFO\",\"module\":"
+             "\"Run ( src/a.cpp:9 )\",\"message\":\"" +
+             std::string{kMessage} + "\"}\n";
     default:
       return "tskv\ttext=" + text;
   }
@@ -155,7 +163,9 @@ int main() noexcept {
     const bool raw = Run(ulog::Format::kRaw);
     const bool tskv = Run(ulog::Format::kTskv);
     const bool ltsv = Run(ulog::Format::kLtsv);
-    return raw && tskv && ltsv ? 0 : 1;
+    const bool json = Run(ulog::Format::kJson);
+    const bool yadeploy = Run(ulog::Format::kJsonYaDeploy);
+    return raw && tskv && ltsv && json && yadeploy ? 0 : 1;
   } catch (const std::exception& error) {
     std::fprintf(stderr, "file runtime allocation test failed with exception: %s\n", error.what());
     return 1;

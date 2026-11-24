@@ -54,9 +54,10 @@ inline constexpr Null kNull{};
 
 /// Returns whether `key` names a technical field that user fields cannot use.
 ///
-/// Reserved keys are `timestamp`, `level`, `module`, `task_id`, `thread_id`, `text`, and every key
-/// starting with `ulog.`, such as `ulog.truncated`. They are compared ignoring ASCII case, because
-/// text formats lowercase keys. Other keys collide only when they are byte-for-byte equal.
+/// Reserved keys are `timestamp`, `level`, `module`, `task_id`, `thread_id`, `text`, the YaDeploy
+/// JSON names `@timestamp`, `levelStr`, and `message`, and every key starting with `ulog.`, such as
+/// `ulog.truncated`. They are compared ignoring ASCII case, because text formats lowercase keys.
+/// Other keys collide only when they are byte-for-byte equal.
 [[nodiscard]] constexpr bool IsReservedFieldKey(std::string_view key) noexcept {
   const auto equals = [key](std::string_view reserved, bool prefix) {
     if (prefix ? key.size() < reserved.size() : key.size() != reserved.size()) {
@@ -73,13 +74,16 @@ inline constexpr Null kNull{};
   };
   return equals("timestamp", false) || equals("level", false) || equals("module", false) ||
          equals("task_id", false) || equals("thread_id", false) || equals("text", false) ||
+         equals("@timestamp", false) || equals("levelstr", false) || equals("message", false) ||
          equals("ulog.", true);
 }
 
 /// One line of owned JSON text, inserted by JSON encoders as a raw nested value.
 ///
-/// CR and LF are removed on construction, and empty text means JSON `null`. The text is not
-/// validated. Text encoders write and escape it like a string.
+/// CR and LF are removed on construction, and empty text means JSON `null`. JSON encoders check
+/// the text when they write it: one valid JSON value is inserted with insignificant whitespace
+/// removed, and any other text is written as a JSON string. Text encoders write and escape it like
+/// a string.
 class JsonString final {
  public:
   JsonString() = default;

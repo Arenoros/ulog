@@ -151,7 +151,7 @@ template <typename Destination>
     case RuntimeCreateErrorCode::kDirectoryCreateFailed:
       return "Runtime could not create a missing parent directory of the file route path.";
     case RuntimeCreateErrorCode::kUnsupportedFormat:
-      return "The route format has no encoder in this build; JSON formats are not available yet.";
+      return "The route format is not a ulog::Format value.";
   }
   return "Runtime creation failed.";
 }
@@ -203,7 +203,8 @@ template <typename Destination>
              "directory, remove a file that occupies a directory name, or create the parent "
              "directory beforehand, then retry.";
     case RuntimeCreateErrorCode::kUnsupportedFormat:
-      return "Set the route format to Format::kTskv, Format::kLtsv, or Format::kRaw.";
+      return "Set the route format to a ulog::Format value, such as Format::kTskv or "
+             "Format::kJson.";
   }
   return "Correct the Runtime configuration and retry.";
 }

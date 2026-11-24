@@ -107,7 +107,7 @@ TEST(RuntimeFileRoute, AppendsExactFifoRawFramesAndReportsLocalCompletion) {
 
 [[nodiscard]] std::int64_t FixedClock(void*) noexcept { return 946'782'245'123'456; }
 
-TEST(RuntimeFileRoute, TskvAndLtsvRoutesWriteTheirFormatWithTheEventTimestamp) {
+TEST(RuntimeFileRoute, EveryFormatWritesItsFramesWithTheEventTimestamp) {
   const TemporaryDirectory directory;
   const std::string timestamp{ulog::FormatLocalTimestamp(946'782'245'123'456).View()};
   const auto source = ulog::SourceLocation::Custom("src/app.cpp", "Handle", 12);
@@ -124,6 +124,16 @@ TEST(RuntimeFileRoute, TskvAndLtsvRoutesWriteTheirFormatWithTheEventTimestamp) {
                                 "\tlevel:WARNING\tmodule:Handle ( src/app.cpp:12 )" +
                                 "\tid:7\ttext:first\ntimestamp:" + timestamp +
                                 "\tlevel:ERROR\tmodule:Handle ( src/app.cpp:12 )\ttext:second\n"},
+      {ulog::Format::kJson,
+       "{\"timestamp\":\"2000-01-02T03:04:05.123456Z\",\"level\":\"WARNING\",\"module\":"
+       "\"Handle ( src/app.cpp:12 )\",\"id\":7,\"text\":\"first\"}\n"
+       "{\"timestamp\":\"2000-01-02T03:04:05.123456Z\",\"level\":\"ERROR\",\"module\":"
+       "\"Handle ( src/app.cpp:12 )\",\"text\":\"second\"}\n"},
+      {ulog::Format::kJsonYaDeploy,
+       "{\"@timestamp\":\"2000-01-02T03:04:05.123456Z\",\"levelStr\":\"WARNING\",\"module\":"
+       "\"Handle ( src/app.cpp:12 )\",\"id\":7,\"message\":\"first\"}\n"
+       "{\"@timestamp\":\"2000-01-02T03:04:05.123456Z\",\"levelStr\":\"ERROR\",\"module\":"
+       "\"Handle ( src/app.cpp:12 )\",\"message\":\"second\"}\n"},
   };
   for (const Case& test : cases) {
     const std::filesystem::path path =
@@ -293,7 +303,7 @@ TEST(RuntimeFileRoute, InvalidPathAndCapacityAreRejectedWithGuidance) {
                                        ulog::RawFileRouteConfig{.path = directory.Path() / "a.log",
                                                                 .write_buffers = 65}),
                  ulog::RuntimeCreateErrorCode::kInvalidWriteBuffers, "write_buffers");
-  for (const ulog::Format format : {ulog::Format::kJson, ulog::Format::kJsonYaDeploy,
+  for (const ulog::Format format : {std::bit_cast<ulog::Format>(std::uint8_t{5}),
                                     std::bit_cast<ulog::Format>(std::uint8_t{9})}) {
     expect_failure(ulog::Runtime::Create(FileRuntimeConfig(),
                                          ulog::RawFileRouteConfig{
