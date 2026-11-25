@@ -165,7 +165,8 @@ class alignas(kAccountingQuantumBytes) RecordSlot final {
 
   std::array<std::byte, kMaximumRecordBytes> storage_{};
   State state_{State::kReset};
-  std::array<std::byte, kAccountingQuantumBytes - sizeof(State)> padding_{};
+  // Pads the slot to whole accounting quanta; never read.
+  [[maybe_unused]] std::array<std::byte, kAccountingQuantumBytes - sizeof(State)> padding_{};
 };
 
 [[nodiscard]] SerializedRecordHeader Header(const void* storage) noexcept;
