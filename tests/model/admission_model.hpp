@@ -179,10 +179,24 @@ class AdmissionModel final {
 
   /// One attempt by `thread` to log `message` at `level`. An Error or Critical attempt may use the
   /// priority reserve after the payload budget rejects it; drop-oldest then evicts older Records.
-  Admission Log(std::size_t thread, std::string message, Level level = Level::kInfo) {
+  ///
+  /// A `waiting` attempt is Logger::LogUntil with a deadline that has not passed: it first tries
+  /// without thinning or eviction and without counting a lane or credit rejection. Nothing frees
+  /// capacity while the model waits, so a rejected wait ends at the deadline with one ordinary
+  /// attempt. An expired LogUntil is an ordinary attempt.
+  Admission Log(std::size_t thread, std::string message, Level level = Level::kInfo,
+                bool waiting = false) {
     const std::size_t bytes = message.size();
     bool from_reserve = false;
-    const Admission result = Admit(thread, SerializedBytes(bytes), level, from_reserve);
+    Admission result = Admission::kAccepted;
+    last_wait_timed_out_ = false;
+    if (waiting) {
+      result = Admit(thread, SerializedBytes(bytes), level, from_reserve, true);
+      last_wait_timed_out_ = IsCapacityRejection(result);
+    }
+    if (!waiting || last_wait_timed_out_) {
+      result = Admit(thread, SerializedBytes(bytes), level, from_reserve);
+    }
     last_used_reserve_ = from_reserve;
     if (result == Admission::kAccepted) {
       Record record;
@@ -201,6 +215,8 @@ class AdmissionModel final {
 
   /// Whether the last Log() was admitted through the priority reserve.
   [[nodiscard]] bool last_used_reserve() const noexcept { return last_used_reserve_; }
+  /// Whether the last waiting Log found no capacity and was decided at its deadline.
+  [[nodiscard]] bool last_wait_timed_out() const noexcept { return last_wait_timed_out_; }
 
   /// Whether `count` attempts by each of `threads` with `message_bytes` messages have one outcome
   /// per thread for every interleaving: the worker cannot take a Record during the burst, and the
@@ -477,10 +493,16 @@ class AdmissionModel final {
     return kRecordMetadataBytes + config_.source_bytes + message_bytes;
   }
 
+  [[nodiscard]] static bool IsCapacityRejection(Admission admission) noexcept {
+    return admission == Admission::kLaneFull || admission == Admission::kBudget ||
+           admission == Admission::kPriorityReserve;
+  }
+
   /// Drop-newest admission, checked in the producer kernel's order. A rejected attempt consumes
-  /// no sequence and evaluates no message.
-  Admission Admit(std::size_t thread, std::size_t serialized_bytes, Level level,
-                  bool& from_reserve) {
+  /// no sequence and evaluates no message. `defer_shedding` is a waiting blocking attempt: no
+  /// thinning or eviction, and a lane or credit rejection is not counted.
+  Admission Admit(std::size_t thread, std::size_t serialized_bytes, Level level, bool& from_reserve,
+                  bool defer_shedding = false) {
     from_reserve = false;
     const bool priority = level == Level::kError || level == Level::kCritical;
     if (!admission_open_) {
@@ -492,7 +514,7 @@ class AdmissionModel final {
       return Admission::kNoProducer;
     }
     ProducerState& producer = producers_[thread];
-    if (config_.adaptive_thinning) {
+    if (config_.adaptive_thinning && !defer_shedding) {
       // Shared-budget occupancy decides before the lane: the kernel thins before claiming a cell.
       const std::size_t occupied = config_.payload_capacity_bytes - central_;
       if (occupied > config_.thinning_low_watermark_bytes) {
@@ -507,7 +529,9 @@ class AdmissionModel final {
       }
     }
     if (producer.lane_used == producer.lane_capacity) {
-      ++rejections_.rejected_lane_full;
+      if (!defer_shedding) {
+        ++rejections_.rejected_lane_full;
+      }
       return Admission::kLaneFull;
     }
     // The worst-case reservation refills only the producer's deficit from the shared pool; credit
@@ -524,7 +548,10 @@ class AdmissionModel final {
           from_reserve = true;
           return Admission::kAccepted;
         }
-        if (!config_.drop_oldest || !EvictFor(thread, level)) {
+        if (!config_.drop_oldest || defer_shedding || !EvictFor(thread, level)) {
+          if (defer_shedding) {
+            return reserve_applies ? Admission::kPriorityReserve : Admission::kBudget;
+          }
           if (reserve_applies) {
             ++rejections_.rejected_priority_reserve;
             return Admission::kPriorityReserve;
@@ -724,6 +751,7 @@ class AdmissionModel final {
   std::size_t central_{0};
   std::size_t priority_available_{0};
   bool last_used_reserve_{false};
+  bool last_wait_timed_out_{false};
   std::uint64_t evicted_{0};
   std::size_t processed_{0};
   std::size_t retired_{0};

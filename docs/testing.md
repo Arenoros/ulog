@@ -149,6 +149,12 @@ single-route pipeline:
   attempt is kept by the same stateless hash of the call site and the
   producer's nonce that the kernel uses, and a thinned attempt is counted as
   `rejected_thinned` before any lane or budget check;
+- blocking admission: a quarter of the single attempts are `Logger::LogUntil`
+  calls, half with an expired deadline, which admit exactly like `Log`. A
+  waiting call first tries without thinning, eviction, or counting a rejection.
+  The worker is settled before each event, so a rejected wait ends at its 3 ms
+  deadline with one ordinary attempt. The default seed set must reach both an
+  admitted and a timed-out waiting call;
 - drop-oldest: a rejected attempt evicts the oldest unclaimed ingress Records of
   equal or lower level that did not use the reserve, moving their credit to
   itself; the worker skips shed Records without a destination slot and retires
@@ -179,6 +185,17 @@ The default CTest run, `ulog.admission-oracle`, covers 16 seeds of 48 events.
 It also fails when that set leaves any modeled behavior unexercised, such as a
 rejection reason, a pending Shutdown, or an out-of-order completion. It runs
 under ThreadSanitizer in the stress jobs.
+
+`ulog-blocking-admission-stress` (`tests/stress/blocking_admission_stress.cpp`)
+runs concurrent `LogUntil` producers against a draining destination. A lost
+wakeup would leave a call waiting until its 20-second deadline, so the test
+requires every call to be admitted and no call to wait 5 seconds. It covers four
+producers bound by their lanes and one bound by its credit. It then blocks four
+producers against a paused destination and requires Shutdown to release each
+waiting call promptly as `rejected_no_producer`. It also runs under
+ThreadSanitizer. `ulog-runtime-blocking` checks delivery order, deadline expiry,
+release by Shutdown and by destruction, and refusal inside an Operation callback
+through the public API.
 
 A divergence prints the seed, the configuration, a minimized event trace, and a
 `--replay` command that runs exactly that trace again. A longer soak runs more

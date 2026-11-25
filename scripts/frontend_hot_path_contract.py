@@ -45,6 +45,10 @@ EXPECTED_ATOMIC_INVENTORY = Counter(
         ("src/producer/producer_kernel.cpp", "consumed_records"): 1,
         ("src/producer/producer_kernel.cpp", "consumer_validation_errors"): 1,
         ("src/producer/producer_kernel.cpp", "admission_open"): 1,
+        # Blocking-call state: only Logger::LogUntil writes it, and the consumer reads
+        # blocked_callers after freeing capacity; ordinary producer calls never touch it.
+        ("src/producer/producer_kernel.cpp", "blocked_callers"): 1,
+        ("src/producer/producer_kernel.cpp", "refused"): 1,
         ("src/producer/producer_lanes.hpp", "read_position"): 1,
         ("src/producer/producer_lanes.hpp", "published_position"): 1,
         ("src/producer/producer_lanes.hpp", "publishing"): 1,

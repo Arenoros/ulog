@@ -1,4 +1,5 @@
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <ulog/logger.hpp>
 
@@ -19,7 +20,7 @@ bool AdmitNothing(void*, Level, const SourceLocation&, detail::OpenRecord&) noex
 }
 
 constinit const detail::ProducerOperations kNullProducerOperations{
-    &DiscardMessage, &RejectLevelChange, &AdmitNothing};
+    &DiscardMessage, &RejectLevelChange, &AdmitNothing, nullptr};
 constinit detail::LoggerState kNullLoggerState{
     std::atomic<std::uint8_t>{static_cast<std::uint8_t>(Level::kNone)},
     &kNullProducerOperations,
@@ -54,6 +55,18 @@ void Logger::LogMessage(Level level, const SourceLocation& source, void* builder
   }
   state.producer_operations->log_message(state.producer_context, level, source, builder_context,
                                          build_message);
+}
+
+void Logger::LogMessageUntil(Level level, std::chrono::steady_clock::time_point deadline,
+                             const SourceLocation& source, void* builder_context,
+                             detail::MessageBuilder build_message) const {
+  const detail::LoggerState& state = *state_;
+  if (!IsLevelEnabled(level, LoadLevel(state)) ||
+      state.producer_operations->log_message_until == nullptr) {
+    return;
+  }
+  state.producer_operations->log_message_until(state.producer_context, level, deadline, source,
+                                               builder_context, build_message);
 }
 
 detail::OpenRecord Logger::BeginRecord(Level level, const SourceLocation& source) const noexcept {

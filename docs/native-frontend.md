@@ -38,6 +38,10 @@ The result must be usable as `std::string_view` and is consumed before the
 factory result is destroyed. Caller exceptions can only occur if the factory is
 admitted and remain outside Ulog's no-exception guarantee.
 
+`Logger::LogUntil<Level>(deadline, source, ...)` takes the same factories, and
+waits for admission capacity until `deadline` instead of shedding. It is the
+only blocking call; see [Blocking admission](runtime.md#blocking-admission).
+
 The concrete [Runtime](runtime.md) uses this same Logger
 dispatch. It claims a producer-local ingress cell and reserves the complete
 configured worst-case Record charge before evaluating the factory, then copies

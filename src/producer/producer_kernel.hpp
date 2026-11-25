@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -36,6 +37,27 @@ struct ConsumerNotification final {
   }
 };
 
+/// Waits for admission capacity on behalf of blocking calls (Logger::LogUntil). The producer kernel
+/// owns no lock or wait primitive: the Runtime supplies these hooks, and the kernel calls `notify`
+/// only while a blocking call is waiting. Every successful `enter` is paired with one `leave`.
+struct CapacityWaiter final {
+  void* context{nullptr};
+  /// False on a thread that must never wait, such as a Ulog-owned thread.
+  bool (*may_block)(void*) noexcept {nullptr};
+  /// Registers a waiting call; false once the waiter is closed.
+  bool (*enter)(void*) noexcept {nullptr};
+  /// The capacity epoch, read before each attempt so a later notify is never lost.
+  std::uint64_t (*epoch)(void*) noexcept {nullptr};
+  /// Waits until the epoch moves past `observed`; false once closed or past `deadline`.
+  bool (*wait)(void*, std::uint64_t observed,
+               std::chrono::steady_clock::time_point deadline) noexcept {nullptr};
+  void (*leave)(void*) noexcept {nullptr};
+  /// Advances the epoch and wakes every waiting call.
+  void (*notify)(void*) noexcept {nullptr};
+  /// Releases every waiting call; later `enter` calls fail.
+  void (*close)(void*) noexcept {nullptr};
+};
+
 struct KernelConfig final {
   Level threshold{Level::kInfo};
   std::size_t payload_capacity_bytes{0};
@@ -53,6 +75,8 @@ struct KernelConfig final {
   /// kept with a deterministic, falling probability before anything is reserved.
   bool adaptive_thinning{false};
   std::size_t thinning_low_watermark_bytes{0};
+  /// Blocking calls wait through these hooks; without them every blocking call is refused.
+  CapacityWaiter capacity_waiter{};
 };
 
 struct WriteResult final {
@@ -139,6 +163,8 @@ enum class PublishOutcome : std::uint8_t {
   kPriorityReserveExhausted,
   /// Adaptive thinning dropped the call before it reserved anything.
   kThinned,
+  /// A blocking call was refused without waiting because its thread must not block.
+  kBlockingRefused,
   kInvalidRecord,
 };
 
@@ -233,6 +259,8 @@ struct KernelSnapshot final {
   std::uint64_t rejected_budget{0};
   std::uint64_t rejected_priority_reserve{0};
   std::uint64_t rejected_thinned{0};
+  /// Blocking calls refused on a thread that must not wait.
+  std::uint64_t rejected_blocking_refused{0};
   std::uint64_t abandoned_builds{0};
   std::uint64_t invalid_records{0};
   std::uint64_t truncated_records{0};
@@ -294,6 +322,13 @@ class ProducerKernel final {
 
   [[nodiscard]] PublishResult TryPublish(ProducerRegistration& producer, Level level,
                                          const SourceLocation& source, BuildOperation operation);
+  /// Like TryPublish, but a call that finds no lane cell or credit waits for capacity until
+  /// `deadline` without shedding, then applies the configured policy once more. An expired
+  /// deadline behaves exactly like TryPublish.
+  [[nodiscard]] PublishResult TryPublishUntil(ProducerRegistration& producer, Level level,
+                                              std::chrono::steady_clock::time_point deadline,
+                                              const SourceLocation& source,
+                                              BuildOperation operation);
   /// Consumes the next Record. An evicted Record is skipped instead: the result is kShed and its
   /// admission sequence is stored in `shed_sequence` when that is not null.
   [[nodiscard]] ConsumeStatus TryConsume(void* context, RecordConsumer consumer,
@@ -308,6 +343,10 @@ class ProducerKernel final {
 
   static void LogMessage(void* context, Level level, const SourceLocation& source,
                          void* builder_context, MessageBuilder build_message);
+  static void LogMessageUntil(void* context, Level level,
+                              std::chrono::steady_clock::time_point deadline,
+                              const SourceLocation& source, void* builder_context,
+                              MessageBuilder build_message);
   static bool BeginRecord(void* context, Level level, const SourceLocation& source,
                           OpenRecord& record) noexcept;
   static bool AppendOpenText(void* context, std::string_view text) noexcept;
@@ -317,9 +356,19 @@ class ProducerKernel final {
   [[nodiscard]] PublishResult TryPublishSlot(std::size_t slot_index, std::uint64_t generation,
                                              Level level, const SourceLocation& source,
                                              BuildOperation operation);
-  /// Claims, reserves, and starts the slot's Record; it stays open until FinishSlot.
+  [[nodiscard]] PublishResult TryPublishSlotUntil(std::size_t slot_index, std::uint64_t generation,
+                                                  Level level,
+                                                  std::chrono::steady_clock::time_point deadline,
+                                                  const SourceLocation& source,
+                                                  BuildOperation operation);
+  /// Builds and finishes the Record BeginSlot opened for `slot_index`.
+  [[nodiscard]] PublishResult BuildOpenSlot(std::size_t slot_index, BuildOperation operation);
+  /// Claims, reserves, and starts the slot's Record; it stays open until FinishSlot. While
+  /// `defer_shedding` is set, a blocking call is waiting: thinning and eviction are skipped and a
+  /// lane or credit rejection is returned uncounted, since the call will try again.
   [[nodiscard]] PublishOutcome BeginSlot(std::size_t slot_index, std::uint64_t generation,
-                                         Level level, const SourceLocation& source) noexcept;
+                                         Level level, const SourceLocation& source,
+                                         bool defer_shedding = false) noexcept;
   /// Publishes the slot's open Record after a complete build, or abandons it.
   PublishResult FinishSlot(std::size_t slot_index, BuildStatus build_status) noexcept;
   void RetireProducer(ProducerRegistration& producer) noexcept;

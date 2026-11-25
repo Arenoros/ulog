@@ -58,6 +58,9 @@ constexpr ulog::SourceLocation kSource =
     ulog::SourceLocation::Custom(kSourcePath, kSourceFunction, 1);
 constexpr std::size_t kMinimumMessageBytes = 16;
 constexpr std::int64_t kEventTime = 1'700'000'000'000'000;
+/// Deadline of a waiting Logger::LogUntil. The worker is settled before every event, so nothing
+/// frees capacity during the wait and the outcome stays deterministic.
+constexpr auto kWaitingDeadline = 3ms;
 
 std::int64_t FixedNow(void*) noexcept { return kEventTime; }
 
@@ -101,12 +104,16 @@ enum class EventKind : std::uint8_t {
   kReleaseAll,
 };
 
+/// How a kLog event calls: Log, or LogUntil with an expired or a future deadline.
+enum class Blocking : std::uint8_t { kNone, kExpired, kWaiting };
+
 struct Event final {
   EventKind kind{EventKind::kLog};
   std::uint32_t first{0};
   std::uint32_t second{0};
   /// Log level of a kLog event: Info, Error, or Critical.
   ulog::Level level{ulog::Level::kInfo};
+  Blocking blocking{Blocking::kNone};
 };
 
 struct Scenario final {
@@ -122,7 +129,10 @@ struct Scenario final {
   switch (event.kind) {
     case EventKind::kLog:
       return "Log thread=" + first + " bytes-choice=" + second +
-             " level=" + std::string{ulog::ToString(event.level)};
+             " level=" + std::string{ulog::ToString(event.level)} +
+             (event.blocking == Blocking::kWaiting   ? " until=future"
+              : event.blocking == Blocking::kExpired ? " until=expired"
+                                                     : "");
     case EventKind::kBurst:
       return "Burst attempts=" + first + " bytes-choice=" + second;
     case EventKind::kMode:
@@ -201,7 +211,12 @@ struct Scenario final {
       // A quarter of the attempts are Error or Critical and may use the priority reserve.
       constexpr std::array<ulog::Level, 4> kLevels{ulog::Level::kInfo, ulog::Level::kInfo,
                                                    ulog::Level::kError, ulog::Level::kCritical};
-      event = {EventKind::kLog, first, second, kLevels[first / 16U % kLevels.size()]};
+      // A quarter of the attempts are LogUntil calls, half of them with an expired deadline.
+      // Both choices derive from `first`, so the random stream stays unchanged.
+      const Blocking blocking = first / 64U % 4U != 0U    ? Blocking::kNone
+                                : first / 256U % 2U == 0U ? Blocking::kWaiting
+                                                          : Blocking::kExpired;
+      event = {EventKind::kLog, first, second, kLevels[first / 16U % kLevels.size()], blocking};
     } else if (roll < 42) {
       event = {EventKind::kBurst, 1U + first % 4U, second};
     } else if (roll < 50) {
@@ -307,9 +322,25 @@ class ProducerThread final {
   std::thread thread_;
 };
 
+template <ulog::Level kLevel, typename MessageFactory>
+void LogAt(ulog::Logger logger, Blocking blocking, MessageFactory& make_message) {
+  switch (blocking) {
+    case Blocking::kNone:
+      logger.Log<kLevel>(kSource, make_message);
+      return;
+    case Blocking::kExpired:
+      logger.LogUntil<kLevel>(std::chrono::steady_clock::now() - 1ms, kSource, make_message);
+      return;
+    case Blocking::kWaiting:
+      logger.LogUntil<kLevel>(std::chrono::steady_clock::now() + kWaitingDeadline, kSource,
+                              make_message);
+      return;
+  }
+}
+
 /// Logs one message and returns how many times its factory ran.
 std::size_t LogOnce(ulog::Logger logger, std::string_view message,
-                    ulog::Level level = ulog::Level::kInfo) {
+                    ulog::Level level = ulog::Level::kInfo, Blocking blocking = Blocking::kNone) {
   std::size_t evaluations = 0;
   const auto make_message = [&] {
     ++evaluations;
@@ -317,13 +348,13 @@ std::size_t LogOnce(ulog::Logger logger, std::string_view message,
   };
   switch (level) {
     case ulog::Level::kError:
-      logger.Log<ulog::Level::kError>(kSource, make_message);
+      LogAt<ulog::Level::kError>(logger, blocking, make_message);
       break;
     case ulog::Level::kCritical:
-      logger.Log<ulog::Level::kCritical>(kSource, make_message);
+      LogAt<ulog::Level::kCritical>(logger, blocking, make_message);
       break;
     default:
-      logger.Log<ulog::Level::kInfo>(kSource, make_message);
+      LogAt<ulog::Level::kInfo>(logger, blocking, make_message);
       break;
   }
   return evaluations;
@@ -347,6 +378,8 @@ enum class Covered : std::uint8_t {
   kPriorityReserveExhausted,
   kEvicted,
   kThinned,
+  kBlockingAdmitted,
+  kBlockingTimedOut,
   kConcurrentBurst,
   kImmediateDrain,
   kPendingDrain,
@@ -370,6 +403,8 @@ constexpr std::array<std::string_view, static_cast<std::size_t>(Covered::kCount)
     "rejected-priority-reserve",
     "evicted-oldest",
     "rejected-thinned",
+    "blocking-admitted",
+    "blocking-timed-out",
     "concurrent-burst",
     "immediate-drain",
     "pending-drain",
@@ -506,7 +541,8 @@ class ScenarioRun final {
   std::optional<std::string> Apply(const Event& event) {
     switch (event.kind) {
       case EventKind::kLog:
-        return ApplyLog(event.first % scenario_.threads, MessageBytes(event.second), event.level);
+        return ApplyLog(event.first % scenario_.threads, MessageBytes(event.second), event.level,
+                        event.blocking);
       case EventKind::kBurst:
         return ApplyBurst(event.first, MessageBytes(event.second));
       case EventKind::kMode:
@@ -558,13 +594,19 @@ class ScenarioRun final {
 
   // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a thread index and a message size.
   std::optional<std::string> ApplyLog(std::size_t thread, std::size_t bytes,
-                                      ulog::Level level = ulog::Level::kInfo) {
+                                      ulog::Level level = ulog::Level::kInfo,
+                                      Blocking blocking = Blocking::kNone) {
     if (model_.IsBusy(thread)) {
       return std::nullopt;  // its lane and credit depend on an unresolved burst order
     }
     std::string message = Pad(fmt::format("m{}:", next_message_++), bytes);
     const std::uint64_t evicted_before = model_.counters().shed_records;
-    const model::Admission admission = model_.Log(thread, message, level);
+    const bool waiting = blocking == Blocking::kWaiting;
+    const model::Admission admission = model_.Log(thread, message, level, waiting);
+    if (waiting && admission != model::Admission::kFiltered &&
+        admission != model::Admission::kNoProducer) {
+      Cover(model_.last_wait_timed_out() ? Covered::kBlockingTimedOut : Covered::kBlockingAdmitted);
+    }
     if (model_.counters().shed_records != evicted_before) {
       Cover(Covered::kEvicted);
     }
@@ -579,7 +621,7 @@ class ScenarioRun final {
                                                             : Covered::kBudget);
     std::size_t evaluations = 0;
     threads_[thread]->Execute(
-        [&](ulog::Logger logger) { evaluations = LogOnce(logger, message, level); });
+        [&](ulog::Logger logger) { evaluations = LogOnce(logger, message, level, blocking); });
     const std::size_t expected = admission == model::Admission::kAccepted ? 1U : 0U;
     if (evaluations != expected) {
       return Mismatch("message evaluations", expected, evaluations);
@@ -876,7 +918,7 @@ class ScenarioRun final {
   [[nodiscard]] std::optional<std::string> Compare() const {
     const model::Counters expected = model_.counters();
     const ulog::RuntimeSnapshot observed = runtime_->GetSnapshot();
-    const std::array<std::tuple<std::string_view, std::uint64_t, std::uint64_t>, 22> fields{{
+    const std::array<std::tuple<std::string_view, std::uint64_t, std::uint64_t>, 23> fields{{
         {"accepted_records", expected.accepted, observed.accepted_records},
         {"processed_records", expected.processed, observed.processed_records},
         {"processed_bytes", expected.processed_bytes, observed.processed_bytes},
@@ -892,6 +934,8 @@ class ScenarioRun final {
         {"rejected_priority_reserve", expected.rejected_priority_reserve,
          observed.rejected_priority_reserve},
         {"rejected_thinned", expected.rejected_thinned, observed.rejected_thinned},
+        // Producer threads are application threads, so no LogUntil call is ever refused.
+        {"rejected_blocking_refused", 0, observed.rejected_blocking_refused},
         {"dropped_newest_records",
          expected.rejected_no_producer + expected.rejected_lane_full + expected.rejected_budget +
              expected.rejected_priority_reserve + expected.rejected_thinned,

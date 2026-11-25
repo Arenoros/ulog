@@ -128,7 +128,9 @@ struct RuntimeSnapshot final {
   std::uint64_t rejected_priority_reserve{0};
   /// Calls that adaptive thinning dropped before reserving anything.
   std::uint64_t rejected_thinned{0};
-  /// Every rejected call: the sum of the five rejection reasons above.
+  /// Logger::LogUntil calls refused without waiting on a Ulog-owned thread.
+  std::uint64_t rejected_blocking_refused{0};
+  /// Every rejected call: the sum of the six rejection reasons above.
   std::uint64_t dropped_newest_records{0};
   /// Admitted Records that drop-oldest evicted; they are never delivered or counted as rejected.
   std::uint64_t shed_records{0};

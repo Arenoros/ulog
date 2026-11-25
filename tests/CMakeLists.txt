@@ -94,6 +94,7 @@ if(ULOG_BUILD_UNIT_TESTS)
   find_package(GTest CONFIG REQUIRED)
   add_executable(
     ulog-unit-tests
+    blocking_admission_test.cpp
     default_logger_probe.cpp
     default_logger_test.cpp
     fields_test.cpp
@@ -127,6 +128,15 @@ if(ULOG_BUILD_UNIT_TESTS)
   ulog_configure_target(ulog-runtime-tracer)
   add_test(NAME ulog.runtime-tracer COMMAND ulog-runtime-tracer)
   set_tests_properties(ulog.runtime-tracer PROPERTIES LABELS "unit;integration;runtime" TIMEOUT 10)
+
+  add_executable(ulog-runtime-blocking runtime_blocking_test.cpp)
+  target_compile_features(ulog-runtime-blocking PRIVATE cxx_std_20)
+  target_link_libraries(ulog-runtime-blocking PRIVATE ulog::ulog GTest::gtest_main Threads::Threads)
+  ulog_configure_target(ulog-runtime-blocking)
+  add_test(NAME ulog.runtime-blocking COMMAND ulog-runtime-blocking)
+  set_tests_properties(
+    ulog.runtime-blocking PROPERTIES LABELS "unit;integration;runtime" TIMEOUT 30
+  )
 
   add_executable(ulog-runtime-fields runtime_fields_test.cpp)
   target_compile_features(ulog-runtime-fields PRIVATE cxx_std_20)
@@ -373,6 +383,15 @@ if(ULOG_BUILD_STRESS_TESTS)
   add_test(NAME ulog.drop-oldest-stress COMMAND ulog-drop-oldest-stress)
   set_tests_properties(
     ulog.drop-oldest-stress PROPERTIES LABELS "stress;producer;concurrency" TIMEOUT 30
+  )
+
+  add_executable(ulog-blocking-admission-stress stress/blocking_admission_stress.cpp)
+  target_compile_features(ulog-blocking-admission-stress PRIVATE cxx_std_20)
+  target_link_libraries(ulog-blocking-admission-stress PRIVATE ulog::ulog Threads::Threads)
+  ulog_configure_target(ulog-blocking-admission-stress)
+  add_test(NAME ulog.blocking-admission-stress COMMAND ulog-blocking-admission-stress)
+  set_tests_properties(
+    ulog.blocking-admission-stress PROPERTIES LABELS "stress;runtime;concurrency" TIMEOUT 60
   )
 
   add_executable(ulog-runtime-stress stress/runtime_stress.cpp)

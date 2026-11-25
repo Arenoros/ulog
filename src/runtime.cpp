@@ -20,6 +20,7 @@
 #include <utility>
 #include <variant>
 
+#include "control/admission_wait.hpp"
 #include "control/control_reserve.hpp"
 #include "control/thread_role.hpp"
 #include "encoding/text_encoder.hpp"
@@ -34,6 +35,7 @@ namespace ulog {
 namespace {
 
 using namespace std::chrono_literals;
+using detail::control::AdmissionWait;
 using detail::control::ControlReserve;
 using detail::control::OperationCompletion;
 using detail::io::RawFileSink;
@@ -592,6 +594,7 @@ class RuntimeDomain final {
                 .adaptive_thinning = config_.admission_policy == AdmissionPolicy::kAdaptiveThinning,
                 .thinning_low_watermark_bytes =
                     config_.payload_capacity_bytes * config_.thinning_low_watermark_percent / 100U,
+                .capacity_waiter = admission_wait_.Hooks(),
             },
             SelectEventClock(config_.event_clock)),
         control_reserve_(config_.control_operations),
@@ -602,8 +605,14 @@ class RuntimeDomain final {
   RuntimeDomain(RuntimeDomain&&) = delete;
   RuntimeDomain& operator=(RuntimeDomain&&) = delete;
 
-  // Detach before the wake members are destroyed so late destination completions cannot wake us.
-  ~RuntimeDomain() { route_.Detach(); }
+  // Release blocked LogUntil calls while every member they touch is alive; closing admission also
+  // closes the wait, so a released call sees admission closed and is rejected. Then detach before
+  // the wake members are destroyed so late destination completions cannot wake us.
+  ~RuntimeDomain() {
+    producer_.CloseAdmission();
+    admission_wait_.CloseAndAwaitIdle();
+    route_.Detach();
+  }
 
   [[nodiscard]] std::optional<RuntimeCreateFailure> AttachRoute(
       std::chrono::steady_clock::time_point deadline) noexcept {
@@ -649,7 +658,7 @@ class RuntimeDomain final {
     }
     const std::uint64_t rejected = producer.rejected_no_producer + producer.rejected_lane_full +
                                    producer.rejected_budget + producer.rejected_priority_reserve +
-                                   producer.rejected_thinned;
+                                   producer.rejected_thinned + producer.rejected_blocking_refused;
     return RuntimeSnapshot{
         .accepted_records = producer.accepted_records,
         .processed_records = ledger.processed_records,
@@ -666,6 +675,7 @@ class RuntimeDomain final {
         .rejected_budget = producer.rejected_budget,
         .rejected_priority_reserve = producer.rejected_priority_reserve,
         .rejected_thinned = producer.rejected_thinned,
+        .rejected_blocking_refused = producer.rejected_blocking_refused,
         .dropped_newest_records = rejected,
         .shed_records = producer.evicted_records,
         .retained_records = producer.retained_records,
@@ -1278,6 +1288,8 @@ class RuntimeDomain final {
 
   RuntimeConfig config_;
   RuntimeRoute route_;
+  /// Declared before the kernel, which holds its hooks.
+  AdmissionWait admission_wait_;
   ProducerKernel producer_;
   ControlReserve control_reserve_;
   std::unique_ptr<ControlAction[]> actions_;

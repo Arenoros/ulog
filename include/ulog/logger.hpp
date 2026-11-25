@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -169,6 +170,51 @@ class Logger final {
     }
   }
 
+  /// Like Log, but when the call finds no admission capacity it waits for its producer lane or
+  /// payload credit until `deadline` instead of shedding. Once the deadline passes, the Runtime's
+  /// configured admission policy decides and counts the call as Log would. A call on a Ulog-owned
+  /// thread (the worker, the I/O loop, or an Operation callback) never waits: it is rejected and
+  /// counted as `rejected_blocking_refused`. Shutdown and Runtime destruction release a waiting
+  /// call as rejected. This mode is never chosen implicitly; Log and the LOG macros never block.
+  template <Level kLevel, typename MessageFactory>
+  void LogUntil(std::chrono::steady_clock::time_point deadline, const SourceLocation& source,
+                MessageFactory&& make_message) const {
+    static_assert(static_cast<std::uint8_t>(kLevel) <= static_cast<std::uint8_t>(Level::kNone),
+                  "Logger::LogUntil requires a valid ulog::Level enumerator.");
+    using MessageFactoryType = std::remove_reference_t<MessageFactory>;
+    static_assert(std::is_invocable_v<MessageFactoryType&>,
+                  "Logger::LogUntil requires a message factory callable with no arguments.");
+    static_assert(IsTextFactory<MessageFactoryType>(),
+                  "Logger::LogUntil message factory result must be usable as std::string_view.");
+
+    if constexpr (IsCompileTimeEnabled<kLevel>()) {
+      auto factory = std::ref(make_message);
+      using Factory = decltype(factory);
+      LogMessageUntil(kLevel, deadline, source, &factory, &BuildText<Factory>);
+    }
+  }
+
+  /// LogUntil with typed fields, as the three-argument Log.
+  template <Level kLevel, typename FieldsFactory, typename MessageFactory>
+  void LogUntil(std::chrono::steady_clock::time_point deadline, const SourceLocation& source,
+                FieldsFactory&& write_fields, MessageFactory&& make_message) const {
+    static_assert(static_cast<std::uint8_t>(kLevel) <= static_cast<std::uint8_t>(Level::kNone),
+                  "Logger::LogUntil requires a valid ulog::Level enumerator.");
+    using FieldsFactoryType = std::remove_reference_t<FieldsFactory>;
+    using MessageFactoryType = std::remove_reference_t<MessageFactory>;
+    static_assert(std::is_invocable_v<FieldsFactoryType&, FieldWriter&>,
+                  "Logger::LogUntil fields callback must accept ulog::FieldWriter&.");
+    static_assert(std::is_invocable_v<MessageFactoryType&>,
+                  "Logger::LogUntil requires a message factory callable with no arguments.");
+    static_assert(IsTextFactory<MessageFactoryType>(),
+                  "Logger::LogUntil message factory result must be usable as std::string_view.");
+
+    if constexpr (IsCompileTimeEnabled<kLevel>()) {
+      FieldsAndText<FieldsFactoryType, MessageFactoryType> call{write_fields, make_message};
+      LogMessageUntil(kLevel, deadline, source, &call, &BuildFieldsAndText<decltype(call)>);
+    }
+  }
+
   friend constexpr bool operator==(Logger, Logger) noexcept = default;
 
  private:
@@ -211,6 +257,9 @@ class Logger final {
 
   ULOG_API void LogMessage(Level level, const SourceLocation& source, void* builder_context,
                            detail::MessageBuilder build_message) const;
+  ULOG_API void LogMessageUntil(Level level, std::chrono::steady_clock::time_point deadline,
+                                const SourceLocation& source, void* builder_context,
+                                detail::MessageBuilder build_message) const;
   /// Filters `level`, then admits and opens one Record; empty when nothing was admitted.
   [[nodiscard]] ULOG_API detail::OpenRecord BeginRecord(
       Level level, const SourceLocation& source) const noexcept;

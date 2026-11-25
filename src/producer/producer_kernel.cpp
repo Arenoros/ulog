@@ -237,6 +237,19 @@ void ValidateConfiguration(const KernelConfig& config, EventClock clock) {
     ThrowInvalidConfiguration("ingress_cells", "must be between producer_slots and 64;",
                               "to at least one private lane cell per producer slot");
   }
+  const CapacityWaiter& waiter = config.capacity_waiter;
+  const bool any_waiter_hook = waiter.may_block != nullptr || waiter.enter != nullptr ||
+                               waiter.epoch != nullptr || waiter.wait != nullptr ||
+                               waiter.leave != nullptr || waiter.notify != nullptr ||
+                               waiter.close != nullptr;
+  const bool every_waiter_hook = waiter.may_block != nullptr && waiter.enter != nullptr &&
+                                 waiter.epoch != nullptr && waiter.wait != nullptr &&
+                                 waiter.leave != nullptr && waiter.notify != nullptr &&
+                                 waiter.close != nullptr;
+  if (any_waiter_hook && !every_waiter_hook) {
+    ThrowInvalidConfiguration("capacity_waiter", "sets only some of its hooks;",
+                              "every hook, or none to refuse blocking calls");
+  }
   if (clock.now == nullptr) {
     ThrowInvalidConfiguration("event_clock", "has no now callback;",
                               "to SystemEventClock() or a valid deterministic clock");
@@ -311,6 +324,39 @@ struct ProducerKernel::Impl final {
   };
 
   static_assert(sizeof(MissingProducerCounter) == kAccountingQuantumBytes);
+
+  /// Blocking-call state. Only blocking calls write it; the consumer reads `blocked_callers` after
+  /// freeing capacity, so the ordinary producer path never touches this line.
+  struct alignas(kAccountingQuantumBytes) BlockingState final {
+    std::atomic<std::size_t> blocked_callers{0};
+    std::atomic<std::uint64_t> refused{0};
+    std::array<std::byte, kAccountingQuantumBytes - sizeof(std::atomic<std::size_t>) -
+                              sizeof(std::atomic<std::uint64_t>)>
+        padding{};
+  };
+
+  static_assert(sizeof(BlockingState) == kAccountingQuantumBytes);
+
+  [[nodiscard]] bool CanBlock() const noexcept {
+    const CapacityWaiter& waiter = config.capacity_waiter;
+    return waiter.may_block != nullptr && waiter.may_block(waiter.context);
+  }
+
+  /// Called after the consumer or a retirement frees lane cells or credit. The fence pairs with
+  /// the one a blocking call issues after counting itself: either this load sees the call, or the
+  /// call's next attempt sees the freed capacity, so no wakeup is lost.
+  void NotifyCapacity() noexcept {
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (blocking.blocked_callers.load(std::memory_order_relaxed) != 0U) {
+      config.capacity_waiter.notify(config.capacity_waiter.context);
+    }
+  }
+
+  void CloseCapacityWaiter() noexcept {
+    if (config.capacity_waiter.close != nullptr) {
+      config.capacity_waiter.close(config.capacity_waiter.context);
+    }
+  }
 
   /// Reservation-attempt nonce of one producer slot for adaptive thinning; only its producer
   /// thread touches it.
@@ -390,6 +436,7 @@ struct ProducerKernel::Impl final {
     consumed_records.fetch_add(1, std::memory_order_relaxed);
     const std::size_t producer_index = consumption.producer_index();
     consumption.Acknowledge();
+    NotifyCapacity();
     TryFinishRetirement(producer_index);
   }
 
@@ -435,6 +482,7 @@ struct ProducerKernel::Impl final {
     }
     controls[slot_index].generation.fetch_add(1, std::memory_order_relaxed);
     controls[slot_index].state.store(ProducerSlotState::kFree, std::memory_order_release);
+    NotifyCapacity();  // reconciliation returned the slot's credit to the shared pool
   }
 
   std::array<ProducerControl, kMaximumProducerSlots> controls{};
@@ -454,6 +502,7 @@ struct ProducerKernel::Impl final {
   std::array<std::optional<credit::CreditLedger::Ownership>, kMaximumIngressCells> ownerships{};
   std::array<std::optional<OpenRecordState>, kMaximumProducerSlots> open_records{};
   std::array<ProducerThinning, kMaximumProducerSlots> thinning{};
+  BlockingState blocking{};
 };
 
 EventClock SystemEventClock() noexcept { return EventClock{nullptr, &ReadSystemClock}; }
@@ -487,11 +536,15 @@ ProducerKernel::ProducerKernel(KernelConfig config, EventClock clock)
   ValidateConfiguration(config, clock);
   impl_ = std::make_unique<Impl>(*this, config, clock);
   static const ProducerOperations operations{&ProducerKernel::LogMessage, &ChangeLoggerLevel,
-                                             &ProducerKernel::BeginRecord};
+                                             &ProducerKernel::BeginRecord,
+                                             &ProducerKernel::LogMessageUntil};
   impl_->logger_state.producer_operations = &operations;
 }
 
-ProducerKernel::~ProducerKernel() { impl_->lifetime.CloseAdmission(); }
+ProducerKernel::~ProducerKernel() {
+  impl_->lifetime.CloseAdmission();
+  impl_->CloseCapacityWaiter();
+}
 
 Logger ProducerKernel::GetLogger() noexcept {
   return LoggerAccess::FromState(&impl_->logger_state);
@@ -564,6 +617,7 @@ void ProducerKernel::CloseAdmission() noexcept {
   std::atomic_thread_fence(std::memory_order_seq_cst);
   SetLevel(Level::kNone);
   impl_->config.consumer_notification.Notify();
+  impl_->CloseCapacityWaiter();
 }
 
 bool ProducerKernel::IsAdmissionOpen() const noexcept { return impl_->lifetime.IsAdmissionOpen(); }
@@ -593,6 +647,27 @@ PublishResult ProducerKernel::TryPublish(ProducerRegistration& producer, Level l
   return TryPublishSlot(producer.slot_index_, producer.generation_, level, source, operation);
 }
 
+PublishResult ProducerKernel::TryPublishUntil(ProducerRegistration& producer, Level level,
+                                              std::chrono::steady_clock::time_point deadline,
+                                              const SourceLocation& source,
+                                              BuildOperation operation) {
+  if (!impl_->CanBlock()) {
+    impl_->blocking.refused.fetch_add(1, std::memory_order_relaxed);
+    return {.outcome = PublishOutcome::kBlockingRefused};
+  }
+  const auto threshold =
+      static_cast<Level>(impl_->logger_state.threshold.load(std::memory_order_relaxed));
+  if (!IsLevelEnabled(level, threshold)) {
+    return {.outcome = PublishOutcome::kFiltered};
+  }
+  if (producer.owner_ != this) {
+    impl_->CountMissingProducer();
+    return {.outcome = PublishOutcome::kNoProducerSlot};
+  }
+  return TryPublishSlotUntil(producer.slot_index_, producer.generation_, level, deadline, source,
+                             operation);
+}
+
 PublishResult ProducerKernel::TryPublishSlot(std::size_t slot_index, std::uint64_t generation,
                                              Level level, const SourceLocation& source,
                                              BuildOperation operation) {
@@ -600,6 +675,66 @@ PublishResult ProducerKernel::TryPublishSlot(std::size_t slot_index, std::uint64
   if (begun != PublishOutcome::kAccepted) {
     return {.outcome = begun};
   }
+  return BuildOpenSlot(slot_index, operation);
+}
+
+namespace {
+
+/// Rejections that a waiting blocking call retries: the lane or the credit was full.
+[[nodiscard]] bool IsCapacityRejection(PublishOutcome outcome) noexcept {
+  return outcome == PublishOutcome::kLaneFull || outcome == PublishOutcome::kBudgetExhausted ||
+         outcome == PublishOutcome::kPriorityReserveExhausted;
+}
+
+}  // namespace
+
+PublishResult ProducerKernel::TryPublishSlotUntil(std::size_t slot_index, std::uint64_t generation,
+                                                  Level level,
+                                                  std::chrono::steady_clock::time_point deadline,
+                                                  const SourceLocation& source,
+                                                  BuildOperation operation) {
+  // An expired deadline admits exactly as a non-blocking call does.
+  if (std::chrono::steady_clock::now() >= deadline) {
+    return TryPublishSlot(slot_index, generation, level, source, operation);
+  }
+  PublishOutcome begun = BeginSlot(slot_index, generation, level, source, true);
+  if (IsCapacityRejection(begun)) {
+    const CapacityWaiter& waiter = impl_->config.capacity_waiter;
+    if (!waiter.enter(waiter.context)) {
+      // Shutdown or destruction closed admission before the call could wait.
+      impl_->CountMissingProducer();
+      return {.outcome = PublishOutcome::kNoProducerSlot};
+    }
+    impl_->blocking.blocked_callers.fetch_add(1, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_seq_cst);  // pairs with NotifyCapacity
+    while (true) {
+      const std::uint64_t observed = waiter.epoch(waiter.context);
+      begun = BeginSlot(slot_index, generation, level, source, true);
+      if (!IsCapacityRejection(begun) || !waiter.wait(waiter.context, observed, deadline)) {
+        break;
+      }
+    }
+    impl_->blocking.blocked_callers.fetch_sub(1, std::memory_order_relaxed);
+    if (IsCapacityRejection(begun)) {
+      if (!impl_->lifetime.IsAdmissionOpen()) {
+        // Shutdown or destruction released the waiting call; it is rejected without a retry.
+        impl_->CountMissingProducer();
+        begun = PublishOutcome::kNoProducerSlot;
+      } else {
+        // The deadline passed: the configured policy decides and counts the call.
+        begun = BeginSlot(slot_index, generation, level, source);
+      }
+    }
+    // Leaves after the last kernel access of a rejected call, so destruction can wait for it.
+    waiter.leave(waiter.context);
+  }
+  if (begun != PublishOutcome::kAccepted) {
+    return {.outcome = begun};
+  }
+  return BuildOpenSlot(slot_index, operation);
+}
+
+PublishResult ProducerKernel::BuildOpenSlot(std::size_t slot_index, BuildOperation operation) {
   auto& open = impl_->open_records[slot_index];
   if (!open.has_value()) {
     return {.outcome = PublishOutcome::kInvalidRecord};
@@ -618,14 +753,16 @@ PublishResult ProducerKernel::TryPublishSlot(std::size_t slot_index, std::uint64
 }
 
 PublishOutcome ProducerKernel::BeginSlot(std::size_t slot_index, std::uint64_t generation,
-                                         Level level, const SourceLocation& source) noexcept {
+                                         Level level, const SourceLocation& source,
+                                         bool defer_shedding) noexcept {
   if (!impl_->IsActive(slot_index, generation)) {
     impl_->CountMissingProducer();
     return PublishOutcome::kNoProducerSlot;
   }
 
   auto& counters = impl_->counters[slot_index];
-  if (impl_->config.adaptive_thinning && !impl_->KeepUnderThinning(slot_index, source)) {
+  if (impl_->config.adaptive_thinning && !defer_shedding &&
+      !impl_->KeepUnderThinning(slot_index, source)) {
     counters.rejected_thinned.fetch_add(1, std::memory_order_relaxed);
     return PublishOutcome::kThinned;
   }
@@ -633,7 +770,9 @@ PublishOutcome ProducerKernel::BeginSlot(std::size_t slot_index, std::uint64_t g
   if (!publication) {
     if (publication.status() == ingress::ClaimStatus::kFull ||
         publication.status() == ingress::ClaimStatus::kContended) {
-      counters.rejected_lane_full.fetch_add(1, std::memory_order_relaxed);
+      if (!defer_shedding) {
+        counters.rejected_lane_full.fetch_add(1, std::memory_order_relaxed);
+      }
       return PublishOutcome::kLaneFull;
     }
     counters.invalid_records.fetch_add(1, std::memory_order_relaxed);
@@ -663,15 +802,19 @@ PublishOutcome ProducerKernel::BeginSlot(std::size_t slot_index, std::uint64_t g
       reservation =
           impl_->ledger.TryReservePriority(slot_index, impl_->config.maximum_record_bytes);
     }
-    if (!reservation && impl_->config.drop_oldest) {
+    if (!reservation && impl_->config.drop_oldest && !defer_shedding) {
       reservation = impl_->EvictFor(slot_index, level);
     }
     if (!reservation) {
       if (reserve_applies) {
-        counters.rejected_priority_reserve.fetch_add(1, std::memory_order_relaxed);
+        if (!defer_shedding) {
+          counters.rejected_priority_reserve.fetch_add(1, std::memory_order_relaxed);
+        }
         return PublishOutcome::kPriorityReserveExhausted;
       }
-      counters.rejected_budget.fetch_add(1, std::memory_order_relaxed);
+      if (!defer_shedding) {
+        counters.rejected_budget.fetch_add(1, std::memory_order_relaxed);
+      }
       return PublishOutcome::kBudgetExhausted;
     }
   }
@@ -818,6 +961,7 @@ ConsumeStatus ProducerKernel::TryConsume(void* context, RecordConsumer consumer,
   }
   impl_->consumed_records.fetch_add(1, std::memory_order_relaxed);
   consumption.Acknowledge();
+  impl_->NotifyCapacity();
   impl_->TryFinishRetirement(producer_index);
   return ConsumeStatus::kRecord;
 }
@@ -830,6 +974,7 @@ KernelSnapshot ProducerKernel::GetSnapshot() const noexcept {
       .priority_reserve_bytes = impl_->config.priority_reserve_bytes,
       .fixed_backing_bytes = impl_->config.ingress_cells * sizeof(record::RecordSlot),
   };
+  snapshot.rejected_blocking_refused = impl_->blocking.refused.load(std::memory_order_relaxed);
   for (const auto& counter : impl_->missing_producer_counters) {
     snapshot.rejected_no_producer += counter.rejections.load(std::memory_order_relaxed);
   }
@@ -857,10 +1002,10 @@ KernelSnapshot ProducerKernel::GetSnapshot() const noexcept {
         break;
     }
   }
-  snapshot.attempted_records = snapshot.accepted_records + snapshot.rejected_no_producer +
-                               snapshot.rejected_lane_full + snapshot.rejected_budget +
-                               snapshot.rejected_priority_reserve + snapshot.rejected_thinned +
-                               snapshot.abandoned_builds + producer_invalid_records;
+  snapshot.attempted_records =
+      snapshot.accepted_records + snapshot.rejected_no_producer + snapshot.rejected_lane_full +
+      snapshot.rejected_budget + snapshot.rejected_priority_reserve + snapshot.rejected_thinned +
+      snapshot.rejected_blocking_refused + snapshot.abandoned_builds + producer_invalid_records;
   snapshot.invalid_records =
       producer_invalid_records + impl_->consumer_validation_errors.load(std::memory_order_relaxed);
   snapshot.retained_records = snapshot.accepted_records >= snapshot.consumed_records
@@ -891,6 +1036,34 @@ void ProducerKernel::LogMessage(void* context, Level level, const SourceLocation
   MessageCall call{builder_context, build_message};
   static_cast<void>(kernel.TryPublishSlot(registration->slot_index, registration->generation, level,
                                           source, BuildOperation{&call, &BuildMessage}));
+}
+
+void ProducerKernel::LogMessageUntil(void* context, Level level,
+                                     std::chrono::steady_clock::time_point deadline,
+                                     const SourceLocation& source, void* builder_context,
+                                     MessageBuilder build_message) {
+  auto& kernel = *static_cast<ProducerKernel*>(context);
+  // Refused before anything else, so a Ulog-owned thread never claims, reserves, or waits.
+  if (!kernel.impl_->CanBlock()) {
+    kernel.impl_->blocking.refused.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  ThreadRegistration* const registration = FindThreadRegistration(kernel, kernel.identity_);
+  if (registration == nullptr) {
+    kernel.impl_->CountMissingProducer();
+    return;
+  }
+  if (!kernel.impl_->IsActive(registration->slot_index, registration->generation)) {
+    const auto slot_index = registration->slot_index;
+    const auto generation = registration->generation;
+    RemoveThreadRegistration(kernel, kernel.identity_, slot_index, generation);
+    kernel.impl_->CountMissingProducer();
+    return;
+  }
+  MessageCall call{builder_context, build_message};
+  static_cast<void>(kernel.TryPublishSlotUntil(registration->slot_index, registration->generation,
+                                               level, deadline, source,
+                                               BuildOperation{&call, &BuildMessage}));
 }
 
 bool ProducerKernel::BeginRecord(void* context, Level level, const SourceLocation& source,

@@ -141,7 +141,8 @@ install it as the process-wide Default Logger. An application that calls
 address until application termination, as required by the
 [Default Logger lifetime contract](native-frontend.md#default-logger-exchange).
 
-Admission is bounded and non-blocking on producer threads. A call claims its
+Admission is bounded and non-blocking on producer threads unless a call asks to
+wait with `Logger::LogUntil` (see [Blocking admission](#blocking-admission)). A call claims its
 producer-local ingress cell and reserves its complete worst-case Record charge before
 invoking the message factory or deferred macro operands. Successful publication
 assigns one global admission sequence. The single worker delivers Records to the
@@ -150,7 +151,7 @@ destination in that sequence order.
 `RuntimeConfig::admission_policy` selects how a full Runtime sheds calls.
 `AdmissionPolicy::kDropNewest`, the default, rejects the incoming call: it
 increments one rejection count, consumes no admission sequence, and evaluates
-no caller message expression. Every rejection has exactly one of five reasons,
+no caller message expression. Every rejection has exactly one of six reasons,
 counted in `RuntimeSnapshot`:
 
 | Reason | Snapshot count |
@@ -160,6 +161,7 @@ counted in `RuntimeSnapshot`:
 | The payload budget cannot hold one worst-case Record | `rejected_budget` |
 | An Error or Critical call found the budget and the priority reserve full | `rejected_priority_reserve` |
 | Adaptive thinning dropped the call | `rejected_thinned` |
+| A `LogUntil` call on a Ulog-owned thread was refused without waiting | `rejected_blocking_refused` |
 
 `dropped_newest_records` is their sum. Operation reports count only admitted
 Records, so they are unaffected by rejections.
@@ -218,6 +220,46 @@ calls every site is kept at about the same ratio. A thinned call is dropped
 before it claims a lane cell or reserves bytes: it evaluates no message operand,
 consumes no admission sequence, and is counted as `rejected_thinned`. Calls that
 thinning keeps then go through the ordinary drop-newest checks.
+
+### Blocking admission
+
+`Logger::LogUntil<Level>(deadline, source, ...)` is the explicit
+`Block(deadline)` mode of ADR 0010. Log, the `LOG_*` macros, and LogWriter never
+block, and no configuration makes them do so.
+
+```cpp
+logger.LogUntil<ulog::Level::kWarning>(
+    std::chrono::steady_clock::now() + 50ms, ULOG_SOURCE_LOCATION(),
+    [&] { return audit_line; });
+```
+
+When the call finds its producer lane full or no payload credit (including a
+full priority reserve for Error and Critical), it waits instead of shedding:
+
+- While it waits, drop-oldest does not evict and adaptive thinning does not
+  drop it, and nothing is counted. It retries each time the worker frees a lane
+  cell or credit, and is admitted as soon as it fits.
+- Once `deadline` passes, the configured admission policy decides one more
+  attempt and counts it exactly as `Log` would. A deadline that has already
+  passed when the call starts makes it an ordinary `Log` call.
+- Shutdown, `Shutdown(deadline)`, and Runtime destruction close admission and
+  release every waiting call at once. A released call is not evaluated and is
+  counted as `rejected_no_producer`, like any call after admission closed.
+  Destruction waits only for released calls to leave, so it stays bounded. A
+  call that does not start waiting before destruction still follows the ordinary
+  Logger lifetime rule above.
+- A call on a thread Ulog owns (the worker, the I/O loop, or an Operation
+  callback) never waits, because those threads free the capacity it would wait
+  for. It is refused immediately, before it claims or reserves anything,
+  evaluates nothing, and is counted as `rejected_blocking_refused`.
+
+A waiting call waits for capacity its own producer can reserve: its lane cells
+and the credit its consumed Records return, or the shared pool. It does not take
+credit another producer cached; see the credit trade-off in the
+[Performance Contract](performance-contract.md).
+
+The ordinary path is unchanged: the wait lives behind the Runtime's private
+wait hooks, and the worker checks a waiting count only after it frees capacity.
 
 ### Priority reserve
 

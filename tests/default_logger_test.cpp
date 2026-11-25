@@ -46,8 +46,8 @@ class StableTarget final {
     return LevelChangeStatus::kNullLogger;
   }
 
-  inline static constexpr detail::ProducerOperations kOperations{&DiscardMessage,
-                                                                 &RejectLevelChange, nullptr};
+  inline static constexpr detail::ProducerOperations kOperations{
+      &DiscardMessage, &RejectLevelChange, nullptr, nullptr};
 
   detail::LoggerState state_;
 };

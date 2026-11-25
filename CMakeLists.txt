@@ -51,8 +51,10 @@ set(ULOG_PRODUCER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/producer/record_storage.cpp"
 )
 set(ULOG_ENCODING_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/encoding/text_encoder.cpp")
-set(ULOG_CONTROL_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/control/control_reserve.cpp"
-                                 "${CMAKE_CURRENT_SOURCE_DIR}/src/control/thread_role.cpp"
+set(ULOG_CONTROL_PRIVATE_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/control/admission_wait.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/control/control_reserve.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/control/thread_role.cpp"
 )
 set(ULOG_IO_PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/io/io_error.cpp"
                             "${CMAKE_CURRENT_SOURCE_DIR}/src/io/raw_file_sink.cpp"

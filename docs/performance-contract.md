@@ -113,7 +113,13 @@ all payload pools, and the independent control and progress reserves.
   exceptional `rejected_priority_reserve` counter explicitly. The maximum
   Ulog-owned payload memory is `payload_capacity_bytes + priority_reserve_bytes`.
 - Explicit `Block(deadline)` is supported separately, is never the default, and
-  is forbidden on Ulog-owned threads.
+  is forbidden on Ulog-owned threads. `Logger::LogUntil` implements it through
+  its own Logger entry point, so `Log`, the macros, and LogWriter gain no lock,
+  allocation, or shared counter. The producer kernel holds no wait primitive:
+  waiting goes through Runtime-supplied hooks, and the frontend hot-path contract
+  check lists the kernel's two blocking-only atomics, the waiting count and the
+  refusal counter. After freeing capacity, the worker issues one fence and reads
+  the waiting count, and takes a lock only while a call waits.
 - A Record exceeding `max_record_bytes` is truncated at a valid UTF-8 boundary,
   marked with `ulog.truncated=true`, and accounted separately. It never expands
   storage beyond the configured bound.

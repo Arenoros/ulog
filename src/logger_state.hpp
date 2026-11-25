@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <ulog/level.hpp>
 #include <ulog/logger.hpp>
@@ -9,6 +10,10 @@
 namespace ulog::detail {
 
 using LogMessage = void (*)(void*, Level, const SourceLocation&, void*, MessageBuilder);
+
+/// Like LogMessage, but waits for admission capacity until the deadline (Logger::LogUntil).
+using LogMessageUntil = void (*)(void*, Level, std::chrono::steady_clock::time_point,
+                                 const SourceLocation&, void*, MessageBuilder);
 
 using SetLoggerLevel = LevelChangeStatus (*)(void*, Level) noexcept;
 
@@ -19,6 +24,8 @@ struct ProducerOperations final {
   LogMessage log_message;
   SetLoggerLevel set_level;
   BeginRecord begin_record;
+  /// Null when the target never admits, as for the Null Logger.
+  LogMessageUntil log_message_until{nullptr};
 };
 
 struct LoggerState final {

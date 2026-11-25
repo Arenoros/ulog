@@ -41,3 +41,14 @@ sequence. Hashing the global sequence would also make one producer's decisions
 depend on every other producer's admissions. The decision stays stateless and
 deterministic: given the call site, the producer's nonce, and the occupancy,
 the outcome is fixed.
+
+## Amendment: explicit blocking admission (#37)
+
+`Block(deadline)` is a per-call Logger entry point, `Logger::LogUntil`, rather
+than a Runtime admission policy or a thread-scoped mode. That keeps the ordinary
+`Log`, macro, and LogWriter path free of any check for it. While a call waits,
+the configured policy's shedding (eviction or thinning) is deferred; at the
+deadline the policy decides one ordinary attempt. A call on a Ulog-owned thread
+is refused as its own counted reason, and Shutdown or destruction releases
+waiting calls as rejected without a producer slot. A waiting call does not take
+credit from other producers, which matches ADR 0017.
