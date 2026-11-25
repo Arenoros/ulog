@@ -947,16 +947,21 @@ class RuntimeDomain final {
   void CancelRemainingWork() noexcept {
     {
       std::lock_guard lock{state_mutex_};
-      accepting_actions_ = false;
-      // As on the successful path, a completed Shutdown already reports a stopped worker.
-      worker_running_.store(false, std::memory_order_release);
       CloseAdmissionLocked();
     }
     // Stop on the worker so each completion either precedes every cancellation report or is
     // rejected as cancelled; the destructor or Shutdown caller may not have stopped it yet.
     route_.Stop();
-    // Writers that passed admission before it closed finish first, so reports cover them.
+    // Writers that passed admission before it closed finish first, so reports cover them. Actions
+    // are still registered until then, so a Shutdown that arrives meanwhile is completed below
+    // with the same final report instead of fixing one that misses those writers.
     DrainDiscardedRecords();
+    {
+      std::lock_guard lock{state_mutex_};
+      accepting_actions_ = false;
+      // As on the successful path, a completed Shutdown already reports a stopped worker.
+      worker_running_.store(false, std::memory_order_release);
+    }
     CompleteActions(OperationOutcome::kCancelled);
     SettleInFlight();
   }

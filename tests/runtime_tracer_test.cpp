@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <semaphore>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -478,6 +479,52 @@ TEST(RuntimeTracer, ShutdownWithAnExpiredDeadlineSucceedsWhenNothingIsPending) {
   // The worker finishes a Shutdown whose barrier is already reached before checking the deadline.
   auto shutdown = runtime.Shutdown(std::chrono::steady_clock::now() - 1s);
   ExpectSucceeded(shutdown);
+}
+
+TEST(RuntimeTracer, AShutdownDuringDeadlineCancellationReportsWritersThatFinishLater) {
+  testing::InMemoryDestination destination{{
+      .capacity_records = 1,
+      .maximum_record_bytes = 512,
+  }};
+  auto config = SmallRuntimeConfig();
+  config.control_operations = 3;
+  auto created = Runtime::Create(config, destination);
+  ASSERT_TRUE(created) << (created.failure ? created.failure->Message() : "missing Runtime");
+  Runtime& runtime = *created.runtime;
+
+  // A writer passed admission and is still building its Record when admission closes.
+  std::binary_semaphore building{0};
+  std::binary_semaphore finish{0};
+  std::thread writer{[&] {
+    const Logger logger = runtime.GetLogger();
+    logger.Log<Level::kInfo>(ULOG_SOURCE_LOCATION(), [&] {
+      building.release();
+      finish.acquire();
+      return std::string_view{"late"};
+    });
+  }};
+  ASSERT_TRUE(building.try_acquire_for(5s));
+
+  // The expired deadline makes the worker cancel; it then waits for the open writer. A second
+  // Shutdown that arrives meanwhile must not fix the final report before the writer finishes.
+  auto bounded = runtime.Shutdown(std::chrono::steady_clock::now() - 1s);
+  ASSERT_TRUE(bounded);
+  std::this_thread::sleep_for(50ms);
+  auto unbounded = runtime.Shutdown();
+  ASSERT_TRUE(unbounded);
+  finish.release();
+  writer.join();
+
+  const auto first = bounded.operation.WaitUntil(std::chrono::steady_clock::now() + 5s);
+  const auto second = unbounded.operation.WaitUntil(std::chrono::steady_clock::now() + 5s);
+  ASSERT_EQ(first.status, OperationWaitStatus::kCompleted);
+  ASSERT_EQ(second.status, OperationWaitStatus::kCompleted);
+  EXPECT_EQ(RequireValue(first.completion), RequireValue(second.completion));
+  EXPECT_EQ(RequireValue(first.completion).Outcome(), OperationOutcome::kCancelled);
+  const auto snapshot = runtime.GetSnapshot();
+  EXPECT_EQ(snapshot.accepted_records, 1U);
+  EXPECT_EQ(RequireValue(first.completion).Report(),
+            (OperationReport{.watermark_records = 1, .unfinished_records = 1}));
 }
 
 TEST(RuntimeTracer, PausedDestinationClaimsNoSlotAcrossWorkerRechecks) {
